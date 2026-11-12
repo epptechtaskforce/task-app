@@ -5,6 +5,7 @@
   const TOKEN_KEY = 'taskapp.token';
   const cfg = w.APP_CONFIG || {};
   const demo = !!cfg.demo || /[?&]demo=1\b/.test(location.search);
+  const CACHE_PREFIX = demo ? 'taskapp.demo.c.' : 'taskapp.c.';   // demo data is kept apart from real data
 
   function load(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
   function save(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) { /* storage blocked */ } }
@@ -15,7 +16,16 @@
     configured: demo || !!cfg.backendUrl,
     onAuthLost: function () {},
 
-    setToken: function (t) { Api.token = t || ''; save(demo ? 'taskapp.demo.token' : TOKEN_KEY, Api.token); },
+    setToken: function (t) { Api.token = t || ''; save(demo ? 'taskapp.demo.token' : TOKEN_KEY, Api.token); if (!Api.token) Api.cacheClear(); },
+
+    // Last known answers (profile, task list, people you can assign to), so a screen can appear instantly while the
+    // server (1-3 s per call on Apps Script) is asked again. Kept in this browser only and wiped at sign-out.
+    cacheGet: function (k) { try { const v = localStorage.getItem(CACHE_PREFIX + k); return v ? JSON.parse(v) : null; } catch (e) { return null; } },
+    cacheSet: function (k, v) { try { localStorage.setItem(CACHE_PREFIX + k, JSON.stringify(v)); } catch (e) { /* storage full or blocked */ } },
+    cacheClear: function () { try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(CACHE_PREFIX) === 0) localStorage.removeItem(k); }); } catch (e) { /* ignore */ } },
+    // The company name is public (it is on the sign-in page), so it is kept across sign-outs to paint the login page at once.
+    savedCompany: function () { return load(demo ? 'taskapp.demo.company' : 'taskapp.company'); },
+    saveCompany: function (n) { if (n) save(demo ? 'taskapp.demo.company' : 'taskapp.company', n); },
 
     /**
      * Resolves with the data, or rejects with Error (e.code = backend code, e.network = true if unreachable).

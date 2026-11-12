@@ -105,7 +105,7 @@
       })();
       return Demo.ready;
     },
-    reset: function () { try { localStorage.removeItem(KEY); localStorage.removeItem('taskapp.demo.token'); } catch (e) { /* ignore */ } location.reload(); },
+    reset: function () { try { localStorage.removeItem(KEY); localStorage.removeItem('taskapp.demo.token'); } catch (e) { /* ignore */ } if (window.Api) window.Api.cacheClear(); location.reload(); },
     accounts: [
       ['admin', 'Administrator (users, job titles, org chart)'],
       ['nimal.perera', 'Chairman (top layer)'], ['kamala.silva', 'General Manager'], ['sunil.fernando', 'Supervisor'],

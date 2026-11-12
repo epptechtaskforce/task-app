@@ -42,7 +42,7 @@ Free to run: Google Apps Script + Sheets + Drive + Gemini free tier + GitHub Pag
 
 1. **Google account** that will own the app (use a dedicated account, not a personal one). Create a Gemini API key at <https://aistudio.google.com/apikey>.
 2. **Apps Script**: new project at <https://script.google.com>. Create four files and paste `backend/Core.gs`, `Adapters.gs`, `Code.gs`, `Setup.gs`.
-3. **Script properties** (Project Settings): `GEMINI_API_KEY`, `SETUP_COMPANY_NAME`, `SETUP_ADMIN_USERNAME`, `SETUP_ADMIN_PASSWORD` (optional `SETUP_ADMIN_NAME`).
+3. **Script properties** (Project Settings): `GEMINI_API_KEY`, `SETUP_COMPANY_NAME`, `SETUP_ADMIN_USERNAME` (optional: `SETUP_ADMIN_NAME`, and `SETUP_ADMIN_PASSWORD` - if omitted, `setup()` generates a temporary password and prints it once in the execution log).
 4. Run `setup()` (approve the permission prompts). Then `installTriggers()` and `smokeTest()` (it must end with `ALL SMOKE TESTS PASSED`).
 5. **Deploy > New deployment > Web app**: Execute as *Me*, access *Anyone* (every call needs a login). Copy the `/exec` URL.
 6. Put the URL in `docs/js/config.js` (`backendUrl`) and publish `docs/` with GitHub Pages.

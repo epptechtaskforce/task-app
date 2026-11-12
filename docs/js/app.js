@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const root = document.getElementById('app');
-  const S = { user: null, company: '', canAssign: false, timers: [], filter: 'all', unread: 0, playing: null };
+  const S = { user: null, company: '', canAssign: false, timers: [], filter: 'all', unread: 0, playing: null, taskMem: {} };
 
   /* ============================== helpers ============================== */
 
@@ -56,10 +56,13 @@
 
   /* ============================== login / password ============================== */
 
-  async function showLogin(message) {
-    stopTimers(); S.user = null;
-    let company = S.company;
-    try { if (!company) company = (await Api.call('info')).companyName; } catch (e) { /* ignore */ }
+  function showLogin(message) {
+    stopTimers(); S.user = null; S.taskMem = {};
+    // Paint the sign-in page at once with the last known company name; the server (which may need a few seconds to
+    // wake up) is asked in the background. Asking first made people stare at "Loading…".
+    const company = S.company || Api.savedCompany();
+    const title = h('h1', null, company || 'Task Manager');
+    if (!S.company) Api.call('info').then(function (r) { if (r && r.companyName) { S.company = r.companyName; Api.saveCompany(r.companyName); title.textContent = r.companyName; } }).catch(function () { /* ignore */ });
     const user = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true });
     const pass = h('input', { type: 'password', autocomplete: 'current-password', required: true });
     const err = h('div');
@@ -68,16 +71,17 @@
       ev.preventDefault(); UI.clear(err); btn.disabled = true; btn.textContent = 'Signing in…';
       try {
         const r = await Api.call('login', { username: user.value, password: pass.value });
-        Api.setToken(r.token); S.user = r.user; S.company = r.companyName;
+        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign;
         if (r.user.mustChange) return viewMustChange();
-        await loadMe(); go(landing());
+        if (r.canAssign === undefined) await loadMe(); else rememberMe();   // the sign-in answer already holds the profile
+        go(landing());
       } catch (e) { err.appendChild(errBox(e)); pass.value = ''; }
       finally { btn.disabled = false; btn.textContent = 'Sign in'; }
     } }, h('label', null, 'Username', user), h('label', null, 'Password', pass), btn, err);
     const demo = Api.demo ? h('div', { class: 'note' }, h('strong', null, 'Demo mode'), ' - fake data in this browser only. Password for every account: ', h('code', null, Demo.password),
       h('ul', null, Demo.accounts.map(function (a) { return h('li', null, h('a', { href: '#', onclick: function (e) { e.preventDefault(); user.value = a[0]; pass.value = Demo.password; } }, a[0]), ' - ' + a[1]); })),
       h('button', { class: 'btn small', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data')) : null;
-    mount(h('div', { class: 'center-box' }, h('h1', null, company || 'Task Manager'), h('p', { class: 'muted' }, 'Sign in to see and update your tasks.'),
+    mount(h('div', { class: 'center-box' }, title, h('p', { class: 'muted' }, 'Sign in to see and update your tasks.'),
       message ? h('div', { class: 'note' }, message) : null, h('div', { class: 'card' }, form), demo));
     user.focus();
   }
@@ -109,6 +113,11 @@
   async function loadMe() {
     const me = await Api.call('me');
     S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign;
+    rememberMe();
+  }
+  function rememberMe() {
+    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign });
+    Api.saveCompany(S.company);
   }
 
   /* ============================== tasks list ============================== */
@@ -119,6 +128,7 @@
     const head = h('div', { class: 'page-head' }, h('h1', null, 'Tasks'), S.canAssign ? h('a', { class: 'btn primary', href: '#/new' }, '+ New task') : null);
     shell(h('div', null, head, filters, list), 'tasks');
     let tasks = [];
+    const cacheKey = 'tasks:' + S.user.id;
 
     function draw() {
       const counts = { all: tasks.length, mine: 0, byme: 0, approve: 0 };
@@ -145,18 +155,31 @@
       });
     }
     async function load() {
-      try { tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); draw(); }
+      try {
+        tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); draw();
+        Api.cacheSet(cacheKey, { tasks: tasks });
+        // Warm the "people I can assign to" list so the New task screen opens at once.
+        if (S.canAssign && !Api.cacheGet('assignable')) Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
+      }
       catch (e) { if (e.code === 'MUSTCHANGE') return viewMustChange(); if (e.code !== 'AUTH' && !tasks.length) { UI.clear(list); list.appendChild(errBox(e)); } }
     }
+    // Show the last known list immediately (it is refreshed within a moment), instead of an empty "Loading…" screen.
+    const known = Api.cacheGet(cacheKey);
+    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); draw(); }
     load(); poll(load, 20000);
   }
 
   /* ============================== new task ============================== */
 
   async function viewNewTask() {
-    shell(h('p', { class: 'muted' }, 'Loading…'), 'tasks');
-    let people;
-    try { people = await Api.call('assignable'); } catch (e) { return shell(errBox(e), 'tasks'); }
+    let people = Api.cacheGet('assignable');
+    if (people && people.length) {   // an empty list is not trusted: the admin may have added arrows since
+      // Open at once with the last known list; refresh it quietly for next time (the server re-checks every assignment anyway).
+      Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
+    } else {
+      shell(h('p', { class: 'muted' }, 'Loading…'), 'tasks');
+      try { people = await Api.call('assignable'); Api.cacheSet('assignable', people); } catch (e) { return shell(errBox(e), 'tasks'); }
+    }
     if (!people.length) return shell(h('div', { class: 'card empty' }, 'You do not have anyone to assign tasks to. Ask your administrator to connect you to the people you manage in the Org chart.'), 'tasks');
 
     const title = h('input', { type: 'text', maxlength: 120, required: true, placeholder: 'e.g. Prepare the harvest report' });
@@ -249,12 +272,20 @@
   /* ============================== task detail ============================== */
 
   async function viewTask(id) {
-    shell(h('p', { class: 'muted' }, 'Loading…'), 'tasks');
-    let data;
-    try { data = await Api.call('getTask', { taskId: id }); }
-    catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/tasks' }, '← Back to tasks'))), 'tasks'); }
+    // Open instantly when possible: use what this session already loaded for the task, or else the row from the task
+    // list (title, people, progress), and fetch the conversation in the background. Only a task we know nothing about
+    // (e.g. a link opened directly) has to wait for the server.
+    const listKey = 'tasks:' + S.user.id;
+    let data = S.taskMem[id] || null, preview = null;
+    if (!data) { const l = Api.cacheGet(listKey); preview = l && l.tasks ? l.tasks.filter(function (t) { return t.id === id; })[0] || null : null; }
+    let freshData = false;
+    if (!data && !preview) {
+      shell(h('p', { class: 'muted' }, 'Loading…'), 'tasks');
+      try { data = await Api.call('getTask', { taskId: id }); freshData = true; }
+      catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/tasks' }, '← Back to tasks'))), 'tasks'); }
+    }
 
-    let task = data.task, messages = data.messages, sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = false, recording = null;
+    let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = false, recording = null;
     const headBox = h('div'), sumBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     shell(h('div', null, h('p', null, h('a', { href: '#/tasks' }, '← All tasks')), headBox, sumBox, h('h2', null, 'Conversation'), chatBox, compBox), 'tasks');
     const isAssignee = function () { return task.role === 'assignee'; };
@@ -320,8 +351,9 @@
       summaryBusy = false; drawSummary();
     }
 
-    async function refresh(force) {
-      const d = await Api.call('getTask', { taskId: id });
+    async function refresh(force) { apply(await Api.call('getTask', { taskId: id }), force); }
+    function apply(d, force) {
+      S.taskMem[id] = d;
       const newSig = d.messages.map(function (m) { return m.id + m.status + (m.transcript || '').length; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
@@ -331,6 +363,9 @@
       renderChat(chatBox, messages, { taskId: id });
       if (stick) window.scrollTo(0, document.body.scrollHeight);
       if (!autoTried && task.role === 'creator' && task.summaryStale && task.messageCount > 0) { autoTried = true; runSummary(false); }
+      // Opening the task marks it read on the server; mirror that in the saved task list so the blue dot goes away at once.
+      const l = Api.cacheGet(listKey);
+      if (l && l.tasks && l.tasks.some(function (t) { return t.id === id && t.unread; })) { l.tasks.forEach(function (t) { if (t.id === id) t.unread = false; }); Api.cacheSet(listKey, l); }
     }
 
     /* ---- composer ---- */
@@ -382,7 +417,13 @@
     }
 
     drawComposer();
-    await refresh(true);
+    if (freshData) apply(data, true);                       // just fetched: no second round trip
+    else {
+      drawHead();                                           // from this session / the task list; the server answer follows
+      if (!data) chatBox.appendChild(h('p', { class: 'muted' }, 'Loading the conversation…'));
+      else { drawSummary(); renderChat(chatBox, messages, { taskId: id }); sig = ''; }
+      refresh(true).catch(function (e) { if (e.code !== 'AUTH' && !data) { UI.clear(chatBox); chatBox.appendChild(errBox(e)); } });
+    }
     poll(function () { if (!dragging && !recording) refresh(false).catch(function () {}); }, 8000);
   }
 
@@ -584,8 +625,17 @@
       if (Api.demo) await Demo.init();
       Api.onAuthLost = function (msg) { S.user = null; showLogin(msg || 'Please sign in again.'); };
       if (Api.token) {
-        try { await loadMe(); }
-        catch (e) { if (e.network) { mount(h('div', { class: 'center-box' }, h('h1', null, 'Offline'), errBox(e), h('button', { class: 'btn primary', style: 'margin-top:1rem', onclick: function () { location.reload(); } }, 'Try again'))); return; } Api.setToken(''); }
+        const known = Api.cacheGet('me');
+        if (known && known.user) {
+          // Returning visitor: open straight into the app with the last known profile and check it in the background.
+          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign;
+          const sig = function () { const u = S.user || {}; return [u.id, u.isAdmin, u.mustChange, u.jobTitleId, u.active, S.canAssign].join('|'); };
+          const before = sig();
+          loadMe().then(function () { if (S.user && sig() !== before) route(); }).catch(function () { /* AUTH is handled by Api.onAuthLost; offline keeps the cached view */ });
+        } else {
+          try { await loadMe(); }
+          catch (e) { if (e.network) { mount(h('div', { class: 'center-box' }, h('h1', null, 'Offline'), errBox(e), h('button', { class: 'btn primary', style: 'margin-top:1rem', onclick: function () { location.reload(); } }, 'Try again'))); return; } Api.setToken(''); }
+        }
       }
       window.addEventListener('hashchange', route);
       document.addEventListener('visibilitychange', function () { /* polling timers skip while hidden */ });

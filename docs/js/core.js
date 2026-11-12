@@ -83,6 +83,7 @@ function createCore(env) {
     const memo = {};
     const ctx = {
       memo: memo,
+      idx: {},
       rows: function (t) { if (!memo[t]) memo[t] = env.store.all(t); return memo[t]; },
       reset: function () { Object.keys(memo).forEach(function (k) { delete memo[k]; }); },
       write: function (fn) { return env.lock(function () { ctx.reset(); return fn(); }); }
@@ -137,8 +138,17 @@ function createCore(env) {
   }
 
   /* ---- lookups (all read through ctx so one request reads each sheet once) ---- */
-  function usersById(ctx) { const m = {}; ctx.rows('Users').forEach(function (u) { m[u.id] = u; }); return m; }
-  function titlesById(ctx) { const m = {}; ctx.rows('JobTitles').forEach(function (t) { m[t.id] = t; }); return m; }
+  // The id maps are rebuilt only when the underlying rows were re-read (brief() is called many times per request).
+  function indexBy(ctx, table, slot) {
+    const rows = ctx.rows(table);
+    if (!ctx.idx[slot] || ctx.idx[slot].rows !== rows) {
+      const m = {}; rows.forEach(function (r) { m[r.id] = r; });
+      ctx.idx[slot] = { rows: rows, map: m };
+    }
+    return ctx.idx[slot].map;
+  }
+  function usersById(ctx) { return indexBy(ctx, 'Users', 'users'); }
+  function titlesById(ctx) { return indexBy(ctx, 'JobTitles', 'titles'); }
   function levelOf(user, titles) { const t = titles[user.jobTitleId]; return t ? t.level : null; }
   function publicUser(ctx, u) {
     const t = titlesById(ctx)[u.jobTitleId];
@@ -249,8 +259,8 @@ function createCore(env) {
       update(ctx, 'Users', u.id, { failCount: 0, lockedUntil: 0, lastLogin: env.now() });
       removeWhere(ctx, 'Sessions', function (s) { return s.expires < env.now(); });
       const token = createSession(ctx, u.id);
-      const company = (ctx.rows('Settings').filter(function (x) { return x.key === 'companyName'; })[0] || {}).value || '';
-      return { token: token, user: publicUser(ctx, usersById(ctx)[u.id]), companyName: company };
+      const fresh = usersById(ctx)[u.id];
+      return Object.assign({ token: token }, meView(ctx, fresh));   // same payload as "me", so the browser needs no second call
     });
   } };
 
@@ -260,10 +270,11 @@ function createCore(env) {
     return { loggedOut: true };
   } };
 
-  A.me = { run: function (ctx, user) {
+  function meView(ctx, user) {
     const company = (ctx.rows('Settings').filter(function (x) { return x.key === 'companyName'; })[0] || {}).value || '';
     return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }) };
-  } };
+  }
+  A.me = { run: function (ctx, user) { return meView(ctx, user); } };
 
   A.changePassword = { run: function (ctx, user, req) {
     const oldPw = String(req.oldPassword || ''), newPw = String(req.newPassword || '');
