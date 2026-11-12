@@ -257,7 +257,7 @@ function createCore(env) {
     }
     return ctx.write(function () {
       update(ctx, 'Users', u.id, { failCount: 0, lockedUntil: 0, lastLogin: env.now() });
-      removeWhere(ctx, 'Sessions', function (s) { return s.expires < env.now(); });
+      // (expired sessions are cleared by maintenance() every night; doing it here made every sign-in rewrite the whole sheet)
       const token = createSession(ctx, u.id);
       const fresh = usersById(ctx)[u.id];
       return Object.assign({ token: token }, meView(ctx, fresh));   // same payload as "me", so the browser needs no second call

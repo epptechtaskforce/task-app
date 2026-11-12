@@ -263,11 +263,11 @@ SheetsStore_.prototype.update = function (name, key, patch) {
     const sh = this.sheet(name), cols = this.cols(name), n = cols.length, last = sh.getLastRow();
     const keyIdx = cols.indexOf(TABLES[name].key);
     if (last >= 2) {
-      const keys = sh.getRange(2, keyIdx + 1, last - 1, 1).getValues();
-      for (let i = 0; i < keys.length; i++) {
-        if (String(keys[i][0]) === String(key)) {
+      const table = sh.getRange(2, 1, last - 1, n).getValues();     // one read (key column + row together)
+      for (let i = 0; i < table.length; i++) {
+        if (String(table[i][keyIdx]) === String(key)) {
           const rowNo = i + 2;
-          const obj = this.toObj(name, sh.getRange(rowNo, 1, 1, n).getValues()[0]);
+          const obj = this.toObj(name, table[i]);
           Object.keys(patch).forEach(function (k) { obj[k] = patch[k]; });
           sh.getRange(rowNo, 1, 1, n).setValues([this.toRow(name, obj)]);
           return obj;
