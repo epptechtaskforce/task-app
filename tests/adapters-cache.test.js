@@ -46,8 +46,21 @@ function makeWorld() {
   vm.runInContext(fs.readFileSync(path.join(root, 'Core.gs'), 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(path.join(root, 'Adapters.gs'), 'utf8'), ctx);
   const mk = function () { return vm.runInContext('new SheetsStore_("spreadsheet-id-1234567890")', ctx); };
-  return { stats: stats, cacheData: cacheData, mk: mk };
+  return { stats: stats, cacheData: cacheData, mk: mk, run: function (code) { return vm.runInContext(code, ctx); } };
 }
+
+test('pure-JS SHA-256 gives exactly the same hashes as Node crypto (so existing passwords keep working)', () => {
+  const crypto = require('crypto'), w = makeWorld();
+  const samples = ['', 'a', 'abc', 'salt:password', 'x'.repeat(55), 'x'.repeat(56), 'x'.repeat(63), 'x'.repeat(64), 'x'.repeat(65), 'x'.repeat(1000),
+    'මෙය සිංහල මුරපදයක්', 'emoji 😀 mix', 'token:' + 'f'.repeat(64), 'Ünïcödé ñ 日本語'];
+  samples.forEach(function (s) {
+    assert.equal(w.run('sha256Hex_(' + JSON.stringify(s) + ')'), crypto.createHash('sha256').update(s, 'utf8').digest('hex'), JSON.stringify(s).slice(0, 30));
+  });
+  // 200 chained rounds like hashPassword() does
+  let expect = crypto.createHash('sha256').update('salt:pw').digest('hex');
+  for (let i = 0; i < 200; i++) expect = crypto.createHash('sha256').update(expect + 'saltpw').digest('hex');
+  assert.equal(w.run('(function(){ let h = sha256Hex_("salt:pw"); for (let i = 0; i < 200; i++) h = sha256Hex_(h + "saltpw"); return h; })()'), expect);
+});
 
 const user = function (i, name) { return { id: 'U' + i, name: name || ('User ' + i), username: 'user' + i, jobTitleId: '', isAdmin: false, active: true, passSalt: 's', passHash: 'h', mustChange: false, failCount: 0, lockedUntil: 0, createdAt: 1, lastLogin: 0 }; };
 

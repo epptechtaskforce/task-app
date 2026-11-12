@@ -40,7 +40,52 @@ function makeEnv_(cfg) {
   };
 }
 
+// SPEED: password hashing repeats SHA-256 PASSWORD_ROUNDS times. Utilities.computeDigest is a service call (~7 ms each,
+// so ~1.5-2 s per sign-in); this plain-JavaScript version gives the SAME hashes in a few milliseconds. tests/adapters-cache.test.js
+// checks it against Node's crypto. It falls back to Google's digest for the one input it cannot encode (a lone surrogate).
+const SHA_K_ = [], SHA_H0_ = [];
+(function () {
+  let n = 0, c = 2;
+  const frac = function (x) { return ((x - Math.floor(x)) * 4294967296) | 0; };
+  while (n < 64) {
+    let prime = true;
+    for (let i = 2; i * i <= c; i++) if (c % i === 0) { prime = false; break; }
+    if (prime) { if (n < 8) SHA_H0_[n] = frac(Math.pow(c, 1 / 2)); SHA_K_[n] = frac(Math.pow(c, 1 / 3)); n++; }
+    c++;
+  }
+})();
+function rotr_(x, n) { return (x >>> n) | (x << (32 - n)); }
+function sha256Pure_(message) {
+  const s = unescape(encodeURIComponent(message)), len = s.length, words = [];   // UTF-8 bytes, one per char
+  for (let i = 0; i < len; i++) words[i >> 2] |= s.charCodeAt(i) << (24 - (i % 4) * 8);
+  words[len >> 2] |= 0x80 << (24 - (len % 4) * 8);
+  words[(((len + 8) >> 6) << 4) + 15] = len * 8;
+  const h = SHA_H0_.slice(), w = new Array(64);
+  for (let o = 0; o < words.length; o += 16) {
+    for (let i = 0; i < 64; i++) {
+      if (i < 16) w[i] = words[o + i] | 0;
+      else {
+        const s0 = rotr_(w[i - 15], 7) ^ rotr_(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+        const s1 = rotr_(w[i - 2], 17) ^ rotr_(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+      }
+    }
+    let a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr_(e, 6) ^ rotr_(e, 11) ^ rotr_(e, 25), ch = (e & f) ^ (~e & g);
+      const t1 = (hh + S1 + ch + SHA_K_[i] + w[i]) | 0;
+      const S0 = rotr_(a, 2) ^ rotr_(a, 13) ^ rotr_(a, 22), maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+      hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
+    h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + hh) | 0;
+  }
+  return h.map(function (x) { return ('00000000' + (x >>> 0).toString(16)).slice(-8); }).join('');
+}
 function sha256Hex_(s) {
+  s = String(s);
+  try { return sha256Pure_(s); } catch (e) { /* lone surrogate: let Google encode it */ }
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8);
   let out = '';
   for (let i = 0; i < bytes.length; i++) { const b = bytes[i] < 0 ? bytes[i] + 256 : bytes[i]; out += (b < 16 ? '0' : '') + b.toString(16); }
