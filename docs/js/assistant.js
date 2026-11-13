@@ -427,7 +427,9 @@
     }
     App.onLeave(function () { if (listening) Speech.stop(); });
     draw();
-    return { el: box, load: load };
+    // Only ask the AI again when there is nothing saved yet or the saved overview is more than 10 minutes old.
+    function needsRefresh() { return !data || !data.briefing || !data.at || Date.now() - data.at > 600000 || !!data.stale; }
+    return { el: box, load: load, needsRefresh: needsRefresh };
   }
 
   w.Assistant = { ensure: ensure, where: where, hide: hide, reset: reset, listen: listenNow, settingsCard: settingsCard, briefingCard: briefingCard };

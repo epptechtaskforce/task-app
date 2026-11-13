@@ -12,7 +12,18 @@
   function runLeave() { const fns = S.leave; S.leave = []; fns.forEach(function (f) { try { f(); } catch (e) { /* ignore */ } }); }
   // After the assistant (or anything else) changed tasks behind the screen's back.
   function invalidate() { S.taskMem = {}; if (S.user) { try { Api.cacheSet('tasks:' + S.user.id, { tasks: [] }); } catch (e) { /* ignore */ } } }
-  function poll(fn, ms) { S.timers.push(setInterval(function () { if (!document.hidden) fn(); }, ms)); }
+  // Refresh in the background, but never stack requests: a tick is skipped while the previous one is still waiting
+  // (a slow server must not be buried under more questions), and after a failure the next tries are spaced out.
+  function poll(fn, ms) {
+    let busy = false, skip = 0;
+    S.timers.push(setInterval(function () {
+      if (document.hidden || busy) return;
+      if (skip > 0) { skip--; return; }
+      busy = true;
+      Promise.resolve().then(fn).then(function () { skip = 0; fails = 0; }, function () { skip = Math.min(++fails, 4); }).then(function () { busy = false; });
+    }, ms));
+    let fails = 0;
+  }
   // Pure administrators (no job title) have no tasks, so start them on the Users page.
   function landing() { return S.user && S.user.isAdmin && !S.user.jobTitleId ? '#/admin/users' : '#/tasks'; }
   function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
@@ -317,20 +328,22 @@
     }
     function redraw() { drawStats(); drawList(); }
 
+    let loaded = false;
     async function load() {
       try {
-        tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); redraw();
+        tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); redraw(); loaded = true;
         Api.cacheSet(cacheKey, { tasks: tasks });
         // Warm the "people I can assign to" list so the New task screen opens at once.
         if (S.canAssign && !Api.cacheGet('assignable')) Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
       }
-      catch (e) { if (e.code === 'MUSTCHANGE') return viewMustChange(); if (e.code !== 'AUTH' && !tasks.length) { UI.clear(list); list.appendChild(errBox(e)); } }
+      catch (e) { if (e.code === 'MUSTCHANGE') return viewMustChange(); if (e.code !== 'AUTH' && !tasks.length) { UI.clear(list); list.appendChild(errBox(e)); } throw e; }
     }
     // Show the last known list immediately (it is refreshed within a moment), instead of an empty "Loading…" screen.
     const known = Api.cacheGet(cacheKey);
     if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); redraw(); }
-    load(); poll(load, 20000);
-    brief.load(false);
+    // The list comes first; the overview (an AI call) is only asked for after it, and only when the saved one is old or missing.
+    load().then(function () { if (brief.needsRefresh()) brief.load(false); }, function () { /* the error is already shown */ });
+    poll(load, 40000);
   }
 
   /* ============================== new task: type a title, drag people onto it ============================== */
@@ -675,7 +688,7 @@
       renderChat(chatBox, messages, { taskId: id });
       pendingEls.forEach(function (el) { chatBox.appendChild(el); });
       if (stick) window.scrollTo(0, document.body.scrollHeight);
-      if (!autoTried && task.summaryStale && task.messageCount > 0) { autoTried = true; runSummary(false); }   // everyone gets an up-to-date summary (it is saved, so this is one AI call per change)
+      if (!autoTried && task.summaryStale && task.messageCount > 0) { autoTried = true; setTimeout(function () { if (!summaryBusy) runSummary(false); }, 2500); }   // after the conversation is on screen, not alongside it   // everyone gets an up-to-date summary (it is saved, so this is one AI call per change)
       // Opening the task marks it read on the server; mirror that in the saved task list so the NEW badge goes away at once.
       const l = Api.cacheGet(listKey);
       if (l && l.tasks && l.tasks.some(function (t) { return t.id === id && t.unread; })) { l.tasks.forEach(function (t) { if (t.id === id) t.unread = false; }); Api.cacheSet(listKey, l); }
@@ -777,7 +790,7 @@
       else { drawSummary(); drawFiles(); renderChat(chatBox, messages, { taskId: id }); sig = ''; }
       refresh(true).catch(function (e) { if (e.code !== 'AUTH' && !data) { UI.clear(chatBox); chatBox.appendChild(errBox(e)); } });
     }
-    poll(function () { if (!dragging && !recording) refresh(false).catch(function () {}); }, 8000);
+    poll(function () { if (!dragging && !recording) return refresh(false); }, 15000);
   }
 
   /* ============================== history ============================== */
@@ -1091,6 +1104,11 @@
     try {
       if (Api.demo) await Demo.init();
       Api.onAuthLost = function (msg) { S.user = null; showLogin(msg || 'Please sign in again.'); };
+      let slowEl = null;   // a small note while the server is slow, so a wait never looks like a frozen app
+      Api.onSlow = function (on) {
+        if (on && !slowEl) { slowEl = h('div', { class: 'slow-note', role: 'status' }, 'The server is slow, still trying…'); document.body.appendChild(slowEl); }
+        else if (!on && slowEl) { slowEl.remove(); slowEl = null; }
+      };
       if (Api.token) {
         const known = Api.cacheGet('me');
         if (known && known.user) {

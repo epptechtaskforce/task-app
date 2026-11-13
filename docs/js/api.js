@@ -10,11 +10,14 @@
   function load(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
   function save(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) { /* storage blocked */ } }
 
+  const READS = ['info', 'me', 'listTasks', 'getTask', 'listHistory', 'getArchived', 'assignable', 'adminOverview'];   // safe to ask twice
+
   const Api = {
     demo: demo,
     token: load(demo ? 'taskapp.demo.token' : TOKEN_KEY),
     configured: demo || !!cfg.backendUrl,
     onAuthLost: function () {},
+    onSlow: function () {},   // the app shows a small "still trying" note while a read is slow
 
     setToken: function (t) { Api.token = t || ''; save(demo ? 'taskapp.demo.token' : TOKEN_KEY, Api.token); if (!Api.token) Api.cacheClear(); },
 
@@ -39,15 +42,26 @@
         await new Promise(function (r) { setTimeout(r, 120); });
         res = await w.DemoBackend.handle(JSON.parse(JSON.stringify(req)));
       } else {
-        const ctl = new AbortController();
-        const timer = setTimeout(function () { ctl.abort(); }, opts.timeout || 60000);
-        try {
-          const r = await fetch(cfg.backendUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(req), signal: ctl.signal });
-          res = await r.json();
-        } catch (e) {
-          const err = new Error(e.name === 'AbortError' ? 'The server took too long to answer. Please try again.' : 'Could not reach the server. Check your internet connection and try again.');
+        // Reading is safe to repeat, so a read that hangs is given up after 20 s and asked once more (Apps Script sometimes
+        // leaves a request hanging while the next one is answered at once). Writes are never repeated: they wait their full time.
+        const isRead = !opts.timeout && READS.indexOf(action) >= 0;
+        const tries = isRead ? 2 : 1;
+        let lastErr = null;
+        for (let n = 1; n <= tries && !res; n++) {
+          const ctl = new AbortController();
+          const timer = setTimeout(function () { ctl.abort(); }, opts.timeout || (isRead ? 20000 : 60000));
+          const hint = isRead ? setTimeout(function () { Api.onSlow(true); }, 6000) : 0;
+          try {
+            const r = await fetch(cfg.backendUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(req), signal: ctl.signal });
+            res = await r.json();
+          } catch (e) {
+            lastErr = e;
+          } finally { clearTimeout(timer); clearTimeout(hint); if (isRead) Api.onSlow(false); }
+        }
+        if (!res) {
+          const err = new Error(lastErr && lastErr.name === 'AbortError' ? 'The server is slow right now. Please try again in a moment.' : 'Could not reach the server. Check your internet connection and try again.');
           err.network = true; throw err;
-        } finally { clearTimeout(timer); }
+        }
       }
       if (!res || !res.ok) {
         const err = new Error((res && res.error) || 'Unknown error');
