@@ -14,6 +14,11 @@
   function invalidate() { S.taskMem = {}; if (S.user) { try { Api.cacheSet('tasks:' + S.user.id, { tasks: [] }); } catch (e) { /* ignore */ } } }
   // Refresh in the background, but never stack requests: a tick is skipped while the previous one is still waiting
   // (a slow server must not be buried under more questions), and after a failure the next tries are spaced out.
+  // Quiet refreshes: the first paint of a screen plays its little entrance animations; once it has settled (`calm` on <body>) later
+  // refreshes swap the content without replaying them, so the screen never flashes when fresh data arrives.
+  let settleT = 0;
+  function settle() { if (settleT) return; settleT = setTimeout(function () { document.body.classList.add('calm'); }, 1500); }
+  function unsettle() { clearTimeout(settleT); settleT = 0; document.body.classList.remove('calm'); }
   function poll(fn, ms) {
     let busy = false, skip = 0;
     S.timers.push(setInterval(function () {
@@ -417,12 +422,17 @@
         items.forEach(function (t) { list.appendChild(taskCard(t, n++)); });
       });
     }
-    function redraw() { drawStats(); drawList(); glance.update(tasks); }
+    function redraw() { drawStats(); drawList(); glance.update(tasks); settle(); }
+    const listSig = function (list) { return JSON.stringify(list) + '|' + new Date().toDateString(); };   // (the date: "3d late" changes at midnight)
+    let lastSig = '';
 
     let loaded = false;
     async function load() {
       try {
-        tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); redraw(); loaded = true;
+        const fresh = (await Api.call('listTasks')).tasks; setUnread(fresh); loaded = true;
+        const sg = listSig(fresh);
+        if (sg === lastSig) return;                                 // nothing changed: leave the screen exactly as it is
+        lastSig = sg; tasks = fresh; redraw();
         Api.cacheSet(cacheKey, { tasks: tasks });
         // Warm the "people I can assign to" list so the New task screen opens at once.
         if (S.canAssign && !Api.cacheGet('assignable')) Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
@@ -431,7 +441,7 @@
     }
     // Show the last known list immediately (it is refreshed within a moment), instead of an empty "Loading…" screen.
     const known = Api.cacheGet(cacheKey);
-    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); redraw(); }
+    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; lastSig = listSig(tasks); setUnread(tasks); redraw(); }
     // The list comes first; the overview (an AI call) is only asked for after it, and only when the saved one is old or missing.
     load().catch(function () { /* the error is already shown */ });
     poll(load, 40000);
@@ -770,7 +780,7 @@
 
     async function refresh(force) { apply(await Api.call('getTask', { taskId: id }), force); }
     function apply(d, force) {
-      S.taskMem[id] = d;
+      S.taskMem[id] = d; settle();
       const newSig = d.messages.map(function (m) { return m.id + m.status; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
@@ -1137,7 +1147,7 @@
   /* ============================== router / boot ============================== */
 
   function route() {
-    stopAudio(); stopTimers(); runLeave();
+    stopAudio(); stopTimers(); runLeave(); unsettle();
     if (!S.user) return showLogin();
     if (S.user.mustChange) { Assistant.hide(); return viewMustChange(); }
     Profiles.refresh();

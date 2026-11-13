@@ -258,7 +258,7 @@
     };
     fill.setAttribute('stroke-dashoffset', C);
     s.setPct(0);
-    if (reduced()) s.setPct(pct); else requestAnimationFrame(function () { requestAnimationFrame(function () { s.setPct(pct); }); });
+    if (reduced() || document.body.classList.contains('calm')) s.setPct(pct); else requestAnimationFrame(function () { requestAnimationFrame(function () { s.setPct(pct); }); });
     return s;
   }
   function chip(text, cls, iconName) { return h('span', { class: 'chip ' + (cls || '') }, iconName ? icon(iconName, 13) : null, text); }

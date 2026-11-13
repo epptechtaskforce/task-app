@@ -947,3 +947,7 @@ h1 { letter-spacing: -.025em; }
 .wcol.wtoday { background: color-mix(in srgb, var(--accent-soft) 80%, transparent); } .wcol.wlate { background: color-mix(in srgb, var(--bad-soft) 80%, transparent); }
 .whead { cursor: inherit; }
 .gdot:hover { transform: none; }
+
+/* calm refreshes: no entrance animations once a screen has settled, so new data swaps in without a flash */
+.calm .card.task:not(.ai-spot), .calm .gtile, .calm .gdot, .calm .okring, .calm .group-title, .calm .msg-row, .calm .day, .calm .stat, .calm .a-msg { animation: none !important; }
+.calm .ring-fill, .calm .timebar i { transition: none; animation: none; }
