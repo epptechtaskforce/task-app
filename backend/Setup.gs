@@ -539,3 +539,18 @@ function speedTest() {
     });
   } finally { if (before === null) props.deleteProperty('ASSISTANT_AUDIO_MODEL'); else props.setProperty('ASSISTANT_AUDIO_MODEL', before); }
 }
+
+// speechTest()  Spoken questions through the real AI chain, using two small recordings from the website (read-only, writes nothing).
+function speechTest() {
+  const real = makeAi_(), env = makeEnv_({ ai: real }), core = createCore(env); env.store.init(core.TABLES);
+  const realAll = env.store.all.bind(env.store);
+  const me = realAll('Users').filter(function (u) { return u.active && !u.isAdmin; })[0], tok = 'speech-' + Utilities.getUuid();
+  const virtual = [{ tokenHash: env.sha256Hex('token:' + tok), userId: me.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 }];
+  env.store.all = function (name) { const rows = realAll(name); if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); }); if (name === 'Sessions') return rows.concat(virtual); return rows; };
+  Logger.log('AI chain: ' + (prop_('ANTHROPIC_API_KEY') ? 'Claude, ' : '') + (prop_('GROQ_API_KEY') ? 'Groq, ' : '') + 'Gemini; asking as ' + me.name);
+  ['speech1.wav', 'speech2.wav', 'speech1.wav'].forEach(function (f, i) {
+    const wav = Utilities.base64Encode(UrlFetchApp.fetch('https://epptechtaskforce.github.io/task-app/mock/' + f).getContent());
+    GEMINI_LOG_.length = 0; const a = Date.now(), r = core.handle({ action: 'assistant', token: tok, history: [], wavB64: wav }), total = Date.now() - a;
+    Logger.log('spoken ' + (i + 1) + ' (' + f + '): ' + total + ' ms | ' + GEMINI_LOG_.map(function (x) { return x.model + ' ' + x.code + ' ' + x.ms + 'ms'; }).join(', ') + ' | HEARD: ' + (r.ok ? r.data.heard + ' | REPLY: ' + String(r.data.reply).slice(0, 110) : r.error));
+  });
+}
