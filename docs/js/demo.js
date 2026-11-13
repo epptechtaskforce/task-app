@@ -9,10 +9,11 @@
   const PASSWORD = 'demo1234';
   let core = null;
 
+  const VER = (/[?&]v=(\w+)/.exec((document.currentScript || {}).src || '') || [])[1] || '';   // the same version tag as demo.js itself, so updated files are never served from an old cache
   function loadScript(src) {
     return new Promise(function (res, rej) {
       const s = document.createElement('script');
-      s.src = src; s.onload = res; s.onerror = function () { rej(new Error('Could not load ' + src)); };
+      s.src = src + (VER ? '?v=' + VER : ''); s.onload = res; s.onerror = function () { rej(new Error('Could not load ' + src)); };
       document.head.appendChild(s);
     });
   }

@@ -699,3 +699,38 @@ h1 { letter-spacing: -.025em; }
 .voice-opt:hover { border-color: var(--accent); }
 .voice-opt.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .voice-opt.studio { border-style: dashed; }
+
+
+/* ---------- the AI inside a conversation: floating bubble + panel ---------- */
+.ai-bubble { position: fixed; right: 1rem; bottom: calc(var(--safe-b, 0px) + 96px); z-index: 36; display: flex; align-items: center; gap: .55rem; border: 0; background: none; padding: 0; cursor: pointer; font: inherit; animation: pop .5s var(--spring) .4s both; }
+.ai-bubble.open { opacity: 0; pointer-events: none; }
+.ai-avatar { position: relative; width: 56px; height: 56px; border-radius: 50%; flex: none; display: inline-flex; align-items: center; justify-content: center; color: #fff; background: radial-gradient(circle at 32% 28%, #ffd3ec, var(--accent-2) 42%, var(--accent-strong)); box-shadow: 0 10px 26px rgba(160, 36, 106, .45); }
+.ai-bubble .ai-avatar::before { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--accent-2); opacity: 0; animation: listen 3.2s ease-out infinite; }
+.ai-bubble:hover .ai-avatar { transform: scale(1.06); } .ai-avatar { transition: transform .2s var(--spring); }
+.ai-avatar .presence { position: absolute; right: 1px; bottom: 1px; width: 14px; height: 14px; border-radius: 50%; background: #2fbf5b; border: 2.5px solid var(--solid); }
+.ai-tip { background: var(--solid); color: var(--ink); border-radius: 16px; padding: .5rem .85rem; font-size: .86rem; font-weight: 700; box-shadow: var(--shadow); white-space: nowrap; animation: tip 9s ease forwards; pointer-events: none; }
+.ai-bubble.heard .ai-avatar { animation: nudge .9s var(--spring); }
+@keyframes listen { 0% { transform: scale(.9); opacity: .55; } 70%, 100% { transform: scale(1.35); opacity: 0; } }
+@keyframes tip { 0%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateX(8px); visibility: hidden; } }
+@keyframes nudge { 0% { transform: scale(1); } 30% { transform: scale(1.18) rotate(-8deg); } 60% { transform: scale(1.1) rotate(6deg); } 100% { transform: scale(1); } }
+.ai-veil { position: fixed; inset: 0; z-index: 80; background: rgba(15, 6, 24, .4); opacity: 0; transition: opacity .25s; }
+.ai-veil.open { opacity: 1; }
+.ai-panel { position: fixed; z-index: 81; background: var(--bg); display: flex; flex-direction: column; box-shadow: 0 -10px 50px rgba(20, 6, 40, .35); transition: transform .28s cubic-bezier(.2, .8, .2, 1); left: 0; right: 0; bottom: 0; height: min(84vh, 680px); border-radius: 26px 26px 0 0; transform: translateY(105%); overflow: hidden; }
+.ai-panel.open { transform: none; }
+.ai-panel-head { display: flex; align-items: center; gap: .75rem; padding: .85rem 1rem; border-bottom: 1px solid var(--line); background: linear-gradient(135deg, var(--accent-soft), transparent); }
+.ai-panel-head .ai-avatar { width: 42px; height: 42px; }
+.ai-panel-head .ai-avatar .presence { width: 11px; height: 11px; border-width: 2px; }
+.ai-panel-head strong { display: block; line-height: 1.2; } .ai-panel-head small { color: var(--mute); font-size: .8rem; }
+.ai-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 1rem; }
+.ai-body .assist-head { margin: .6rem 0 0; }
+.ai-body .a-feed { flex: 1; overflow-y: auto; margin: .5rem 0; padding-bottom: .4rem; }
+.ai-body .a-composer { position: static; background: none; padding: .3rem 0 calc(.7rem + var(--safe-b, 0px)); }
+.ai-body .a-welcome { padding-top: .4rem; }
+.ai-body .a-welcome .a-orb { width: 62px; height: 62px; margin-bottom: .6rem; }
+.ai-body .a-welcome h2 { font-size: 1.15rem; }
+@media (min-width: 900px) {
+  .ai-veil { display: none; }
+  .ai-panel { left: auto; right: 1rem; top: 1rem; bottom: 1rem; height: auto; width: 420px; border-radius: 26px; transform: translateX(115%); box-shadow: 0 20px 70px rgba(20, 6, 40, .35); }
+  .ai-bubble { bottom: 100px; }
+}
+@media (prefers-reduced-motion: reduce) { .ai-bubble .ai-avatar::before, .ai-bubble.heard .ai-avatar { animation: none; } .ai-panel { transition: none; } }

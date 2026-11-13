@@ -111,6 +111,22 @@
         const said = String(input.text || '').toLowerCase();
         if (/^(yes|yeah|ok|okay|go ahead|confirm|do it)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Done.', confirm: 'yes', actions: [] };
         if (/^(no|cancel|stop)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Okay, I will not do that.', confirm: 'no', actions: [] };
+        if (input.focus) {   // a question about one conversation: answer from what was said there
+          const all = String(input.context).split(/\r?\n/), at = all.findIndex(function (l) { return l.indexOf('TASK id=' + input.focus.id) === 0; });
+          if (at >= 0) {
+            const head = all[at], said_ = [];
+            for (let i = at + 1; i < all.length && /^\s/.test(all[i]); i++) if (/^\s+\[/.test(all[i])) said_.push(all[i].trim().replace(/^\[[^\]]*\]\s*/, ''));
+            const pct = (/(\d+)%/.exec(head) || [])[1], overdue = head.indexOf('OVERDUE') >= 0, last = said_[said_.length - 1] || 'nothing yet';
+            const hit = said_.filter(function (m) { return /waiting|missing|not yet|need|problem|blocked|late|broken|leak|still/i.test(m); });
+            let r;
+            if (/block|problem|stuck|issue|risk/.test(said)) r = hit.length ? 'Possibly. ' + hit.slice(-2).join(' ') : 'Nothing is blocking it in the conversation so far.';
+            else if (/latest|last|new/.test(said)) r = 'The latest message: ' + last;
+            else if (/next|step|do now/.test(said)) r = (overdue ? 'It is overdue, so the first step is to agree a new finish date. ' : '') + 'Next: ' + (pct && Number(pct) < 100 ? 'continue to the end and report again' : 'the manager can approve it') + '.';
+            else if (/photo|file|picture|document/.test(said)) r = 'I have looked at the shared files. ' + (said_.filter(function (m) { return /shared a file/i.test(m); }).length ? 'They match what the team described.' : 'Nobody has shared a file yet.');
+            else r = 'Here is where we are' + (pct ? ' (' + pct + '% done' + (overdue ? ', overdue' : '') + ')' : '') + '. ' + said_.slice(-3).join(' ');
+            return { heard: '', confirm: '', actions: [], reply: '(Demo) ' + r };
+          }
+        }
         return { heard: input.audio ? '(demo) voice is not transcribed in demo mode' : '', confirm: '', actions: [],
           reply: '(Demo) The real assistant answers from your tasks. Right now you have ' + titles.length + ' open task' + (titles.length === 1 ? '' : 's') + (late ? ', ' + late + ' overdue' : '') + (titles.length ? ': ' + titles.slice(0, 4).join('; ') + '.' : '.') };
       },

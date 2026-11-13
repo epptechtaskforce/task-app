@@ -566,6 +566,8 @@
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
     const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
+    const aiBubble = Assistant.taskBubble(App, id, function () { return task ? task.title : 'this task'; }, function () { refresh(true).catch(function () {}); });   // the AI listening to this conversation
+    aiBubble.update(messages);
     const isAssignee = function () { return task.role === 'assignee'; };
 
     function drawHead() {
@@ -667,7 +669,7 @@
       const newSig = d.messages.map(function (m) { return m.id + m.status; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
-      sig = newSig; task = d.task; messages = d.messages;
+      sig = newSig; task = d.task; messages = d.messages; aiBubble.update(messages);
       if (!dragging) drawHead();
       drawSummary(); drawFiles();
       renderChat(chatBox, messages, { taskId: id });
