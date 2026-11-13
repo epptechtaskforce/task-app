@@ -511,3 +511,30 @@ function mockClean() {
   props.deleteProperty('MOCK_STATE');
   Logger.log('Mock data removed: ' + JSON.stringify(out) + '. Drive folders and files went to the Drive trash.');
 }
+
+// speedTest()  Times the assistant on your real data (as the first active person, without changing anything): whole request, the model
+//              call alone, typed and spoken, so we can see where the waiting goes. Writes nothing.
+function speedTest() {
+  const real = new GeminiAi_(), env = makeEnv_({ ai: real }), core = createCore(env); env.store.init(core.TABLES);
+  const props = PropertiesService.getScriptProperties(), before = props.getProperty('ASSISTANT_AUDIO_MODEL');
+  const realAll = env.store.all.bind(env.store);
+  const me = realAll('Users').filter(function (u) { return u.active && !u.isAdmin; })[0], tok = 'speed-' + Utilities.getUuid();
+  const virtual = [{ tokenHash: env.sha256Hex('token:' + tok), userId: me.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 }];
+  env.store.all = function (name) { const rows = realAll(name); if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); }); if (name === 'Sessions') return rows.concat(virtual); return rows; };
+  const run = function (label, req) {
+    GEMINI_LOG_.length = 0; const a = Date.now(), r = core.handle(Object.assign({ action: 'assistant', token: tok, history: [] }, req)), total = Date.now() - a;
+    const model = GEMINI_LOG_.reduce(function (n, x) { return n + x.ms; }, 0);
+    Logger.log(label + ': total ' + total + ' ms (model ' + model + ' ms, rest ' + (total - model) + ' ms) ' + GEMINI_LOG_.map(function (x) { return x.model + ' ' + x.code; }).join(',') + ' | HEARD: ' + (r.ok ? r.data.heard : r.error));
+  };
+  Logger.log('Asking as ' + me.name);
+  run('typed', { text: 'What needs my attention today?' });
+  const phrases = ['Which tasks are overdue and who is responsible for them?', 'Give Janith a task to check the cold room temperature by Friday.', 'ඉරිගේෂන් පද්ධතියේ ඉදිරි වැට මොනවාද කියලා කියන්න'];
+  const samples = [];
+  phrases.forEach(function (ph) { try { samples.push({ ph: ph, b64: real.speak(ph).b64 }); } catch (e) { Logger.log('could not make a speech sample (' + e + ')'); } });
+  try {
+    ['main', 'fast'].forEach(function (order) {
+      props.setProperty('ASSISTANT_AUDIO_MODEL', order);
+      samples.forEach(function (x, i) { run('SPOKEN [' + order + ' model first] sample ' + (i + 1), { wavB64: x.b64 }); });
+    });
+  } finally { if (before === null) props.deleteProperty('ASSISTANT_AUDIO_MODEL'); else props.setProperty('ASSISTANT_AUDIO_MODEL', before); }
+}

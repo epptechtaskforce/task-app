@@ -13,7 +13,7 @@
   const NO = /^(no|nope|cancel|stop|delete|delete it|don't|do not|never mind|leave it)\b[\s.!]*$/i;
 
   /* ============================== state (kept for this browser tab, wiped at sign-out) ============================== */
-  const B = { App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, bars: [],
+  const B = { recog: null, App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, bars: [],
     history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
   const store = {
     load: function () { try { const v = JSON.parse(sessionStorage.getItem('aib:' + B.uid) || 'null'); if (v) { B.history = v.history || []; B.pending = v.pending || []; } } catch (e) { /* ignore */ } },
@@ -126,6 +126,7 @@
   function endSession() {
     B.token++;                                              // anything still on its way is ignored
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
+    if (B.recog) { B.recog.abort(); B.recog = null; }
     B.busy = false; B.fab.classList.remove('listening', 'busy'); Speech.stop(); closeTyper(true);
     clearMessages();
     if (B.App && B.App.clearSpot) B.App.clearSpot();
@@ -154,21 +155,57 @@
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
     listen();
   }
+  /* ---- the phone's own speech recognition (English): instant words, no upload ---- */
+  const speechCtor = function () { return w.SpeechRecognition || w.webkitSpeechRecognition; };
+  const onIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);   // iPhones cannot record and recognise at the same time
+  function quickOn() { try { return localStorage.getItem('taskapp.quick') !== 'off'; } catch (e) { return true; } }
+  function startRecognizer(onWords) {
+    const Ctor = speechCtor();
+    if (!Ctor || onIOS || !quickOn()) return null;
+    let r; try { r = new Ctor(); } catch (e) { return null; }
+    r.lang = 'en-IN'; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+    const st = { text: '', conf: [], failed: false, finished: null };
+    st.finished = new Promise(function (res) { r.onend = function () { res(); }; });
+    r.onerror = function () { st.failed = true; };                            // no speech / blocked / no network: the sound is used instead
+    r.onresult = function (e) {
+      let fin = '', interim = ''; const conf = [];
+      for (let i = 0; i < e.results.length; i++) { const x = e.results[i]; if (x.isFinal) { fin += x[0].transcript + ' '; conf.push(x[0].confidence); } else interim += x[0].transcript; }
+      st.text = (fin + interim).trim(); st.conf = conf; onWords(st.text);
+    };
+    st.confidence = function () { return st.conf.length ? st.conf.reduce(function (a, b) { return a + b; }, 0) / st.conf.length : 0.8; };   // not reported for unfinished words: trust it
+    st.stop = function () { try { r.stop(); } catch (e) { /* ignore */ } };
+    st.abort = function () { try { r.abort(); } catch (e) { /* ignore */ } };
+    try { r.start(); } catch (e) { return null; }
+    return st;
+  }
   // keep: leave the assistant's last message on screen while listening for the answer to its question
   async function listen(keep) {
     if (!Audio2.supported()) return openTyper();
     const my = ++B.token; B.busy = false;
     putUser(listeningPill()).classList.add('listening');
     let rec;
-    try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: 1700, onLevel: setLevel }); }
-    catch (e) { if (my !== B.token) return; dissolve(B.userEl); B.userEl = null; putBot(e.message || 'I could not use the microphone.'); return; }
-    if (my !== B.token) { try { rec.cancel(); } catch (e) { /* ignore */ } return; }
+    // The phone's own speech recognition listens alongside: its words appear live as you talk and, when they look good, they are
+    // sent instead of the sound (no upload, no audio processing: much faster). The sound is the fallback.
+    const recog = startRecognizer(function (words) { const l = B.userEl && B.userEl.querySelector('.lbl'); if (l) { l.classList.add('live'); l.textContent = words.length > 70 ? '…' + words.slice(-70) : words; } });
+    B.recog = recog;
+    const stopRecog = function () { if (recog) recog.abort(); if (B.recog === recog) B.recog = null; };
+    try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: recog ? 1100 : 1400, onLevel: setLevel }); }
+    catch (e) { stopRecog(); if (my !== B.token) return; dissolve(B.userEl); B.userEl = null; putBot(e.message || 'I could not use the microphone.'); return; }
+    if (my !== B.token) { stopRecog(); try { rec.cancel(); } catch (e) { /* ignore */ } return; }
     B.rec = rec; B.fab.classList.add('listening');
     const r = await rec.done;
     B.rec = null; B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
-    if (my !== B.token) return;
-    if (!r) { dissolve(B.userEl); B.userEl = null; return; }                       // cancelled
-    if (!r.heard || r.secs < 0.7) { dissolve(B.userEl); B.userEl = null; putBot("I didn't hear anything. Tap me and try again."); return; }
+    if (my !== B.token) { stopRecog(); return; }
+    if (!r) { stopRecog(); dissolve(B.userEl); B.userEl = null; return; }                       // cancelled
+    if (!r.heard || r.secs < 0.7) { stopRecog(); dissolve(B.userEl); B.userEl = null; putBot("I didn't hear anything. Tap me and try again."); return; }
+    let words = '';
+    if (recog) {
+      recog.stop(); await Promise.race([recog.finished, new Promise(function (res) { setTimeout(res, 500); })]);
+      if (B.recog === recog) B.recog = null;
+      if (my !== B.token) return;
+      words = recog.failed ? '' : recog.text;
+    }
+    if (recog && words.length >= 2 && recog.confidence() >= 0.5) return ask({ text: words.charAt(0).toUpperCase() + words.slice(1), voice: true }, my);
     ask({ audio: await Audio2.prepareLite(r.blob, r.secs) }, my);
   }
   function openTyper() { B.typing = true; B.typer.classList.remove('hidden'); setTimeout(function () { B.input.focus(); }, 30); }
@@ -183,7 +220,7 @@
       if (YES.test(o.text)) { putUser(o.text); return confirmPending(); }
       if (NO.test(o.text)) { putUser(o.text); return cancelPending(); }
     }
-    B.busy = true; B.lastVoice = !!o.audio; B.fab.classList.add('busy');
+    B.busy = true; B.lastVoice = !!(o.audio || o.voice); B.fab.classList.add('busy');
     if (o.text) putUser(o.text); else putUser(dots()).classList.add('typing');
     putBot(dots(), true);
     let r;
@@ -319,6 +356,10 @@
         const on = Speech.enabled();
         row.appendChild(h('button', { type: 'button', class: 'tool-btn' + (on ? ' on' : ''), 'aria-pressed': on, onclick: function () { Speech.setEnabled(!Speech.enabled()); draw(); } }, icon(on ? 'volume' : 'volumeOff', 16), on ? 'Speaks answers when I speak' : 'Silent answers'));
         row.appendChild(h('button', { type: 'button', class: 'tool-btn', onclick: voicePicker }, icon('sparkles', 16), 'Choose voice'));
+      }
+      if (speechCtor() && !onIOS) {
+        const q = quickOn();
+        row.appendChild(h('button', { type: 'button', class: 'tool-btn' + (q ? ' on' : ''), 'aria-pressed': q, title: q ? 'Your phone turns your voice into words while you speak: the answer comes faster (English only).' : 'The recording is sent to the AI instead: slower, but it also understands Sinhala.', onclick: function () { try { localStorage.setItem('taskapp.quick', q ? 'off' : 'on'); } catch (e) { /* ignore */ } draw(); } }, icon('mic', 16), q ? 'Quick listening (English)' : 'Full listening (any language)'));
       }
       row.appendChild(h('button', { type: 'button', class: 'tool-btn', onclick: function () { try { localStorage.removeItem(POS_KEY); } catch (e) { /* ignore */ } B.pos = null; layout(); UI.toast('The bubble is back in its usual place.'); } }, icon('refresh', 16), 'Reset bubble position'));
       box.appendChild(row);

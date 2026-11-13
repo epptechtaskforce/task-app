@@ -771,6 +771,7 @@ h1 { letter-spacing: -.025em; }
 /* listening */
 .aib-msg.user.listening { display: flex; align-items: center; gap: .75rem; padding: .5rem .55rem .5rem 1.1rem; background: linear-gradient(135deg, #b8232d, #ee5a50); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 14px 32px -8px rgba(192, 40, 45, .6); animation: aibrise .5s var(--spring) both, aibglow 1.8s ease-in-out infinite; }
 .aib-msg .lbl { font-weight: 700; white-space: nowrap; }
+.aib-msg .lbl.live { white-space: normal; font-weight: 600; line-height: 1.35; }
 .aib-msg .lvl { display: flex; align-items: center; gap: 2px; height: 26px; flex: 1; min-width: 70px; }
 .aib-msg .lvl i { width: 3px; height: 14%; border-radius: 2px; background: #fff; opacity: .92; transition: height .08s linear; }
 .aib-kbd { width: 34px; height: 34px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, .24); color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
