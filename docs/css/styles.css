@@ -819,3 +819,21 @@ h1 { letter-spacing: -.025em; }
 .aib-tb:hover { color: var(--ink); }
 .aib-tb.clr:hover { color: var(--bad); }
 @media (prefers-reduced-motion: reduce) { .aib-stack { transition: none; } }
+
+/* listening: the AI bubble turns teal, shows sound bars and says so; your own bubble says you are speaking */
+.aib-eq { display: none; position: absolute; align-items: center; justify-content: center; gap: 3px; height: 28px; }
+.aib-eq i { width: 4px; height: 100%; border-radius: 3px; background: #fff; transform: scaleY(.25); animation: aibeq 1s ease-in-out infinite; }
+.aib-eq i:nth-child(2) { animation-delay: .15s; } .aib-eq i:nth-child(3) { animation-delay: .3s; } .aib-eq i:nth-child(4) { animation-delay: .45s; } .aib-eq i:nth-child(5) { animation-delay: .6s; }
+@keyframes aibeq { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(calc(.55 + var(--lv, 0) * .45)); } }
+.aib-fab.listening .aib-eq { display: flex; }
+.aib-fab.listening .aib-orb svg { display: none; }
+.aib-fab.listening .aib-orb { background: radial-gradient(circle at 32% 28%, #d6fff2, #1fb99a 52%, #0a6454); box-shadow: 0 10px 26px rgba(16, 140, 118, .55); }
+.aib-fab.listening::before { border-color: #1fb99a; }
+.aib-fab.listening::after, .aib-fab.busy::after { position: absolute; top: 50%; transform: translateY(-50%); white-space: nowrap; padding: 5px 11px; border-radius: 999px; font-size: .74rem; font-weight: 800; letter-spacing: .02em; color: var(--ink); background: var(--aib-glass); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border: 1px solid var(--aib-edge); box-shadow: 0 4px 14px rgba(20, 6, 40, .2); pointer-events: none; }
+.aib-fab.listening::after { content: "Listening…"; } .aib-fab.busy::after { content: "Thinking…"; }
+.aib-fab::after { left: calc(100% + 10px); } .aib-fab.tag-left::after { left: auto; right: calc(100% + 10px); }
+.aib-mic { flex: none; width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, .24); animation: aibmic 1.2s ease-in-out infinite; }
+@keyframes aibmic { 50% { box-shadow: 0 0 0 6px rgba(255, 255, 255, .18); } }
+.aib-msg.user.listening { padding-left: .6rem; }
+.aib-urow.speaking .aib-dp { box-shadow: 0 0 0 3px var(--solid), 0 0 0 6px rgba(238, 90, 80, .55), 0 10px 22px -4px rgba(60, 20, 100, .42); }
+@media (prefers-reduced-motion: reduce) { .aib-eq i, .aib-mic { animation: none; } .aib-eq i { transform: scaleY(.6); } }

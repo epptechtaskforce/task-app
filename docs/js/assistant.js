@@ -25,7 +25,7 @@
   /* ============================== building the bubble ============================== */
   function build() {
     B.fab = h('button', { class: 'aib-fab', type: 'button', 'aria-label': 'AI assistant. Tap and speak. Drag to move.', title: 'Tap and ask me. Drag to move me.' },
-      h('span', { class: 'aib-orb' }, icon('sparkles', 26)), h('i', { class: 'aib-dot' }));
+      h('span', { class: 'aib-orb' }, icon('sparkles', 26), h('span', { class: 'aib-eq', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'), h('i'), h('i'))), h('i', { class: 'aib-dot' }));
     B.stack = h('div', { class: 'aib-stack', 'aria-live': 'polite' });
     B.input = h('input', { type: 'text', maxlength: 1500, placeholder: 'Type to the assistant…', 'aria-label': 'Message to the assistant', autocomplete: 'off' });
     B.typer = h('form', { class: 'aib-typer hidden', onsubmit: function (e) { e.preventDefault(); const v = B.input.value.trim(); if (!v) return; B.input.value = ''; closeTyper(); ask({ text: v }); } },
@@ -68,6 +68,7 @@
     if (above) { B.stack.style.top = 'auto'; B.stack.style.bottom = (vh - p.y + 26) + 'px'; B.stack.style.maxHeight = Math.max(120, p.y - 40) + 'px'; }
     else { B.stack.style.bottom = 'auto'; B.stack.style.top = (p.y + SIZE + 26) + 'px'; B.stack.style.maxHeight = Math.max(120, vh - p.y - SIZE - 40) + 'px'; }
     B.stack.style.setProperty('--aib-max', Math.max(150, parseInt(B.stack.style.maxHeight, 10) - 84) + 'px');   // room left for the answer (the question takes about 70px)
+    B.fab.classList.toggle('tag-left', right);
     B.stack.classList.toggle('above', above); B.stack.classList.toggle('below', !above); B.stack.classList.toggle('right', right); B.stack.classList.toggle('left', !right);
   }
   function wireDrag() {
@@ -109,7 +110,7 @@
   function putUser(content) {
     const me = B.App ? B.App.S.user : { name: '?', id: '' }, msg = bubbleEl('user', content), old = B.userEl;
     if (old && old.parentNode && !old.classList.contains('out')) {          // same speaker still talking: change the words only
-      msg.classList.add('swap'); const was = old.querySelector('.aib-msg'); old.replaceChild(msg, was); return msg;
+      old.classList.remove('speaking'); msg.classList.add('swap'); const was = old.querySelector('.aib-msg'); old.replaceChild(msg, was); return msg;
     }
     const row = h('div', { class: 'aib-urow' }, h('span', { class: 'aib-dp' }, UI.avatar(me.name, '', me.id)), msg);
     B.userEl = row; if (old) old.remove();
@@ -172,12 +173,14 @@
   /* ============================== talking ============================== */
   function setLevel(v) {
     B.fab.style.setProperty('--lv', v.toFixed(2));
+    const lb = B.userEl && B.userEl.querySelector('.lbl');
+    if (lb && !lb.classList.contains('live') && v > 0.15 && lb.textContent !== 'Speaking…') lb.textContent = 'Speaking…';
     B.bars.forEach(function (b, i) { b.style.height = Math.max(14, Math.min(100, v * 100 * (0.45 + 0.55 * Math.abs(Math.sin(i * 1.7 + Date.now() / 140))) + 10)) + '%'; });
   }
   function listeningPill() {
     B.bars = []; const lvl = h('div', { class: 'lvl', 'aria-hidden': 'true' });
     for (let i = 0; i < 14; i++) { const b = h('i'); B.bars.push(b); lvl.appendChild(b); }
-    return [h('span', { class: 'lbl' }, 'Listening…'), lvl, h('button', { type: 'button', class: 'aib-kbd', 'aria-label': 'Type instead', title: 'Type instead', onclick: function (e) { e.stopPropagation(); switchToTyping(); } }, icon('edit', 16))];
+    return [h('span', { class: 'aib-mic', 'aria-hidden': 'true' }, icon('mic', 16)), h('span', { class: 'lbl' }, 'Speak now…'), lvl, h('button', { type: 'button', class: 'aib-kbd', 'aria-label': 'Type instead', title: 'Type instead', onclick: function (e) { e.stopPropagation(); switchToTyping(); } }, icon('edit', 16))];
   }
   // Tap on the bubble: chat showing -> tuck it away; tucked away -> the same conversation pops up; nothing yet -> start listening.
   function tap() {
@@ -222,6 +225,8 @@
     if (!Audio2.supported()) return openTyper();
     const my = ++B.token; B.busy = false;
     putUser(listeningPill()).classList.add('listening');
+    if (B.userEl) B.userEl.classList.add('speaking');
+    B.fab.classList.add('listening');                       // the AI bubble shows right away that it is listening
     let rec;
     // The phone's own speech recognition listens alongside: its words appear live as you talk and, when they look good, they are
     // sent instead of the sound (no upload, no audio processing: much faster). The sound is the fallback.
@@ -229,7 +234,7 @@
     B.recog = recog;
     const stopRecog = function () { if (recog) recog.abort(); if (B.recog === recog) B.recog = null; };
     try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: recog ? 1100 : 1400, onLevel: setLevel }); }
-    catch (e) { stopRecog(); if (my !== B.token) return; dissolve(B.userEl); B.userEl = null; putBot(e.message || 'I could not use the microphone.'); return; }
+    catch (e) { stopRecog(); if (my !== B.token) return; B.fab.classList.remove('listening'); dissolve(B.userEl); B.userEl = null; putBot(e.message || 'I could not use the microphone.'); return; }
     if (my !== B.token) { stopRecog(); try { rec.cancel(); } catch (e) { /* ignore */ } return; }
     B.rec = rec; B.fab.classList.add('listening');
     const r = await rec.done;
