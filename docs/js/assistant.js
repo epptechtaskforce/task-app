@@ -315,7 +315,7 @@
     store.save();
     if (r.confirm === 'yes' && B.pending.length) return confirmPending();           // it says "Done" itself
     putBot(r.reply);
-    free.forEach(openTask);
+    free.forEach(function (a) { if (a.type === 'show_page') B.App.showPage(a); else openTask(a); });
     say(String(r.reply).split('\n\n(Note:')[0], my, r.reply);          // the whole answer is read aloud, word for word
   }
   function say(text, my, shown) {

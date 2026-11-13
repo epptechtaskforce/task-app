@@ -306,3 +306,23 @@ test('AI access: only Senior General Managers and above (the cut-off is the laye
   assert.equal(app2.ok('me', s2.tok.ceo).canUseAi, true);
   assert.equal(app2.ok('me', s2.tok.mgr).canUseAi, false);
 });
+
+test('navigation: the assistant can take the person to a filtered list, chosen tasks, History or Account (nothing needs confirming, nothing foreign gets in)', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  const mine = app.ok('createTask', s.tok.mgr, { title: 'Pump house roof', assigneeIds: [s.users.wk1.id] }).task;
+  const other = app.ok('createTask', s.tok.ceo, { title: 'Board pack', assigneeIds: [s.users.mgr.id] }).task;   // the worker has no part in this one
+  ai.reply = () => ({ reply: 'Here they are.', actions: [
+    { type: 'show_page', page: 'tasks', filter: 'late' },
+    { type: 'show_page', page: 'tasks', task_ids: [mine.id, other.id, 'T-nope', mine.id], search: '  Janith  ' },
+    { type: 'show_page', page: 'history', search: 'harvest', filter: 'late', task_ids: [mine.id] },
+    { type: 'show_page', page: 'account', search: 'x' },
+    { type: 'show_page', page: 'elsewhere', filter: 'weird' }] });
+  const r = app.ok('assistant', s.tok.wk1, { text: 'show me things' });
+  assert.equal(r.actions.length, 5);
+  assert.ok(r.actions.every((a) => a.needsConfirm === false));
+  assert.deepEqual([r.actions[0].page, r.actions[0].filter, r.actions[0].taskIds], ['tasks', 'late', []]);
+  assert.deepEqual([r.actions[1].taskIds, r.actions[1].q], [[mine.id], 'Janith']);              // only the worker's own open task, once
+  assert.deepEqual([r.actions[2].page, r.actions[2].q, r.actions[2].filter, r.actions[2].taskIds], ['history', 'harvest', 'all', []]);
+  assert.deepEqual([r.actions[3].page, r.actions[3].q], ['account', '']);
+  assert.deepEqual([r.actions[4].page, r.actions[4].filter], ['tasks', 'all']);                  // unknown values fall back to safe ones
+});

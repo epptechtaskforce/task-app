@@ -853,6 +853,14 @@ function createCore(env) {
       return { ok: { type: type, title: title, description: clip(a.description, LIMITS.description).trim(), dueDate: due, assigneeIds: ids, needsConfirm: true,
         label: 'Create the task ' + q(title) + ' for ' + ids.map(nameOf).join(', ') + (due ? ', due ' + niceDate(due) : '') }, partial: ids.length < given.length };
     }
+    if (type === 'show_page') {   // navigation: the app moves to the place the person asked to see (nothing is changed, so no confirmation)
+      const page = ['tasks', 'history', 'account'].indexOf(a.page) >= 0 ? a.page : 'tasks';
+      const filter = page === 'tasks' && ['all', 'mine', 'byme', 'late', 'wait', 'active', 'new'].indexOf(a.filter) >= 0 ? a.filter : 'all';
+      const search = page === 'account' ? '' : clip(a.search, 80).trim();
+      const ids = page !== 'tasks' ? [] : (Array.isArray(a.task_ids) ? a.task_ids : []).map(String).filter(function (id, i, arr) { return mineById[id] && arr.indexOf(id) === i; }).slice(0, 12);
+      const what = { tasks: 'your task list', history: 'completed tasks', account: 'your account' }[page];
+      return { ok: { type: 'show_page', page: page, filter: filter, q: search, taskIds: ids, needsConfirm: false, label: 'Show ' + what + (search ? ' for ' + q(search) : '') } };
+    }
     const task = mineById[String(a.task_id || '')];
     if (['set_progress', 'post_message', 'approve_task', 'send_back', 'update_task', 'open_task'].indexOf(type) < 0) return { err: 'one of the actions was not understood' };
     if (!task && type === 'open_task') {   // a completed task (History)

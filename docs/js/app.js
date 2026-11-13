@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const root = document.getElementById('app');
-  const S = { user: null, company: '', canAssign: false, canUseAi: false, timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
+  const S = { user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
 
   /* ============================== helpers ============================== */
 
@@ -259,6 +259,7 @@
     function setFilter(key) { S.filter = S.filter === key ? 'all' : key; redraw(); }
     function matches(t) {
       const f = S.filter;
+      if (S.only.length && S.only.indexOf(t.id) < 0) return false;                  // the assistant picked these tasks
       if (f === 'mine' && t.role !== 'assignee') return false;
       if (f === 'byme' && t.role !== 'creator') return false;
       if (['late', 'wait', 'active', 'new'].indexOf(f) >= 0 && bucket(t) !== f) return false;
@@ -308,12 +309,13 @@
       }
       UI.clear(activeBox);
       const picked = BUCKETS.filter(function (x) { return x[0] === S.filter; })[0];
-      if (picked) activeBox.appendChild(h('div', { class: 'active-filter' }, UI.chip('Showing: ' + picked[1], 'brand', 'search'), h('button', { class: 'btn ghost small', type: 'button', onclick: function () { S.filter = 'all'; redraw(); } }, 'Show all')));
+      const label = S.only.length ? S.only.length + (S.only.length === 1 ? ' task' : ' tasks') + ' picked by the assistant' : picked ? picked[1] : S.filter === 'mine' ? 'Assigned to me' : S.filter === 'byme' ? 'Assigned by me' : '';
+      if (label) activeBox.appendChild(h('div', { class: 'active-filter' }, UI.chip('Showing: ' + label, 'brand', 'search'), h('button', { class: 'btn ghost small', type: 'button', onclick: function () { S.filter = 'all'; S.only = []; redraw(); } }, 'Show all')));
       const shown = tasks.filter(matches);
       UI.clear(list);
       if (!shown.length) {
         list.appendChild(tasks.length
-          ? UI.emptyState('search', 'Nothing matches', 'Try a different filter or search.', h('button', { class: 'btn small', type: 'button', onclick: function () { S.q = ''; q.value = ''; S.filter = 'all'; redraw(); } }, 'Clear filters'))
+          ? UI.emptyState('search', 'Nothing matches', 'Try a different filter or search.', h('button', { class: 'btn small', type: 'button', onclick: function () { S.q = ''; q.value = ''; S.filter = 'all'; S.only = []; redraw(); } }, 'Clear filters'))
           : UI.emptyState('inbox', 'No open tasks', S.canAssign ? 'Create a task and drag the right people onto it. Or just tell the assistant what to do.' : 'New tasks assigned to you will appear here.', S.canAssign ? h('a', { class: 'btn primary', href: '#/new' }, icon('plus', 18), 'New task') : null));
         return;
       }
@@ -797,7 +799,7 @@
   /* ============================== history ============================== */
 
   function viewHistory() {
-    const q = h('input', { type: 'search', placeholder: 'Search closed tasks by title, person or summary…', 'aria-label': 'Search history' });
+    const q = h('input', { type: 'search', placeholder: 'Search closed tasks by title, person or summary…', 'aria-label': 'Search history', value: S.histQ }); S.histQ = '';   // (the assistant may have filled it in)
     const list = h('div');
     shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks, with their full conversation.'))), h('div', { class: 'search', style: 'margin-bottom:1rem' }, icon('search', 18), q), list), 'history');
     let timer = null;
@@ -1085,7 +1087,7 @@
     document.querySelectorAll('.task.ai-spot').forEach(function (el) { el.classList.remove('ai-spot'); });
   }
   function showTask(id) {
-    S.filter = 'all'; S.q = '';
+    S.filter = 'all'; S.q = ''; S.only = [];
     S.spot = id;
     if ((location.hash || '#/tasks').indexOf('#/tasks') === 0) route(); else go('#/tasks');
     let tries = 0;
@@ -1096,7 +1098,16 @@
     }, 150);
   }
 
-  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate, showTask: showTask, clearSpot: clearSpot };
+  // The assistant takes the person to what they asked to see (the task list with a filter / search / chosen tasks, History, Account).
+  function showPage(a) {
+    const same = function (h2) { if ((location.hash || '#/tasks').indexOf(h2) === 0) route(); else go(h2); };
+    if (a.page === 'account') return go('#/account');
+    if (a.page === 'history') { S.histQ = a.q || ''; return same('#/history'); }
+    S.filter = a.filter || 'all'; S.q = a.q || ''; S.only = a.taskIds || []; S.spot = '';
+    same('#/tasks');
+  }
+
+  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate, showTask: showTask, showPage: showPage, clearSpot: clearSpot };
 
   async function boot() {
     UI.theme.apply(); UI.accent.apply();

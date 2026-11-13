@@ -116,6 +116,14 @@
         // dictating a message: "send this message ..." / "tell them ..." (or, while a draft waits, "change it to ...")
         const dict = /^(?:send|post|write|tell them|tell)(?: this)?(?: a)?(?: message)?(?: in the chat)?(?: that)?[:,]?\s+(.+)$/i.exec(String(input.text || '').trim()), change = /^(?:change it to|make it|say)[:,]?\s+(.+)$/i.exec(String(input.text || '').trim());
         if ((dict || (change && input.pending.length)) && input.focus) return { heard: '', confirm: '', reply: 'Here is your message. Send it, edit it or delete it?', actions: [{ type: 'post_message', task_id: input.focus.id, text: tidy((dict || change)[1]) }] };
+        // "show my overdue tasks / history / account": the stand-in navigates too
+        const nav = /^(?:show|list|open|go to|take me to|display)\b.*?\b(overdue|late|awaiting approval|waiting for approval|in progress|not started|history|completed|closed|account|settings)\b/i.exec(String(input.text || '').trim());
+        if (nav) {
+          const k = nav[1].toLowerCase(), map = { overdue: 'late', late: 'late', 'awaiting approval': 'wait', 'waiting for approval': 'wait', 'in progress': 'active', 'not started': 'new' };
+          if (/history|completed|closed/.test(k)) return { heard: '', confirm: '', reply: '(Demo) Here are the completed tasks.', actions: [{ type: 'show_page', page: 'history' }] };
+          if (/account|settings/.test(k)) return { heard: '', confirm: '', reply: '(Demo) Opening your account.', actions: [{ type: 'show_page', page: 'account' }] };
+          return { heard: '', confirm: '', reply: '(Demo) Here are the tasks: ' + k + '.', actions: [{ type: 'show_page', page: 'tasks', filter: map[k] }] };
+        }
         // "show me / open / find <task>": match the words against the open and completed tasks, and ask when it is not clear
         const find = /^(open|show me|show|go to|take me to|find|where is)\b[\s:,]*(?:the |my )?(.+?)(?: task)?\??$/i.exec(String(input.text || '').trim());
         if (find) {
