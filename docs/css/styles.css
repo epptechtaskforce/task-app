@@ -861,3 +861,16 @@ h1 { letter-spacing: -.025em; }
 .aib-fab.busy .aib-orb { animation: none; }
 @keyframes aibspin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .aib-fab.busy::before { animation: none; } }
+
+/* your bubble while listening: your picture alive with rings, and a small keyboard button */
+.aib-msg.user.kbdonly { background: none !important; box-shadow: none !important; padding: 0 !important; animation: none !important; border-radius: 50%; min-width: 0; cursor: default; }
+.aib-msg.user.kbdonly .aib-kbd { width: 38px; height: 38px; background: var(--aib-glass); color: var(--ink); border: 1px solid var(--aib-edge); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 4px 14px rgba(20, 6, 40, .22); }
+.aib-msg.user.kbdonly .aib-kbd svg { width: 17px; height: 17px; }
+.aib-urow .aib-msg.user.kbdonly { max-width: none; }
+.aib-dp { position: relative; }
+.aib-urow.speaking .aib-dp { animation: aibactive 1.3s ease-in-out infinite; }
+.aib-urow.speaking .aib-dp::before, .aib-urow.speaking .aib-dp::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid rgba(238, 90, 80, .75); animation: aibripple 1.8s ease-out infinite; pointer-events: none; }
+.aib-urow.speaking .aib-dp::after { animation-delay: .9s; }
+@keyframes aibripple { from { transform: scale(1); opacity: .85; } to { transform: scale(calc(1.55 + var(--lv, 0) * .6)); opacity: 0; } }
+@keyframes aibactive { 50% { transform: scale(calc(1.05 + var(--lv, 0) * .12)); } }
+@media (prefers-reduced-motion: reduce) { .aib-urow.speaking .aib-dp, .aib-urow.speaking .aib-dp::before, .aib-urow.speaking .aib-dp::after { animation: none; } }
