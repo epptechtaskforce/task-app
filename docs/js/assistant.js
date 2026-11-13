@@ -32,10 +32,8 @@
     B.input = h('input', { type: 'text', maxlength: 1500, placeholder: 'Type to the assistant…', 'aria-label': 'Message to the assistant', autocomplete: 'off' });
     B.typer = h('form', { class: 'aib-typer hidden', onsubmit: function (e) { e.preventDefault(); const v = B.input.value.trim(); if (!v) return; B.input.value = ''; closeTyper(); ask({ text: v }); } },
       B.input, h('button', { type: 'submit', class: 'aib-send', 'aria-label': 'Send' }, icon('send', 20)));
-    // a small row tied to the conversation: ask by voice, type instead, and clear (forget) the conversation
+    // one small button tied to the conversation: clear (forget) it. Asking is done by tapping the bubble; typing by the keyboard button in your own bubble.
     B.tools = h('div', { class: 'aib-tools' },
-      h('button', { type: 'button', class: 'aib-tb', title: 'Ask by voice', 'aria-label': 'Ask by voice', onclick: function () { startListening(); } }, icon('mic', 15)),
-      h('button', { type: 'button', class: 'aib-tb', title: 'Type instead', 'aria-label': 'Type instead', onclick: function () { switchToTyping(); } }, icon('edit', 15)),
       h('button', { type: 'button', class: 'aib-tb clr', title: 'Clear this conversation', 'aria-label': 'Clear this conversation', onclick: clearConversation }, icon('trash', 14), 'Clear'));
     B.stack.appendChild(B.tools);
     document.body.appendChild(B.stack); document.body.appendChild(B.typer); document.body.appendChild(B.fab);
@@ -259,7 +257,7 @@
     let rec;
     // The phone's own speech recognition listens alongside: its words appear live as you talk and, when they look good, they are
     // sent instead of the sound (no upload, no audio processing: much faster). The sound is the fallback.
-    const recog = startRecognizer(function (words) { const l = B.userEl && B.userEl.querySelector('.lbl'); if (l) { l.classList.add('live'); l.textContent = words.length > 70 ? '…' + words.slice(-70) : words; } });
+    const recog = startRecognizer(function (words) { const l = B.userEl && B.userEl.querySelector('.lbl'); if (l) { l.classList.add('live'); l.textContent = words.length > 26 ? '…' + words.slice(-26) : words; } });
     B.recog = recog;
     const stopRecog = function () { if (recog) recog.abort(); if (B.recog === recog) B.recog = null; };
     try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: recog ? 1100 : 1400, onLevel: setLevel }); }
@@ -490,7 +488,6 @@
         })));
       }
       box.appendChild(h('div', { class: 'brief-foot' },
-        h('button', { class: 'btn primary small', type: 'button', onclick: listenNow }, icon('mic', 16), 'Ask me anything'),
         busy && b ? h('span', { class: 'brief-note' }, 'Updating…') : data && data.at ? h('span', { class: 'brief-note' }, (data.stale ? 'New activity since · ' : '') + 'Updated ' + UI.ago(data.at)) : null));
     }
     async function load(force) {

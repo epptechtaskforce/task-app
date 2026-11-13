@@ -844,3 +844,14 @@ h1 { letter-spacing: -.025em; }
 .aib-dp { pointer-events: auto; cursor: grab; touch-action: none; }
 .aib-card-head, .aib-card-text { cursor: grab; touch-action: none; }
 .aib-stack.dragging, .aib-stack.dragging * { user-select: none; -webkit-user-select: none; cursor: grabbing; }
+
+/* your "speaking" bubble is the same small size as the AI's "Listening…" tag */
+.aib-msg.user.listening { gap: .4rem; padding: 4px 5px 4px 5px; font-size: .74rem; border-radius: 999px; }
+.aib-msg.user.listening .lbl, .aib-msg.user.listening .lbl.live { white-space: nowrap; font-weight: 800; font-size: .74rem; line-height: 1.2; max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+.aib-msg.user.listening .aib-mic { width: 22px; height: 22px; }
+.aib-msg.user.listening .aib-mic svg { width: 13px; height: 13px; }
+.aib-msg.user.listening .lvl { height: 16px; min-width: 40px; flex: none; width: 44px; }
+.aib-msg.user.listening .aib-kbd { width: 24px; height: 24px; }
+.aib-msg.user.listening .aib-kbd svg { width: 13px; height: 13px; }
+.aib-urow .aib-msg.user.listening { max-width: none; }
+.aib-urow.speaking { align-items: center; }
