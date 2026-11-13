@@ -1,7 +1,9 @@
 /* assistant.js - the AI bubble.
  * One round bubble floats over every screen. Tap it and talk: your question and the answer float next to it (only the last two),
  * the app stays visible behind. Touching the screen elsewhere does NOT close the chat. Tap the bubble to tuck the chat away
- * (minimise) and tap it again to bring the same conversation back; a small Clear button next to the chat forgets it.
+ * (minimise) and tap it again to pop it up and start listening. Nothing of the earlier conversation is shown (the assistant just
+ * remembers it, so you can carry on); a small Clear button next to the chat forgets it. The open chat can be dragged by touching
+ * it (the bubble comes along); touching the background behind it works as normal (scrolling, tapping).
  * Drag the bubble anywhere you like.
  * The assistant only PROPOSES actions (post a message, set progress, create a task...). They are shown in a small card
  * (Send / Edit / Delete for a message) and run, through the normal permission-checked calls, only after the person agrees.
@@ -16,7 +18,7 @@
 
   /* ============================== state (kept for this browser tab, wiped at sign-out) ============================== */
   const B = { recog: null, App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, bars: [],
-    history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, min: false, tools: null, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
+    history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, min: false, unseen: false, tools: null, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
   const store = {
     load: function () { try { const v = JSON.parse(sessionStorage.getItem('aib:' + B.uid) || 'null'); if (v) { B.history = v.history || []; B.pending = v.pending || []; } } catch (e) { /* ignore */ } },
     save: function () { try { sessionStorage.setItem('aib:' + B.uid, JSON.stringify({ history: B.history.slice(-12), pending: B.pending })); } catch (e) { /* storage blocked */ } }
@@ -37,7 +39,7 @@
       h('button', { type: 'button', class: 'aib-tb clr', title: 'Clear this conversation', 'aria-label': 'Clear this conversation', onclick: clearConversation }, icon('trash', 14), 'Clear'));
     B.stack.appendChild(B.tools);
     document.body.appendChild(B.stack); document.body.appendChild(B.typer); document.body.appendChild(B.fab);
-    wireDrag(); layout();
+    wireDrag(); wireStackDrag(); layout();
     window.addEventListener('resize', layout);
     if (window.ResizeObserver) new ResizeObserver(function () { layout(); }).observe(document.documentElement);   // a scrollbar appearing changes the width too
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && shown() && !document.querySelector('.overlay')) minimize(); });
@@ -92,6 +94,26 @@
     });
     B.fab.addEventListener('pointercancel', function () { d = null; B.fab.classList.remove('drag'); });
     B.fab.addEventListener('click', function (e) { if (e.detail === 0) tap(); });   // keyboard: Enter / Space
+  }
+
+  // The open conversation can be moved by touching it (the bubble comes along, as they belong together). Touches on the
+  // background around it are not caught by the chat at all, so the page behind scrolls and taps as usual.
+  function wireStackDrag() {
+    B.stack.addEventListener('pointerdown', function (e) {
+      if (e.button || !e.target.closest) return;
+      if (!e.target.closest('.aib-msg, .aib-dp, .aib-card-head, .aib-card-text') || e.target.closest('button, a, input, textarea')) return;
+      const p = getPos(), d = { sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+      const move = function (ev) {
+        const dx = ev.clientX - d.sx, dy = ev.clientY - d.sy;
+        if (!d.moved && Math.hypot(dx, dy) > 7) { d.moved = true; B.fab.classList.add('drag'); B.stack.classList.add('dragging'); }
+        if (d.moved) { B.pos = clampPos({ x: d.ox + dx, y: d.oy + dy }); layout(); }
+      };
+      const end = function () {
+        document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
+        B.fab.classList.remove('drag'); B.stack.classList.remove('dragging'); if (d.moved) savePos();
+      };
+      document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
+    });
   }
 
   /* ============================== the two floating messages ============================== */
@@ -162,7 +184,7 @@
     if (B.App && B.App.clearSpot) B.App.clearSpot();
     B.min = true; sync();
   }
-  function restore() { if (!B.built) return; B.min = false; B.fab.classList.remove('unread'); sync(); layout(); }
+  function restore() { if (!B.built) return; B.min = false; B.unseen = false; B.fab.classList.remove('unread'); sync(); layout(); }
   // Forget this conversation completely: what is on screen, what the assistant remembers of it, and any draft waiting for an OK.
   function clearConversation() {
     B.pending = []; B.history = []; B.editing = false; drawCard();
@@ -182,20 +204,27 @@
     for (let i = 0; i < 14; i++) { const b = h('i'); B.bars.push(b); lvl.appendChild(b); }
     return [h('span', { class: 'aib-mic', 'aria-hidden': 'true' }, icon('mic', 16)), h('span', { class: 'lbl' }, 'Speak now…'), lvl, h('button', { type: 'button', class: 'aib-kbd', 'aria-label': 'Type instead', title: 'Type instead', onclick: function (e) { e.stopPropagation(); switchToTyping(); } }, icon('edit', 16))];
   }
-  // Tap on the bubble: chat showing -> tuck it away; tucked away -> the same conversation pops up; nothing yet -> start listening.
+  // Tap on the bubble: chat showing -> tuck it away; otherwise it pops up AND starts listening. The earlier conversation stays in the
+  // assistant's memory (so you can simply carry on), and only its last message is still in view.
   function tap() {
     Speech.unlock();
     if (shown()) return minimize();
-    if (B.min && hasConvo()) return restore();
     startListening();
   }
   function startListening() {
-    Speech.unlock(); restore();
+    Speech.unlock();
+    const wasMin = B.min, unseen = B.unseen;
+    restore();
     if (B.App && B.App.clearSpot) B.App.clearSpot();
     Speech.stop(); closeTyper(true);
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
     if (B.recog) { B.recog.abort(); B.recog = null; }
-    listen(true);                                           // the last answer stays in view while the next question is asked
+    if (wasMin) {                                           // popping up again: the earlier messages are remembered, not shown
+      if (B.userEl) { B.userEl.remove(); B.userEl = null; }
+      if (B.botEl && !unseen) { B.botEl.remove(); B.botEl = null; }   // (an answer that came while it was tucked away is still shown once)
+      sync();
+    }
+    listen(true);
   }
   /* ---- the phone's own speech recognition (English): instant words, no upload ---- */
   const speechCtor = function () { return w.SpeechRecognition || w.webkitSpeechRecognition; };
@@ -241,7 +270,7 @@
     B.rec = null; B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
     if (my !== B.token) { stopRecog(); return; }
     if (!r) { stopRecog(); dissolve(B.userEl); B.userEl = null; return; }                       // cancelled
-    if (!r.heard || r.secs < 0.7) { stopRecog(); dissolve(B.userEl); B.userEl = null; putBot("I didn't hear anything. Tap me and try again."); return; }
+    if (!r.heard || r.secs < 0.7) { stopRecog(); dissolve(B.userEl); B.userEl = null; if (!B.botEl) putBot("I didn't hear anything. Tap me and try again."); return; }   // an earlier answer stays in view
     let words = '';
     if (recog) {
       recog.stop(); await Promise.race([recog.finished, new Promise(function (res) { setTimeout(res, 500); })]);
@@ -279,7 +308,7 @@
     }
     if (my !== B.token) return;                                                     // the person moved on
     B.busy = false; B.fab.classList.remove('busy');
-    if (B.min) B.fab.classList.add('unread');
+    if (B.min) { B.fab.classList.add('unread'); B.unseen = true; }
     const heard = r.heard || o.text || '';
     if (o.audio) putUser(heard || '(I could not make out what you said)');
     B.history.push({ role: 'user', text: heard }, { role: 'assistant', text: r.reply });
@@ -361,7 +390,7 @@
     const sent = todo.length === 1 && todo[0].type === 'post_message';
     const msg = (done ? (sent ? 'Sent ✓' : (todo.length === 1 ? 'Done ✓' : done + ' done ✓')) : '') + (bad.length ? (done ? '\n' : '') + bad.join('\n') : '');
     putBot(msg || 'Done.'); store.save();
-    if (B.min) B.fab.classList.add('unread');
+    if (B.min) { B.fab.classList.add('unread'); B.unseen = true; }
     if (done && B.lastVoice && !B.min && Speech.enabled() && Speech.supported) Speech.speak(sent ? 'Sent.' : 'Done.');
   }
   function cancelPending() {
@@ -396,7 +425,7 @@
     const draw = function () {
       UI.clear(box);
       box.appendChild(h('h2', null, 'AI assistant'));
-      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Tap it again to tuck the chat away, and tap it once more to bring the same conversation back. The small Clear button next to the chat forgets it.'));
+      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Tap it again to tuck the chat away; tapping it once more pops it up and starts listening (the old messages are not shown, but the assistant still remembers them). Touch the chat to move it; touch the background to use the app behind it. The small Clear button next to the chat forgets it.'));
       const row = h('div', { class: 'row' });
       if (Speech.supported) {
         const on = Speech.enabled();
@@ -421,20 +450,8 @@
     let fresh = false;
     if (B.uid !== App.S.user.id) { B.uid = App.S.user.id; B.history = []; B.pending = []; store.load(); fresh = true; if (B.built) { B.min = false; clearMessages(); drawCard(); } }
     if (!B.built) { build(); fresh = true; }
-    if (fresh) {                                        // after a reload the last exchange is put back, tucked away behind the bubble
-      if (B.pending.length) drawCard();
-      rebuildLast();
-    }
+    if (fresh && B.pending.length) drawCard();           // an unsent draft is still waiting for an answer
     B.fab.classList.remove('hidden'); layout();
-  }
-  function rebuildLast() {
-    if (B.userEl || B.botEl || !B.history.length) return;
-    let a = -1; for (let i = B.history.length - 1; i >= 0; i--) { if (B.history[i].role === 'assistant') { a = i; break; } }
-    if (a < 0) return;
-    const u = a > 0 && B.history[a - 1].role === 'user' ? B.history[a - 1].text : '';
-    if (u) putUser(u);
-    putBot(B.history[a].text);
-    B.min = true; sync();
   }
   function where(o) { B.where = { task: (o && o.task) || '', archived: (o && o.archived) || '' }; }
   function hide() { if (!B.built) return; minimize(); B.fab.classList.add('hidden'); }   // the conversation waits, tucked away, for when the bubble is back

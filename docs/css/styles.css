@@ -837,3 +837,10 @@ h1 { letter-spacing: -.025em; }
 .aib-msg.user.listening { padding-left: .6rem; }
 .aib-urow.speaking .aib-dp { box-shadow: 0 0 0 3px var(--solid), 0 0 0 6px rgba(238, 90, 80, .55), 0 10px 22px -4px rgba(60, 20, 100, .42); }
 @media (prefers-reduced-motion: reduce) { .aib-eq i, .aib-mic { animation: none; } .aib-eq i { transform: scaleY(.6); } }
+
+/* the open chat can be dragged by touching it; the background around it is untouched */
+.aib-msg { cursor: grab; touch-action: none; }
+.aib-msg.bot { touch-action: pan-y; }                      /* a long answer scrolls up and down; sideways it drags the chat */
+.aib-dp { pointer-events: auto; cursor: grab; touch-action: none; }
+.aib-card-head, .aib-card-text { cursor: grab; touch-action: none; }
+.aib-stack.dragging, .aib-stack.dragging * { user-select: none; -webkit-user-select: none; cursor: grabbing; }
