@@ -2,11 +2,16 @@
 (function () {
   'use strict';
   const root = document.getElementById('app');
-  const S = { user: null, company: '', canAssign: false, timers: [], filter: 'all', sort: 'recent', q: '', dueDay: '', person: '', unread: 0, playing: null, taskMem: {}, sumOpen: true };
+  const S = { user: null, company: '', canAssign: false, timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
 
   /* ============================== helpers ============================== */
 
   function stopTimers() { S.timers.forEach(clearInterval); S.timers = []; }
+  // Things a screen must clean up when the person leaves it (stop talking, stop the microphone, ...).
+  function onLeave(fn) { S.leave.push(fn); }
+  function runLeave() { const fns = S.leave; S.leave = []; fns.forEach(function (f) { try { f(); } catch (e) { /* ignore */ } }); }
+  // After the assistant (or anything else) changed tasks behind the screen's back.
+  function invalidate() { S.taskMem = {}; if (S.user) { try { Api.cacheSet('tasks:' + S.user.id, { tasks: [] }); } catch (e) { /* ignore */ } } }
   function poll(fn, ms) { S.timers.push(setInterval(function () { if (!document.hidden) fn(); }, ms)); }
   // Pure administrators (no job title) have no tasks, so start them on the Users page.
   function landing() { return S.user && S.user.isAdmin && !S.user.jobTitleId ? '#/admin/users' : '#/tasks'; }
@@ -69,7 +74,7 @@
 
   function navModel() {
     const u = S.user, pure = isPureAdmin();
-    const work = pure ? [] : [{ k: 'tasks', href: '#/tasks', label: 'Tasks', ic: 'tasks' }, { k: 'history', href: '#/history', label: 'History', ic: 'history' }];
+    const work = pure ? [] : [{ k: 'tasks', href: '#/tasks', label: 'Tasks', ic: 'tasks' }, { k: 'assistant', href: '#/assistant', label: 'Assistant', ic: 'sparkles' }, { k: 'history', href: '#/history', label: 'History', ic: 'history' }];
     const admin = u.isAdmin ? [{ k: 'users', href: '#/admin/users', label: 'Users', ic: 'users' }, { k: 'titles', href: '#/admin/titles', label: 'Job titles', ic: 'briefcase' }, { k: 'org', href: '#/admin/org', label: 'Org chart', ic: 'org' }] : [];
     const account = { k: 'account', href: '#/account', label: 'Account', ic: 'user' };
     return { work: work, admin: admin, account: account };
@@ -82,9 +87,10 @@
     const u = S.user, m = navModel();
     const adminKeys = ['users', 'titles', 'org'];
 
-    const sideLink = function (n) { return h('a', { href: n.href, class: n.k === active ? 'active' : '', 'data-nav': n.k, 'aria-current': n.k === active ? 'page' : false }, icon(n.ic, 20), n.label, n.k === 'tasks' ? unreadBadge() : null); };
+    const sideLink = function (n) { return h('a', { href: n.href, class: (n.k === active ? 'active' : '') + (n.k === 'assistant' ? ' ai-link' : ''), 'data-nav': n.k, 'aria-current': n.k === active ? 'page' : false }, icon(n.ic, 20), n.label, n.k === 'tasks' ? unreadBadge() : null); };
     const sidebar = h('aside', { class: 'sidebar' },
       h('div', { class: 'side-brand' }, h('span', { class: 'logo' }, icon('checkCircle', 20)), h('span', null, S.company || 'Task Manager')),
+      S.canAssign ? h('a', { class: 'btn primary side-new', href: '#/new' }, icon('plus', 18), 'New task') : null,
       h('nav', { class: 'side-nav', 'aria-label': 'Main' },
         m.work.length ? [h('div', { class: 'side-label' }, 'Work'), m.work.map(sideLink)] : null,
         m.admin.length ? [h('div', { class: 'side-label' }, 'Administration'), m.admin.map(sideLink)] : null,
@@ -102,7 +108,7 @@
     const tabs = isPureAdmin() ? m.admin.concat([m.account]) : m.work.concat(u.isAdmin ? [{ k: 'admin', href: '#/admin/users', label: 'Admin', ic: 'shield' }] : [], [m.account]);
     const bottom = opts.focus ? null : h('nav', { class: 'bottom-nav', 'aria-label': 'Main' }, tabs.map(function (n) {
       const on = n.k === active || (n.k === 'admin' && adminKeys.indexOf(active) >= 0);
-      return h('a', { href: n.href, class: on ? 'active' : '', 'data-nav': n.k, 'aria-current': on ? 'page' : false }, h('span', { class: 'pill' }, icon(n.ic, 22), n.k === 'tasks' ? unreadBadge() : null), n.label);
+      return h('a', { href: n.href, class: (on ? 'active' : '') + (n.k === 'assistant' ? ' ai' : ''), 'data-nav': n.k, 'aria-current': on ? 'page' : false }, h('span', { class: 'pill' }, icon(n.ic, n.k === 'assistant' ? 26 : 22), n.k === 'tasks' ? unreadBadge() : null), n.label);
     }));
 
     const adminSwitch = u.isAdmin && adminKeys.indexOf(active) >= 0 && !isPureAdmin()
@@ -134,7 +140,7 @@
   }
 
   function showLogin(message) {
-    stopTimers(); S.user = null; S.taskMem = {}; Profiles.reset();
+    stopTimers(); runLeave(); S.user = null; S.taskMem = {}; Profiles.reset(); Assistant.reset();
     // Paint the sign-in page at once with the last known company name; the server (which may need a few seconds to
     // wake up) is asked in the background. Asking first made people stare at "Loading…".
     const company = S.company || Api.savedCompany();
@@ -198,7 +204,7 @@
     Api.saveCompany(S.company);
   }
 
-  /* ============================== tasks: dashboard + list ============================== */
+  /* ============================== tasks: home ============================== */
 
   function taskFlags(t) {
     const due = UI.dueInfo(t.dueDate, t.status);
@@ -209,38 +215,37 @@
     const f = taskFlags(t), b = bucket(t);
     const state = { late: 'bad', wait: 'warn', active: 'info', 'new': '' }[b];
     const others = t.role === 'creator' ? t.assignees : [t.creator];
-    return h('a', { class: 'card task' + (state ? ' st-' + state : ''), href: '#/task/' + t.id, style: '--i:' + Math.min(i || 0, 12) },
+    return h('a', { class: 'card task' + (state ? ' st-' + state : ''), href: '#/task/' + t.id, style: '--i:' + Math.min(i || 0, 10) },
       h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'new' }, 'NEW') : null),
       h('div', { class: 'people' }, UI.avatarStack(others), h('span', { class: 't' }, peopleLine(t))),
       h('div', { class: 'prog' }, UI.progressBar(t.progress, t.status), h('strong', null, t.progress + '%')),
       h('div', { class: 'meta' }, statusChip(t), f.due ? UI.chip(f.due.text, f.due.cls, 'calendar') : null, h('span', { class: 'muted small' }, 'Updated ' + UI.ago(t.updatedAt))),
-      t.lastMessage ? h('div', { class: 'last' }, t.lastMessage.senderName + ': ' + (t.lastMessage.type === 'voice' ? '🎤 ' : '') + t.lastMessage.text) : null);
+      t.lastMessage ? h('div', { class: 'last' }, t.lastMessage.senderName + ': ' + (t.lastMessage.type === 'voice' ? '🎤 ' : t.lastMessage.type === 'file' ? '📎 ' : '') + t.lastMessage.text) : null);
   }
 
-  function dayKey(ms) { const d = new Date(ms); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
-
   function viewTasks() {
-    const heroBox = h('div'), insBox = h('div');
-    const list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Filter tasks' }), activeBox = h('div');
-    const q = h('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search tasks or people', value: S.q });
-    const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
-    shell(h('div', null, heroBox, insBox, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), activeBox, filters, list,
+    const brief = Assistant.briefingCard(App);
+    const statBox = h('div'), list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show tasks' }), activeBox = h('div');
+    const q = h('input', { type: 'search', placeholder: 'Search tasks or people…', 'aria-label': 'Search tasks or people', value: S.q });
+    const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest first'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
+    const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+    shell(h('div', null,
+      h('div', { class: 'greet' }, h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : ''))),
+      h('div', { class: 'home-grid' },
+        h('div', { class: 'home-side' }, brief.el),
+        h('div', { class: 'home-main' }, statBox, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, activeBox, list)),
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks');
-    let tasks = [], hist = (Api.cacheGet('hist:' + S.user.id) || {}).items || [], animated = false, heroSig = '', insSig = '';
+    let tasks = [], statSig = '', animated = false;
     const cacheKey = 'tasks:' + S.user.id;
     q.addEventListener('input', function () { S.q = q.value; drawList(); });
     sort.addEventListener('change', function () { S.sort = sort.value; drawList(); });
 
-    function setFilter(key) { S.filter = S.filter === key ? 'all' : key; S.dueDay = ''; S.person = ''; redraw(); }
-    function resetFilters() { S.filter = 'all'; S.dueDay = ''; S.person = ''; redraw(); }
-
+    function setFilter(key) { S.filter = S.filter === key ? 'all' : key; redraw(); }
     function matches(t) {
       const f = S.filter;
       if (f === 'mine' && t.role !== 'assignee') return false;
       if (f === 'byme' && t.role !== 'creator') return false;
       if (['late', 'wait', 'active', 'new'].indexOf(f) >= 0 && bucket(t) !== f) return false;
-      if (S.dueDay && t.dueDate !== S.dueDay) return false;
-      if (S.person && !(t.role === 'creator' && t.assignees.some(function (a) { return a.id === S.person; }))) return false;
       const needle = S.q.trim().toLowerCase();
       if (!needle) return true;
       return [t.title, t.creator.name].concat(names(t.assignees), t.lastMessage ? [t.lastMessage.text] : []).join(' ').toLowerCase().indexOf(needle) >= 0;
@@ -252,138 +257,58 @@
       return copy;
     }
 
-    /* ---- the hero: greeting, donut chart and clickable legend ---- */
-    function buildHero(anim) {
+    /* ---- one stacked bar and four big numbers: the whole picture, and each number is a filter ---- */
+    function drawStats() {
       const counts = { late: 0, wait: 0, active: 0, 'new': 0 };
       tasks.forEach(function (t) { counts[bucket(t)]++; });
-      const attention = tasks.filter(function (t) { const f = taskFlags(t); return f.approve || f.overdue || f.unread; }).length;
-      const sub = !tasks.length ? 'Nothing open right now. Enjoy the calm!' : attention ? attention + ' thing' + (attention === 1 ? '' : 's') + ' need' + (attention === 1 ? 's' : '') + ' your attention' : 'Everything is on track';
-      const donut = UI.donut(BUCKETS.map(function (b) { return { key: b[0], value: counts[b[0]], color: b[2], label: b[1] }; }),
-        { size: 128, thickness: 13, animate: anim, center: { num: tasks.length, label: tasks.length === 1 ? 'open task' : 'open tasks' }, active: counts[S.filter] !== undefined ? S.filter : null, onPick: setFilter });
-      return h('section', { class: 'hero' },
-        h('div', { class: 'hero-main' },
-          h('div', null, h('div', { class: 'date' }, new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })),
-            h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), h('p', { class: 'hero-sub' }, sub),
-            S.canAssign ? h('a', { class: 'btn primary new-task', href: '#/new' }, icon('plus', 18), 'New task') : null),
-          h('div', { class: 'hero-chart' }, donut)),
-        h('div', { class: 'legend', role: 'group', 'aria-label': 'Filter by state' }, BUCKETS.map(function (b) {
-          return h('button', { type: 'button', class: S.filter === b[0] ? 'on' : '', 'aria-pressed': S.filter === b[0], style: '--dot:' + b[2], onclick: function () { setFilter(b[0]); } }, h('i'), b[1], h('b', null, counts[b[0]]));
-        })));
-    }
-
-    /* ---- insight cards: needs attention, this week, momentum, team workload ---- */
-    function growTo(el, prop, value, anim) {
-      if (anim && !prefersReduced()) requestAnimationFrame(function () { requestAnimationFrame(function () { el.style[prop] = value; }); });
-      else el.style[prop] = value;
-    }
-    function buildInsights(anim) {
-      const cards = [];
-      // 1. needs your attention
-      const items = [];
-      tasks.forEach(function (t) {
-        const f = taskFlags(t);
-        let tag = '', cls = '', rank = 9;
-        if (f.approve) { tag = 'Approve'; rank = 0; } else if (f.overdue) { tag = 'Overdue'; cls = 'late'; rank = 1; } else if (f.unread) { tag = 'New message'; rank = 2; }
-        else if (f.due && f.due.days === 0 && t.status !== 'pending') { tag = 'Today'; rank = 3; } else if (f.due && f.due.days > 0 && f.due.days <= 3 && t.status !== 'pending') { tag = 'In ' + f.due.days + 'd'; cls = 'far'; rank = 4; }
-        if (rank < 9) items.push({ t: t, tag: tag, cls: cls, rank: rank });
+      const sig = [counts.late, counts.wait, counts.active, counts['new'], S.filter].join(',');
+      if (sig === statSig) return;
+      statSig = sig; const anim = !animated; animated = true;
+      UI.clear(statBox);
+      if (!tasks.length) return;
+      const bar = h('div', { class: 'statbar', role: 'img', 'aria-label': BUCKETS.map(function (b) { return counts[b[0]] + ' ' + b[1]; }).join(', ') });
+      BUCKETS.forEach(function (b) {
+        const seg = h('i', { style: '--c:' + b[2] }), pct = counts[b[0]] / tasks.length * 100 + '%';
+        if (anim && !prefersReduced()) requestAnimationFrame(function () { requestAnimationFrame(function () { seg.style.width = pct; }); }); else seg.style.width = pct;
+        bar.appendChild(seg);
       });
-      items.sort(function (a, b) { return a.rank - b.rank || (a.t.dueDate || '9').localeCompare(b.t.dueDate || '9'); });
-      cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('zap', 17), 'Needs your attention'),
-        items.length ? h('div', { class: 'next' }, items.slice(0, 3).map(function (it) {
-          const other = it.t.role === 'creator' ? it.t.assignees[0] : it.t.creator;
-          return h('a', { href: '#/task/' + it.t.id }, h('span', { class: 'when ' + it.cls }, it.tag), h('span', { class: 'nt' }, it.t.title), UI.avatar(other.name, 'sm', other.id));
-        })) : h('div', { class: 'mini-empty' }, icon('smile', 30), h('div', null, tasks.length ? 'All caught up!' : 'Nothing waiting for you.'))));
-
-      // 2. this week (tap a day to filter)
-      const days = []; for (let i = 0; i < 7; i++) days.push(UI.ymd(i));
-      const per = {}; tasks.forEach(function (t) { if (t.dueDate) per[t.dueDate] = (per[t.dueDate] || 0) + 1; });
-      const overdue = tasks.filter(function (t) { return taskFlags(t).overdue; }).length;
-      const week = h('div', { class: 'week' }, days.map(function (k, i) {
-        const d = new Date(k + 'T12:00:00');
-        return h('button', { type: 'button', class: 'wday' + (per[k] ? ' has' : '') + (i === 0 ? ' today' : '') + (S.dueDay === k ? ' on' : ''), style: '--i:' + i, 'aria-pressed': S.dueDay === k, 'aria-label': d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) + ': ' + (per[k] || 0) + ' due',
-          onclick: function () { const was = S.dueDay === k; S.filter = 'all'; S.person = ''; S.dueDay = was ? '' : k; redraw(); } },
-          h('span', { class: 'dow' }, d.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 3)), h('span', { class: 'dnum' }, d.getDate()), h('span', { class: 'dcount' }, per[k] || ''));
-      }));
-      const dueWeek = days.reduce(function (a, k) { return a + (per[k] || 0); }, 0);
-      cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('calendar', 17), 'This week'),
-        h('div', { style: 'margin-bottom:.6rem' }, h('span', { class: 'big' }, dueWeek), h('span', { class: 'muted small' }, ' due in the next 7 days' + (overdue ? ' · ' + overdue + ' overdue' : ''))), week));
-
-      // 3. momentum: tasks completed per day over the last 7 days
-      const last7 = []; for (let i = 6; i >= 0; i--) last7.push(UI.ymd(-i));
-      const done = {}; hist.forEach(function (it) { if (it.closedAt) { const k = dayKey(it.closedAt); done[k] = (done[k] || 0) + 1; } });
-      const doneTotal = last7.reduce(function (a, k) { return a + (done[k] || 0); }, 0), maxDone = Math.max.apply(null, last7.map(function (k) { return done[k] || 0; }).concat([1]));
-      const bars = h('div', { class: 'bars7' }, last7.map(function (k, i) {
-        const n = done[k] || 0, d = new Date(k + 'T12:00:00'), bv = h('div', { class: 'bv' + (n ? '' : ' zero'), style: '--i:' + i });
-        growTo(bv, 'height', (n ? 8 + n / maxDone * 56 : 4) + 'px', anim);
-        return h('div', { class: 'bcol' + (i === 6 ? ' today' : '') }, h('span', { class: 'bn' }, n || ''), bv, h('span', { class: 'bl' }, d.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 2)));
-      }));
-      const bigNum = h('span', { class: 'big' }); UI.countUp(bigNum, doneTotal, anim);
-      cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('trend', 17), 'Momentum'),
-        h('div', { style: 'margin-bottom:.6rem' }, bigNum, h('span', { class: 'muted small' }, ' completed in the last 7 days')), bars));
-
-      // 4. team workload (people who assign tasks)
-      const load = {}; tasks.forEach(function (t) { if (t.role === 'creator') t.assignees.forEach(function (a) { (load[a.id] = load[a.id] || { p: a, n: 0 }).n++; }); });
-      const rows = Object.keys(load).map(function (k) { return load[k]; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 5);
-      if (rows.length) {
-        const mx = rows[0].n;
-        cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('users', 17), 'Team workload'),
-          h('div', { class: 'work' }, rows.map(function (r, i) {
-            const fill = h('i', { style: '--i:' + i });
-            growTo(fill, 'width', (r.n / mx * 100) + '%', anim);
-            return h('button', { type: 'button', class: 'wrow', 'aria-label': r.p.name + ': ' + r.n + ' open', onclick: function () { const was = S.person === r.p.id; S.filter = 'all'; S.dueDay = ''; S.person = was ? '' : r.p.id; redraw(); } },
-              UI.avatar(r.p.name, 'sm', r.p.id), h('span', { class: 'wmid' }, h('span', { class: 'wname' }, r.p.name), h('span', { class: 'wtrack' }, fill)), h('span', { class: 'wcount' }, r.n));
-          }))));
-      }
-      return h('div', { class: 'insights', role: 'list' }, cards);
-    }
-
-    function drawDash() {
-      const counts = BUCKETS.map(function (b) { return tasks.filter(function (t) { return bucket(t) === b[0]; }).length; }).join(',');
-      const hs = counts + '|' + S.filter + '|' + tasks.length + '|' + tasks.map(function (t) { return t.unread ? t.id : ''; }).join('');
-      const is = tasks.map(function (t) { return t.id + t.dueDate + bucket(t) + (t.unread ? 'u' : '') + t.assignees.length; }).join(',') + '|' + hist.length + '|' + S.dueDay + '|' + S.person;
-      const anim = !animated; animated = true;
-      if (hs !== heroSig) { heroSig = hs; UI.clear(heroBox); heroBox.appendChild(buildHero(anim)); }
-      if (is !== insSig) {
-        insSig = is;
-        const old = insBox.firstChild, left = old ? old.scrollLeft : 0;
-        UI.clear(insBox); const el = buildInsights(anim); insBox.appendChild(el); el.scrollLeft = left;
-      }
-    }
-
-    function filterLabel() {
-      const b = BUCKETS.filter(function (x) { return x[0] === S.filter; })[0];
-      if (b) return b[1];
-      if (S.dueDay) return 'Due ' + new Date(S.dueDay + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-      if (S.person) {
-        const all = []; tasks.forEach(function (t) { t.assignees.forEach(function (a) { all.push(a); }); });
-        const who = all.filter(function (a) { return a.id === S.person; })[0];
-        return 'Assigned to ' + (who ? who.name : 'one person');
-      }
-      return '';
+      statBox.appendChild(bar);
+      statBox.appendChild(h('div', { class: 'stats', role: 'group', 'aria-label': 'Filter by state' }, BUCKETS.map(function (b) {
+        const num = h('div', { class: 'n' }); UI.countUp(num, counts[b[0]], anim);
+        return h('button', { type: 'button', class: 'stat' + (S.filter === b[0] ? ' on' : ''), 'aria-pressed': S.filter === b[0], style: '--c:' + b[2], onclick: function () { setFilter(b[0]); } }, h('i', { class: 'dot' }), num, h('div', { class: 'l' }, b[1]));
+      })));
     }
 
     function drawList() {
       const counts = { all: tasks.length, mine: 0, byme: 0 };
       tasks.forEach(function (t) { if (t.role === 'assignee') counts.mine++; else counts.byme++; });
       UI.clear(filters);
-      [['all', 'All'], ['mine', 'Assigned to me'], ['byme', 'Assigned by me']].forEach(function (f) {
-        filters.appendChild(h('button', { type: 'button', class: S.filter === f[0] ? 'on' : '', 'aria-pressed': S.filter === f[0], onclick: function () { S.filter = f[0]; S.dueDay = ''; S.person = ''; redraw(); } }, f[1], h('span', { class: 'n' }, counts[f[0]])));
-      });
-      // what is being filtered by the chart / week strip / team card, with a way back
+      if (counts.mine && counts.byme) {
+        [['all', 'All'], ['mine', 'Assigned to me'], ['byme', 'Assigned by me']].forEach(function (f) {
+          filters.appendChild(h('button', { type: 'button', class: S.filter === f[0] ? 'on' : '', 'aria-pressed': S.filter === f[0], onclick: function () { S.filter = f[0]; redraw(); } }, f[1], h('span', { class: 'n' }, counts[f[0]])));
+        });
+      }
       UI.clear(activeBox);
-      const label = filterLabel();
-      if (label) activeBox.appendChild(h('div', { class: 'active-filter' }, UI.chip('Showing: ' + label, 'brand', 'search'), h('button', { class: 'btn ghost small', type: 'button', onclick: resetFilters }, 'Clear')));
-      const shown = ordered(tasks.filter(matches));
+      const picked = BUCKETS.filter(function (x) { return x[0] === S.filter; })[0];
+      if (picked) activeBox.appendChild(h('div', { class: 'active-filter' }, UI.chip('Showing: ' + picked[1], 'brand', 'search'), h('button', { class: 'btn ghost small', type: 'button', onclick: function () { S.filter = 'all'; redraw(); } }, 'Show all')));
+      const shown = tasks.filter(matches);
       UI.clear(list);
       if (!shown.length) {
         list.appendChild(tasks.length
-          ? UI.emptyState('search', 'Nothing matches', 'Try a different filter or search.', h('button', { class: 'btn small', type: 'button', onclick: function () { S.q = ''; q.value = ''; resetFilters(); } }, 'Clear filters'))
-          : UI.emptyState('inbox', 'No open tasks', S.canAssign ? 'Create a task and drag the right people onto it.' : 'New tasks assigned to you will appear here.', S.canAssign ? h('a', { class: 'btn primary', href: '#/new' }, icon('plus', 18), 'New task') : null));
+          ? UI.emptyState('search', 'Nothing matches', 'Try a different filter or search.', h('button', { class: 'btn small', type: 'button', onclick: function () { S.q = ''; q.value = ''; S.filter = 'all'; redraw(); } }, 'Clear filters'))
+          : UI.emptyState('inbox', 'No open tasks', S.canAssign ? 'Create a task and drag the right people onto it. Or just tell the assistant what to do.' : 'New tasks assigned to you will appear here.', S.canAssign ? h('a', { class: 'btn primary', href: '#/new' }, icon('plus', 18), 'New task') : null));
         return;
       }
-      shown.forEach(function (t, i) { list.appendChild(taskCard(t, i)); });
+      // grouped by state, most urgent first (a single state when one is picked)
+      let n = 0;
+      BUCKETS.forEach(function (b) {
+        const items = ordered(shown.filter(function (t) { return bucket(t) === b[0]; }));
+        if (!items.length) return;
+        list.appendChild(h('div', { class: 'group-title', style: '--c:' + b[2] }, h('i'), b[1], h('span', { class: 'cnt' }, items.length)));
+        items.forEach(function (t) { list.appendChild(taskCard(t, n++)); });
+      });
     }
-    function redraw() { drawDash(); drawList(); }
+    function redraw() { drawStats(); drawList(); }
 
     async function load() {
       try {
@@ -394,17 +319,11 @@
       }
       catch (e) { if (e.code === 'MUSTCHANGE') return viewMustChange(); if (e.code !== 'AUTH' && !tasks.length) { UI.clear(list); list.appendChild(errBox(e)); } }
     }
-    async function loadHist() {
-      try {
-        const r = await Api.call('listHistory', { limit: 50 });
-        hist = r.items.map(function (i) { return { closedAt: i.closedAt }; });
-        Api.cacheSet('hist:' + S.user.id, { items: hist }); drawDash();
-      } catch (e) { /* the momentum chart simply stays as it was */ }
-    }
     // Show the last known list immediately (it is refreshed within a moment), instead of an empty "Loading…" screen.
     const known = Api.cacheGet(cacheKey);
-    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); redraw(); } else { drawDash(); }
-    load().then(loadHist); poll(load, 20000); poll(loadHist, 300000);
+    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); redraw(); }
+    load(); poll(load, 20000);
+    brief.load(false);
   }
 
   /* ============================== new task: type a title, drag people onto it ============================== */
@@ -525,17 +444,16 @@
     return m[0] ? UI.chip(m[0], m[1]) : null;
   }
 
-  // extra: node shown at the bottom of the card (the refresh button); live: remember open/closed between refreshes
-  function summaryNode(summary, extra, live) {
+  // extra: node shown at the bottom of the card (the refresh button)
+  function summaryNode(summary, extra) {
     const s = summary;
     const list = function (title, items) { return items && items.length ? [h('strong', { class: 'small' }, title), h('ul', null, items.map(function (i) { return h('li', null, i); }))] : null; };
-    const d = h('details', { class: 'card summary', open: live ? S.sumOpen : true },
-      h('summary', null, h('span', { class: 'sum-ico' }, icon('sparkles', 18)), 'AI summary', s ? healthChip(s.health) : null, h('span', { class: 'chev' }, icon('next', 18))),
+    return h('div', { class: 'card sumcard' },
+      h('div', { class: 'sum-head' }, h('span', { class: 'sum-ico' }, icon('sparkles', 18)), h('span', { class: 'grow' }, 'AI summary'), s ? healthChip(s.health) : null),
       h('div', { class: 'body' },
         s ? h('div', null, h('p', null, s.summary_en), s.summary_si ? h('p', { class: 'muted' }, s.summary_si) : null, s.progress_note ? h('p', { class: 'small' }, h('strong', null, 'So far: '), s.progress_note) : null, list('Blockers', s.blockers), list('Next steps', s.next_steps))
-          : h('p', { class: 'muted' }, 'No summary yet. It appears once people post updates.'), extra));
-    if (live) d.addEventListener('toggle', function () { S.sumOpen = d.open; });
-    return d;
+          : h('p', { class: 'muted' }, 'No summary yet. It appears once people post updates.')),
+      extra);
   }
 
   function setPlayIcon(btn, state) { UI.setIcon(btn, state === 'pause' ? 'pause' : 'play', 18, { fill: true }); }
@@ -569,6 +487,24 @@
     return w;
   }
 
+  const fileUrls = {};
+  async function openFile(m, o, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const key = (o.archived ? 'a' : 'l') + m.id;
+      if (!fileUrls[key]) { const r = await Api.call('getFile', o.archived ? { archived: true, taskId: o.taskId, messageId: m.id } : { messageId: m.id }, { timeout: 120000 }); fileUrls[key] = { url: UI.b64Url(r.b64, r.mime), name: r.name }; }
+      const f = fileUrls[key];
+      if (m.file.isImage) UI.lightbox(f.url, f.name); else { UI.saveUrl(f.url, f.name); UI.toast('Downloaded ' + f.name); }
+    } catch (e) { if (e.code !== 'AUTH') UI.toast(e.message || 'Could not open this file.', 'bad'); }
+    finally { if (btn) btn.disabled = false; }
+  }
+  function fileBubble(m, o) {
+    const f = m.file;
+    if (f.isImage && f.thumb) return h('button', { type: 'button', class: 'img-btn', 'aria-label': 'Open picture ' + f.name, onclick: function (e) { openFile(m, o, e.currentTarget); } }, h('img', { src: f.thumb, alt: f.name }));
+    return h('button', { type: 'button', class: 'file-card', title: f.isImage ? 'View' : 'Download', onclick: function (e) { openFile(m, o, e.currentTarget); } },
+      UI.fileIcon(f.name), h('span', { class: 'file-meta' }, h('b', null, f.name), h('span', null, UI.fmtSize(f.size) + ' · tap to ' + (f.isImage ? 'view' : 'download'))));
+  }
+
   function messageNode(m, o) {
     if (m.type === 'system') return h('div', { class: 'msg-sys' }, m.text);
     const mine = m.senderId === S.user.id;
@@ -582,7 +518,8 @@
         h('div', { class: 'voice' + (S.playing && S.playing.id === m.id ? ' playing' : '') }, play, waveform(m.id), h('span', { class: 'dur' }, UI.duration(m.audioSecs))),
         h('div', { class: 'txt' + (transcribing ? ' transcribing' : '') }, text),
         m.translation && m.translation !== m.transcript ? h('div', { class: 'tr' }, 'English: ' + m.translation) : null);
-    } else body = h('div', { class: 'txt' }, m.text);
+    } else if (m.type === 'file' && m.file) body = h('div', null, fileBubble(m, o), m.text ? h('div', { class: 'txt' }, m.text) : null);
+    else body = h('div', { class: 'txt' }, m.text);
     const bubble = h('div', { class: 'msg' + (mine ? ' me' : '') }, mine || o.cont ? null : h('div', { class: 'who' }, m.senderName, m.senderTitle ? h('span', null, ' · ' + m.senderTitle) : null), body, h('div', { class: 'time' }, UI.time(m.createdAt)));
     let lead = null;
     if (!mine) {
@@ -625,8 +562,8 @@
 
     let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = false, recording = null;
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
-    const headBox = h('div'), sumBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
-    const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
+    const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
+    const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
     const isAssignee = function () { return task.role === 'assignee'; };
 
     function drawHead() {
@@ -641,6 +578,8 @@
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, task.assignees.map(function (a) { return personBtn(a); })))),
         task.description ? h('div', { class: 'desc' }, task.description) : null];
 
+      parts.push(h('div', { class: 'head-actions' }, h('a', { class: 'btn small', href: '#/assistant/' + id }, icon('sparkles', 16), 'Ask AI about this task'),
+        task.role === 'creator' && task.status !== 'closed' ? h('button', { class: 'btn small', type: 'button', onclick: editTask }, icon('edit', 15), 'Edit task') : null));
       if (isAssignee() && task.status !== 'closed') {
         const label = h('strong', null, task.progress + '%');
         const slider = h('input', { type: 'range', min: 0, max: 100, step: 5, value: task.progress, 'aria-label': 'How much of the task is done' });
@@ -669,6 +608,16 @@
       UI.clear(headBox); headBox.appendChild(h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, parts)));
     }
 
+    function editTask() {
+      const title = h('input', { type: 'text', maxlength: 120, value: task.title, 'aria-label': 'Task title' });
+      const desc = h('textarea', { maxlength: 2000, 'aria-label': 'Details' }); desc.value = task.description || '';
+      const due = h('input', { type: 'date', value: task.dueDate || '', 'aria-label': 'Due date' });
+      UI.modal({ title: 'Edit task', body: h('div', null, h('label', null, 'Title', title), h('label', null, 'Details', desc), h('label', null, 'Due date', due), h('p', { class: 'hint' }, 'Everyone on the task is told what you changed. Clear the date to remove it.')),
+        actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async function () {
+          try { await Api.call('updateTask', { taskId: id, title: title.value, description: desc.value, dueDate: due.value }); await refresh(true); UI.toast('Saved'); } catch (e) { UI.toast(e.message, 'bad'); return false; }
+        } }] });
+    }
+
     async function approve() {
       if (!(await UI.confirm('Close this task?', 'It will move to History with its full conversation. This cannot be undone.', 'Agree & close', 'ok'))) return;
       await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 90000 }); UI.confetti(); UI.toast('Task closed and saved to History'); go('#/tasks'); });
@@ -690,7 +639,7 @@
       else if (summaryError) status = h('span', { class: 'small', style: 'color:var(--bad)' }, summaryError);
       else if (stale && task.summary) status = h('span', { class: 'small muted' }, 'New messages since this summary (' + UI.ago(task.summaryAt) + ').');
       else if (task.summary && task.summaryAt) status = h('span', { class: 'small muted' }, 'Updated ' + UI.ago(task.summaryAt) + '.');
-      sumBox.appendChild(summaryNode(task.summary, task.messageCount > 0 ? h('div', { class: 'row between', style: 'margin-top:.6rem' }, status || h('span'), btn) : null, true));
+      sumBox.appendChild(summaryNode(task.summary, task.messageCount > 0 ? h('div', { class: 'sum-foot' }, h('span', { class: 'grow' }, status), btn) : null));
     }
     async function runSummary(force) {
       if (summaryBusy) return;
@@ -698,6 +647,16 @@
       try { const r = await Api.call('refreshSummary', { taskId: id, force: !!force }, { timeout: 120000 }); task.summary = r.summary; task.summaryStale = false; task.summaryAt = Date.now(); }
       catch (e) { if (e.code !== 'AUTH') summaryError = e.message; }
       summaryBusy = false; drawSummary();
+    }
+
+    function drawFiles() {
+      UI.clear(filesBox);
+      const files = messages.filter(function (m) { return m.type === 'file' && m.file; });
+      if (!files.length) return;
+      filesBox.appendChild(h('div', { class: 'sec-title' }, h('h2', null, 'Files (' + files.length + ')')));
+      filesBox.appendChild(h('div', { class: 'files-strip' }, files.slice().reverse().map(function (m) {
+        return h('button', { type: 'button', class: 'fchip', title: m.file.name, onclick: function (e) { openFile(m, { taskId: id }, e.currentTarget); } }, UI.fileIcon(m.file.name), h('span', null, m.file.name));
+      })));
     }
 
     async function refresh(force) { apply(await Api.call('getTask', { taskId: id }), force); }
@@ -708,11 +667,11 @@
       const stick = !sig || nearBottom() || force;
       sig = newSig; task = d.task; messages = d.messages;
       if (!dragging) drawHead();
-      drawSummary();
+      drawSummary(); drawFiles();
       renderChat(chatBox, messages, { taskId: id });
       pendingEls.forEach(function (el) { chatBox.appendChild(el); });
       if (stick) window.scrollTo(0, document.body.scrollHeight);
-      if (!autoTried && task.role === 'creator' && task.summaryStale && task.messageCount > 0) { autoTried = true; runSummary(false); }
+      if (!autoTried && task.summaryStale && task.messageCount > 0) { autoTried = true; runSummary(false); }   // everyone gets an up-to-date summary (it is saved, so this is one AI call per change)
       // Opening the task marks it read on the server; mirror that in the saved task list so the NEW badge goes away at once.
       const l = Api.cacheGet(listKey);
       if (l && l.tasks && l.tasks.some(function (t) { return t.id === id && t.unread; })) { l.tasks.forEach(function (t) { if (t.id === id) t.unread = false; }); Api.cacheSet(listKey, l); }
@@ -731,6 +690,7 @@
       const toggle = function () { const has = !!text.value.trim(); send.classList.toggle('hidden', !has); mic.classList.toggle('hidden', has); };
       const resize = function () { text.style.height = '46px'; text.style.height = Math.min(text.scrollHeight, 140) + 'px'; text.style.overflowY = text.scrollHeight > 140 ? 'auto' : 'hidden'; };
       text.addEventListener('input', function () { resize(); toggle(); });
+      text.addEventListener('paste', function (e) { const fs = e.clipboardData && e.clipboardData.files; if (fs && fs.length) { e.preventDefault(); uploadFiles(Array.prototype.slice.call(fs)); } });
       // Ctrl/Cmd+Enter always sends; on a computer plain Enter sends too (Shift+Enter = new line). Phones keep Enter = new line.
       text.addEventListener('keydown', function (e) {
         if (e.key !== 'Enter' || e.isComposing) return;
@@ -746,8 +706,33 @@
         await refresh(true).catch(function () { /* the next poll will show it */ });
         dropPending(temp);
       }
-      compBox.appendChild(h('div', { class: 'composer-in' }, text, mic, send));
+      const attach = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Share a photo or document', title: 'Share a photo or document', onclick: attachFlow }, icon('paperclip', 22));
+      compBox.appendChild(h('div', { class: 'composer-in' }, attach, text, mic, send));
     }
+
+    async function uploadFiles(files) {
+      if (!files || !files.length || task.status === 'closed') return;
+      if (files.length > 5) UI.toast('Sending the first 5 files.');
+      for (const f of files.slice(0, 5)) {
+        const temp = pendingRow(h('div', { class: 'txt' }, '📎 Sending ' + f.name + '…'));
+        showPending(temp);
+        try {
+          const p = await UI.prepareFile(f);
+          await Api.call('postFile', { taskId: id, name: p.name, b64: p.b64, thumb: p.thumb, w: p.w, h: p.h }, { timeout: 170000 });
+        } catch (e) { if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); }
+        await refresh(true).catch(function () { /* the next poll will show it */ });
+        dropPending(temp);
+      }
+    }
+    async function attachFlow() { uploadFiles(await UI.attachMenu()); }
+    // on a computer: drop files anywhere on the page
+    const veil = h('div', { class: 'drop-veil', 'aria-hidden': 'true' }, 'Drop to share with this task');
+    const hasFiles = function (e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0; };
+    const onOver = function (e) { if (hasFiles(e)) { e.preventDefault(); document.body.classList.add('file-drag'); } };
+    const onLeaveDrag = function (e) { if (!e.relatedTarget) document.body.classList.remove('file-drag'); };
+    const onDrop = function (e) { if (!hasFiles(e)) return; e.preventDefault(); document.body.classList.remove('file-drag'); uploadFiles(Array.prototype.slice.call(e.dataTransfer.files)); };
+    document.body.appendChild(veil); document.addEventListener('dragover', onOver); document.addEventListener('dragleave', onLeaveDrag); document.addEventListener('drop', onDrop);
+    onLeave(function () { veil.remove(); document.body.classList.remove('file-drag'); document.removeEventListener('dragover', onOver); document.removeEventListener('dragleave', onLeaveDrag); document.removeEventListener('drop', onDrop); });
 
     async function startRecording() {
       if (!Audio2.supported()) return UI.toast('Voice recording is not supported in this browser. You can still type your update.', 'bad');
@@ -786,7 +771,7 @@
     else {
       drawHead();                                           // from this session / the task list; the server answer follows
       if (!data) chatBox.appendChild(UI.skeleton('line', 3));
-      else { drawSummary(); renderChat(chatBox, messages, { taskId: id }); sig = ''; }
+      else { drawSummary(); drawFiles(); renderChat(chatBox, messages, { taskId: id }); sig = ''; }
       refresh(true).catch(function (e) { if (e.code !== 'AUTH' && !data) { UI.clear(chatBox); chatBox.appendChild(errBox(e)); } });
     }
     poll(function () { if (!dragging && !recording) refresh(false).catch(function () {}); }, 8000);
@@ -825,7 +810,7 @@
     try { doc = await Api.call('getArchived', { taskId: id }, { timeout: 60000 }); }
     catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/history' }, '← Back to history'))), 'history', barOpts); }
     const t = doc.task;
-    const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt }; });
+    const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
     const chat = h('div', { class: 'chat' });
     renderChat(chat, msgs, { archived: true, taskId: id });
     shell(h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
@@ -1033,7 +1018,7 @@
   /* ============================== router / boot ============================== */
 
   function route() {
-    stopAudio(); stopTimers();
+    stopAudio(); stopTimers(); runLeave();
     if (!S.user) return showLogin();
     if (S.user.mustChange) return viewMustChange();
     Profiles.refresh();
@@ -1041,6 +1026,7 @@
     const adminOnly = function (fn) { return S.user.isAdmin ? fn() : go('#/tasks'); };
     switch (p[0]) {
       case 'tasks': return viewTasks();
+      case 'assistant': return isPureAdmin() ? go(landing()) : Assistant.view(App, p[1] ? decodeURIComponent(p[1]) : '');
       case 'new': return viewNewTask(p[1] ? decodeURIComponent(p[1]) : '');
       case 'task': return p[1] ? viewTask(decodeURIComponent(p[1])) : go('#/tasks');
       case 'history': return p[1] ? viewArchived(decodeURIComponent(p[1])) : viewHistory();
@@ -1058,6 +1044,8 @@
     authPage(h('h1', null, 'Task Manager'), 'Not connected yet.', h('div', { class: 'card' }, h('p', null, 'This site has not been connected to a backend yet.'),
       h('p', { class: 'muted' }, 'The administrator needs to put the backend address into js/config.js. You can look around with fake data in the demo:'), h('a', { class: 'btn primary', href: '?demo=1' }, 'Open the demo')));
   }
+
+  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate };
 
   async function boot() {
     UI.theme.apply();

@@ -26,10 +26,14 @@
  *   env.store.removeWhere(table, predicate) -> number removed
  *   env.files.saveAudio({taskId, messageId, b64, mime}) -> fileId
  *   env.files.readAudio(fileId)    -> {b64, mime}
+ *   env.files.saveFile({taskId, messageId, name, mime, b64}) -> fileId     (photos and documents shared in a task)
+ *   env.files.readFile(fileId)     -> {b64, mime}
  *   env.archive.save({folder, files:[{name,content,mime}], audioFileIds}) -> {storage, path, fileId}
  *   env.archive.read({storage, path, fileId}) -> JSON text of task.json
- *   env.ai.transcribe(b64, mime)   -> {transcript, language, english_translation}
+ *   env.ai.transcribe(b64, mime, hints) -> {transcript, language, english_translation}
  *   env.ai.summarize(input)        -> {summary_en, summary_si, progress_note, health, blockers, next_steps}
+ *   env.ai.assistant(input)        -> {heard, reply, confirm, actions[]}      (the private secretary; see A.assistant)
+ *   env.ai.briefing(input)         -> {headline, items[{tone, text, task_id}]} (the home-page overview; see A.briefing)
  */
 'use strict';
 
@@ -43,8 +47,20 @@ const MIN_PASSWORD = 8;
 const LIMITS = {
   name: 80, title: 120, description: 2000, text: 4000, transcript: 8000, note: 300,
   maxAssignees: 20, maxAudioB64: 6000000, maxWavB64: 9000000, maxVoiceSecs: 150, maxLinks: 3000,
-  bio: 300, photo: 20000   // photo = a small square JPEG as a data: URL (the browser shrinks it to about 128 px before sending)
+  bio: 300, photo: 20000,  // photo = a small square JPEG as a data: URL (the browser shrinks it to about 128 px before sending)
+  maxFileB64: 7000000,     // about 5 MB of file (base64 text is 4/3 bigger)
+  thumb: 9000,             // small preview picture stored with a shared image
+  fileName: 100, maxAssistB64: 3200000, maxAssistText: 1500
 };
+// What may be shared in a task. Checked by file extension AND by the first bytes of the file (so a renamed program is refused).
+const FILE_TYPES = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', pdf: 'application/pdf',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  txt: 'text/plain', csv: 'text/csv', rtf: 'application/rtf', odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet'
+};
+const FILE_MAGIC = { jpg: '/9j/', jpeg: '/9j/', png: 'iVBORw0K', gif: 'R0lGOD', webp: 'UklGR', pdf: 'JVBERi', docx: 'UEsDB', xlsx: 'UEsDB', pptx: 'UEsDB', odt: 'UEsDB', ods: 'UEsDB', doc: '0M8R4KGx', xls: '0M8R4KGx', ppt: '0M8R4KGx', rtf: 'e1xydGY' };
 const PHOTO_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+\/]+={0,2}$/;
 const AUDIO_MIMES = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/x-m4a', 'audio/aac'];
 
@@ -60,6 +76,8 @@ const TABLES = {
   Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n' } },
   Reads:        { key: 'id', cols: { id: 's', taskId: 's', userId: 's', lastReadAt: 'n' } },
   Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
+  Attachments:  { key: 'id', cols: { id: 's', taskId: 's', name: 's', mime: 's', size: 'n', fileId: 's', thumb: 's', w: 'n', h: 'n', createdAt: 'n' } },   // id = the id of the message that carries the file
+  Briefings:    { key: 'userId', cols: { userId: 's', sig: 's', at: 'n', data: 'j' } },                                                               // the last home-page overview made for each person
   ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n' } },
   AuditLog:     { key: 'id', cols: { id: 's', at: 'n', userId: 's', action: 's', detail: 's' } }
 };
@@ -174,9 +192,16 @@ function createCore(env) {
   function messagesOf(ctx, taskId) {
     return ctx.rows('Messages').filter(function (m) { return m.taskId === taskId; }).sort(function (a, b) { return a.createdAt - b.createdAt; });
   }
+  function attachmentOf(ctx, messageId) { return indexBy(ctx, 'Attachments', 'att')[messageId] || null; }
+  function fileView(a) {
+    if (!a) return { name: 'File', mime: '', size: 0, isImage: false, thumb: '', w: 0, h: 0 };
+    return { name: a.name, mime: a.mime, size: a.size, isImage: String(a.mime).indexOf('image/') === 0, thumb: a.thumb || '', w: a.w || 0, h: a.h || 0 };
+  }
   function msgView(ctx, m) {
     const s = brief(ctx, m.senderId);
-    return { id: m.id, taskId: m.taskId, senderId: m.senderId, senderName: m.senderId ? s.name : 'System', senderTitle: s.jobTitle, type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, lang: m.lang, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt };
+    const v = { id: m.id, taskId: m.taskId, senderId: m.senderId, senderName: m.senderId ? s.name : 'System', senderTitle: s.jobTitle, type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, lang: m.lang, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt };
+    if (m.type === 'file') v.file = fileView(attachmentOf(ctx, m.id));
+    return v;
   }
   function countContent(msgs) { return msgs.filter(function (m) { return m.type !== 'system'; }).length; }
   function taskView(ctx, me, t, opts) {
@@ -191,7 +216,7 @@ function createCore(env) {
       dueDate: t.dueDate, createdAt: t.createdAt, updatedAt: t.updatedAt, pendingAt: t.pendingAt, closedAt: t.closedAt,
       creator: brief(ctx, t.creatorId), assignees: t.assigneeIds.map(function (id) { return brief(ctx, id); }),
       role: t.creatorId === me.id ? 'creator' : 'assignee', unread: unread, messageCount: content,
-      lastMessage: last ? { senderName: last.senderId ? brief(ctx, last.senderId).name : 'System', type: last.type, text: clip(last.type === 'voice' ? (last.transcript || 'Voice message') : last.text, 90), at: last.createdAt } : null
+      lastMessage: last ? { senderName: last.senderId ? brief(ctx, last.senderId).name : 'System', type: last.type, text: clip(last.type === 'voice' ? (last.transcript || 'Voice message') : last.type === 'file' ? (last.text || 'Shared a file') : last.text, 90), at: last.createdAt } : null
     };
     if (opts && opts.detail) {
       v.description = t.description;
@@ -465,13 +490,14 @@ function createCore(env) {
 
   /* ---------------- tasks ---------------- */
 
-  A.assignable = { run: function (ctx, user) {
+  function assignableFor(ctx, user) {
     const titles = titlesById(ctx), users = usersById(ctx), seen = {};
     return ctx.rows('Links').filter(function (l) { return l.fromId === user.id; }).map(function (l) { return users[l.toId]; })
       .filter(function (u) { if (!u || !u.active || seen[u.id]) return false; seen[u.id] = 1; return true; })
       .map(function (u) { return { id: u.id, name: u.name, jobTitle: (titles[u.jobTitleId] || {}).title || '', level: levelOf(u, titles) }; })
       .sort(function (a, b) { return a.level - b.level || a.name.localeCompare(b.name); });
-  } };
+  }
+  A.assignable = { run: function (ctx, user) { return assignableFor(ctx, user); } };
 
   A.createTask = { run: function (ctx, user, req) {
     const title = str(req.title, 'Title', LIMITS.title);
@@ -546,7 +572,8 @@ function createCore(env) {
     });
     let patch;
     try { // AI call happens OUTSIDE the lock so other people are never blocked by a slow model
-      const r = env.ai.transcribe(wavB64 || audioB64, wavB64 ? 'audio/wav' : mime) || {};
+      const hints = 'Task: ' + t.title + '. People: ' + [t.creatorId].concat(t.assigneeIds).map(function (id) { return brief(ctx, id).name; }).join(', ') + '.';
+      const r = env.ai.transcribe(wavB64 || audioB64, wavB64 ? 'audio/wav' : mime, hints) || {};
       patch = { status: 'ok', transcript: clip(r.transcript, LIMITS.transcript), translation: clip(r.english_translation, LIMITS.transcript), lang: clip(r.language, 40) };
     } catch (e) {
       env.log('transcribe failed: ' + e);
@@ -570,6 +597,84 @@ function createCore(env) {
     if (!fileId) throw fail('NOT_FOUND', 'Audio not found');
     const a = env.files.readAudio(fileId);
     return { b64: a.b64, mime: a.mime };
+  } };
+
+  /* ---------------- photos and documents shared in a task ---------------- */
+
+  function cleanFileName(v) {
+    const n = String(v == null ? '' : v).split(/[\\/]/).pop().replace(/[^\p{L}\p{N} ._()\-]/gu, '_').replace(/^\.+/, '').trim();
+    const dot = n.lastIndexOf('.');
+    if (dot < 1) return '';
+    const ext = n.slice(dot + 1).toLowerCase();
+    const base = n.slice(0, dot).slice(0, LIMITS.fileName - ext.length - 1) || 'file';
+    return base + '.' + ext;
+  }
+
+  A.postFile = { run: function (ctx, user, req) {
+    const t = loadTask(ctx, user, req.taskId, { open: true });
+    const name = cleanFileName(req.name);
+    if (!name) throw fail('VALIDATION', 'That file has no usable name or type');
+    const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    const mime = FILE_TYPES[ext];
+    if (!mime) throw fail('VALIDATION', 'That kind of file cannot be shared here. Use photos, PDF, Word, Excel, PowerPoint or text files.');
+    const b64 = String(req.b64 || '');
+    if (!b64) throw fail('VALIDATION', 'No file received');
+    if (b64.length > LIMITS.maxFileB64) throw fail('VALIDATION', 'That file is too big. The limit is 5 MB.');
+    if (!/^[A-Za-z0-9+\/]+={0,2}$/.test(b64)) throw fail('VALIDATION', 'The file could not be read');
+    if (FILE_MAGIC[ext] && b64.indexOf(FILE_MAGIC[ext]) !== 0) throw fail('VALIDATION', 'This does not look like a real .' + ext + ' file');
+    const size = Math.floor(b64.length * 3 / 4) - (b64.slice(-2) === '==' ? 2 : b64.slice(-1) === '=' ? 1 : 0);
+    const caption = str(req.caption, 'Caption', LIMITS.text, { min: 0 });
+    const isImage = mime.indexOf('image/') === 0;
+    const thumb = isImage && typeof req.thumb === 'string' && req.thumb.length <= LIMITS.thumb && PHOTO_RE.test(req.thumb) ? req.thumb : '';
+    const dim = function (v) { return Math.max(0, Math.min(Math.round(Number(v) || 0), 20000)); };
+    const msgId = newId('M');
+    const fileId = env.files.saveFile({ taskId: t.id, messageId: msgId, name: name, mime: mime, b64: b64 });   // the slow part happens outside the lock
+    return ctx.write(function () {
+      const at = env.now();
+      insert(ctx, 'Attachments', { id: msgId, taskId: t.id, name: name, mime: mime, size: size, fileId: fileId, thumb: thumb, w: dim(req.w), h: dim(req.h), createdAt: at });
+      const row = insert(ctx, 'Messages', { id: msgId, taskId: t.id, senderId: user.id, type: 'file', text: caption, transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: at });
+      update(ctx, 'Tasks', t.id, { updatedAt: at });
+      return { message: msgView(ctx, row) };
+    });
+  } };
+
+  A.getFile = { run: function (ctx, user, req) {
+    let fileId = '', name = 'file', mime = 'application/octet-stream';
+    if (req.archived) {
+      const idx = archiveIndexFor(ctx, user, req.taskId);
+      const doc = JSON.parse(env.archive.read(idx));
+      const m = (doc.messages || []).filter(function (x) { return x.id === req.messageId; })[0];
+      if (m && m.file) { fileId = m.file.fileId; name = m.file.name; mime = m.file.mime; }
+    } else {
+      const a = ctx.rows('Attachments').filter(function (x) { return x.id === String(req.messageId || ''); })[0];
+      if (a) { loadTask(ctx, user, a.taskId); fileId = a.fileId; name = a.name; mime = a.mime; }
+    }
+    if (!fileId) throw fail('NOT_FOUND', 'File not found');
+    const f = env.files.readFile(fileId);
+    return { b64: f.b64, mime: mime, name: name };
+  } };
+
+  // The person who gave the task can correct its title, details or due date later.
+  A.updateTask = { run: function (ctx, user, req) {
+    return ctx.write(function () {
+      const t = loadTask(ctx, user, req.taskId, { open: true });
+      if (t.creatorId !== user.id) throw fail('FORBIDDEN', 'Only the person who assigned the task can change it');
+      const patch = {}, notes = [];
+      if (req.title !== undefined) { const v = str(req.title, 'Title', LIMITS.title); if (v !== t.title) { patch.title = v; notes.push('renamed the task to "' + v + '"'); } }
+      if (req.description !== undefined) { const v = str(req.description, 'Description', LIMITS.description, { min: 0 }); if (v !== t.description) { patch.description = v; notes.push('edited the details'); } }
+      if (req.dueDate !== undefined) {
+        const d = String(req.dueDate || '');
+        if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw fail('VALIDATION', 'Due date must look like 2026-12-31');
+        if (d !== t.dueDate) { patch.dueDate = d; notes.push(d ? 'changed the due date to ' + d : 'removed the due date'); }
+      }
+      if (notes.length) {
+        const now = env.now(); patch.updatedAt = now;
+        update(ctx, 'Tasks', t.id, patch);
+        insert(ctx, 'Messages', { id: newId('M'), taskId: t.id, senderId: '', type: 'system', text: user.name + ' ' + notes.join(' and '), transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: now });
+      }
+      const fresh = ctx.rows('Tasks').filter(function (x) { return x.id === t.id; })[0];
+      return { task: taskView(ctx, user, fresh, { detail: true }) };
+    });
   } };
 
   A.setProgress = { run: function (ctx, user, req) {
@@ -618,13 +723,203 @@ function createCore(env) {
     if (t.summary && t.summary.summary_en !== undefined && t.summaryMsgCount === content && !req.force) return { summary: t.summary, summaryStale: false };
     const input = {
       task: { title: t.title, description: t.description, progress: t.progress, status: t.status, dueDate: t.dueDate, manager: brief(ctx, t.creatorId).name, assignees: t.assigneeIds.map(function (id) { return brief(ctx, id).name; }) },
-      messages: msgs.map(function (m) { return { time: env.formatDate(m.createdAt), from: m.senderId ? brief(ctx, m.senderId).name : 'System', role: m.senderId === t.creatorId ? 'manager' : (m.senderId ? 'assignee' : 'system'), type: m.type, text: m.type === 'voice' ? (m.transcript || '(voice message, not transcribed)') : m.text }; })
+      messages: msgs.map(function (m) { return { time: env.formatDate(m.createdAt), from: m.senderId ? brief(ctx, m.senderId).name : 'System', role: m.senderId === t.creatorId ? 'manager' : (m.senderId ? 'assignee' : 'system'), type: m.type, text: m.type === 'voice' ? (m.transcript || '(voice message, not transcribed)') : m.type === 'file' ? aiMsgText(ctx, m) : m.text }; })
     };
     let summary;
     try { summary = normalizeSummary(env.ai.summarize(input)); }
     catch (e) { env.log('summary failed: ' + e); throw fail('AI_FAILED', 'The AI summary is not available right now. Please try again in a minute.'); }
     ctx.write(function () { update(ctx, 'Tasks', t.id, { summary: summary, summaryMsgCount: content, summaryAt: env.now() }); });
     return { summary: summary, summaryStale: false };
+  } };
+
+  /* ============================== AI: the private secretary and the home overview ============================== */
+  // The assistant can only PROPOSE actions. The browser shows them in plain words, the person confirms, and the browser then
+  // performs them through the normal actions above, so the assistant never has more rights than the person using it.
+
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function aiNow() { const d = env.formatDate(env.now()); return { date: d.slice(0, 10), time: d.slice(11), weekday: DAY_NAMES[new Date(d.slice(0, 10) + 'T12:00:00Z').getUTCDay()] }; }
+  function niceDate(ymd) { const d = new Date(ymd + 'T12:00:00Z'); return DAY_NAMES[d.getUTCDay()].slice(0, 3) + ' ' + d.getUTCDate() + ' ' + MONTH_SHORT[d.getUTCMonth()]; }
+  function openTasksOf(ctx, user) { return ctx.rows('Tasks').filter(function (t) { return t.status !== 'closed' && isParticipant(t, user.id); }); }
+
+  function aiMsgText(ctx, m) {
+    if (m.type === 'voice') return '(voice) ' + (m.transcript || 'not transcribed');
+    if (m.type === 'file') { const a = attachmentOf(ctx, m.id); return '(shared a file: ' + (a ? a.name : 'file') + ')' + (m.text ? ' ' + m.text : ''); }
+    if (m.type === 'system') return '(system) ' + m.text;
+    return m.text;
+  }
+
+  // Everything this person is allowed to see, as plain text for the model. perTask = how many recent messages per task.
+  function aiContext(ctx, user, perTask, withPeople) {
+    const users = usersById(ctx), titles = titlesById(ctx), now = aiNow(), my = titles[user.jobTitleId], L = [];
+    L.push('TODAY: ' + now.weekday + ' ' + now.date + ', ' + now.time + ' (company time zone)');
+    L.push('USER: ' + user.name + ' (id ' + user.id + ')' + (my ? ', ' + my.title + ', layer ' + my.level : '') + (user.isAdmin ? ', system administrator' : ''));
+    const bosses = ctx.rows('Links').filter(function (l) { return l.toId === user.id; }).map(function (l) { return users[l.fromId]; }).filter(function (u) { return u && u.active; });
+    L.push('PEOPLE WHO CAN GIVE ME TASKS: ' + (bosses.length ? bosses.map(function (u) { return u.name; }).join(', ') : 'nobody'));
+    if (withPeople) {
+      const ppl = assignableFor(ctx, user);
+      L.push('PEOPLE I CAN ASSIGN TASKS TO (use these ids):');
+      ppl.forEach(function (p) { L.push('- ' + p.name + ' (id ' + p.id + '), ' + (p.jobTitle || 'no job title')); });
+      if (!ppl.length) L.push('- nobody');
+    }
+    const mine = openTasksOf(ctx, user).sort(function (a, b) { return (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || b.updatedAt - a.updatedAt; });
+    const ids = {}; mine.forEach(function (t) { ids[t.id] = []; });
+    let anyFile = false;
+    ctx.rows('Messages').forEach(function (m) { if (ids[m.taskId]) { ids[m.taskId].push(m); if (m.type === 'file') anyFile = true; } });
+    const filesOf = {};
+    if (anyFile) ctx.rows('Attachments').forEach(function (a) { if (ids[a.taskId]) (filesOf[a.taskId] = filesOf[a.taskId] || []).push(a.name); });
+    L.push('OPEN TASKS (' + mine.length + '):');
+    if (!mine.length) L.push('(none)');
+    mine.forEach(function (t) {
+      let due = t.dueDate ? 'due ' + t.dueDate : 'no due date';
+      if (t.dueDate && t.status !== 'pending') {
+        const days = Math.round((new Date(t.dueDate + 'T12:00:00Z') - new Date(now.date + 'T12:00:00Z')) / 86400000);
+        if (days < 0) due += ' (OVERDUE by ' + (-days) + ' day' + (days === -1 ? '' : 's') + ')'; else if (days === 0) due += ' (today)'; else if (days === 1) due += ' (tomorrow)';
+      }
+      L.push('TASK id=' + t.id + ' | "' + clip(t.title, 120) + '" | ' + (t.status === 'pending' ? 'WAITING FOR APPROVAL (100%)' : 'in progress, ' + t.progress + '%') + ' | ' + due + ' | my role: ' + (t.creatorId === user.id ? 'creator (I assigned it)' : 'assignee') +
+        ' | from: ' + brief(ctx, t.creatorId).name + ' | to: ' + t.assigneeIds.map(function (id) { return brief(ctx, id).name; }).join(', ') + ' | last activity ' + env.formatDate(t.updatedAt));
+      if (t.description) L.push('  details: ' + clip(t.description, 300));
+      if (filesOf[t.id]) L.push('  files shared: ' + filesOf[t.id].slice(0, 8).join(', '));
+      ids[t.id].sort(function (a, b) { return a.createdAt - b.createdAt; }).slice(-perTask).forEach(function (m) {
+        L.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), 240).replace(/\s+/g, ' '));
+      });
+    });
+    const done = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, 12);
+    L.push('RECENTLY COMPLETED TASKS (' + done.length + ' latest):');
+    if (!done.length) L.push('(none)');
+    done.forEach(function (x) { L.push('- "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.summaryText ? ': ' + clip(x.summaryText, 200) : '')); });
+    return L.join('\n');
+  }
+  function aiContextFit(ctx, user, withPeople, budget) {
+    let text = '';
+    [10, 5, 2].some(function (n) { text = aiContext(ctx, user, n, withPeople); return text.length <= budget; });
+    return text.length > budget ? text.slice(0, budget) + '\n(older information left out)' : text;
+  }
+
+  // Photos / PDFs of the task the person is looking at, so the assistant can read them (at most 3 files, about 4 MB).
+  function focusFiles(ctx, taskId) {
+    const out = []; let total = 0;
+    ctx.rows('Attachments').filter(function (a) { return a.taskId === taskId; }).sort(function (a, b) { return b.createdAt - a.createdAt; }).forEach(function (a) {
+      if (out.length >= 3) return;
+      const readable = a.mime.indexOf('image/') === 0 || a.mime === 'application/pdf' || a.mime === 'text/plain' || a.mime === 'text/csv';
+      if (!readable || a.size > 2500000 || total + a.size > 4000000) return;
+      try { out.push({ name: a.name, mime: a.mime, b64: env.files.readFile(a.fileId).b64 }); total += a.size; } catch (e) { env.log('could not read ' + a.fileId + ': ' + e); }
+    });
+    return out;
+  }
+
+  // Checks one action proposed by the model against what this person may really do. Returns {ok: action} or {err: reason}.
+  function cleanAction(ctx, user, a, mineById, allowed) {
+    if (!a || typeof a !== 'object') return { err: 'one of the actions was not understood' };
+    const type = String(a.type || ''), q = function (s) { return '"' + clip(s, 60) + '"'; };
+    const users = usersById(ctx), nameOf = function (id) { return users[id] ? users[id].name : 'someone'; };
+    const dueOk = function (d) { return d === '' || /^\d{4}-\d{2}-\d{2}$/.test(d); };
+    if (type === 'create_task') {
+      const title = clip(a.title, LIMITS.title).trim();
+      if (!title) return { err: 'a new task needs a title' };
+      const due = String(a.due_date || '').trim();
+      if (!dueOk(due)) return { err: 'the due date was not clear' };
+      const given = (Array.isArray(a.assignee_ids) ? a.assignee_ids : []).map(String).filter(function (v, i, arr) { return arr.indexOf(v) === i; });
+      const ids = given.filter(function (id) { return allowed[id]; });
+      if (!ids.length) return { err: 'I could not match that task to someone you are allowed to assign tasks to' };
+      return { ok: { type: type, title: title, description: clip(a.description, LIMITS.description).trim(), dueDate: due, assigneeIds: ids, needsConfirm: true,
+        label: 'Create the task ' + q(title) + ' for ' + ids.map(nameOf).join(', ') + (due ? ', due ' + niceDate(due) : '') }, partial: ids.length < given.length };
+    }
+    const task = mineById[String(a.task_id || '')];
+    if (['set_progress', 'post_message', 'approve_task', 'send_back', 'update_task', 'open_task'].indexOf(type) < 0) return { err: 'one of the actions was not understood' };
+    if (!task) return { err: 'I could not find that task among your open tasks' };
+    if (type === 'set_progress') {
+      const p = Math.round(Number(a.progress));
+      if (!(p >= 0 && p <= 100)) return { err: 'the progress value was not clear' };
+      if (task.assigneeIds.indexOf(user.id) < 0) return { err: 'only the people assigned to ' + q(task.title) + ' can update its progress' };
+      return { ok: { type: type, taskId: task.id, progress: p, needsConfirm: true, label: 'Set progress of ' + q(task.title) + ' to ' + p + '%' + (p === 100 ? ' (it will go to your manager for approval)' : '') } };
+    }
+    if (type === 'post_message') {
+      const text = clip(a.text, LIMITS.text).trim();
+      if (!text) return { err: 'the message was empty' };
+      return { ok: { type: type, taskId: task.id, text: text, needsConfirm: true, label: 'Post this in ' + q(task.title) + ': "' + clip(text, 140) + '"' } };
+    }
+    if (type === 'approve_task' || type === 'send_back') {
+      if (task.creatorId !== user.id) return { err: 'only the person who assigned ' + q(task.title) + ' can ' + (type === 'approve_task' ? 'approve' : 'send back') + ' it' };
+      if (task.status !== 'pending') return { err: q(task.title) + ' is not waiting for approval' };
+      const note = clip(a.note, LIMITS.note).trim();
+      return { ok: { type: type, taskId: task.id, note: type === 'send_back' ? note : '', needsConfirm: true, label: type === 'approve_task' ? 'Approve and close ' + q(task.title) : 'Send ' + q(task.title) + ' back for more work' + (note ? ': "' + note + '"' : '') } };
+    }
+    if (type === 'update_task') {
+      if (task.creatorId !== user.id) return { err: 'only the person who assigned ' + q(task.title) + ' can change it' };
+      const patch = {}, bits = [];
+      if (a.title !== undefined && a.title !== null && clip(a.title, LIMITS.title).trim()) { patch.title = clip(a.title, LIMITS.title).trim(); bits.push('rename it to ' + q(patch.title)); }
+      if (a.description !== undefined && a.description !== null) { patch.description = clip(a.description, LIMITS.description).trim(); bits.push('change the details'); }
+      if (a.due_date !== undefined && a.due_date !== null) {
+        const d = String(a.due_date).trim();
+        if (!dueOk(d)) return { err: 'the due date was not clear' };
+        patch.dueDate = d; bits.push(d ? 'move the due date to ' + niceDate(d) : 'remove the due date');
+      }
+      if (!bits.length) return { err: 'there was nothing to change' };
+      return { ok: { type: type, taskId: task.id, patch: patch, needsConfirm: true, label: 'For ' + q(task.title) + ': ' + bits.join(' and ') } };
+    }
+    return { ok: { type: 'open_task', taskId: task.id, needsConfirm: false, label: 'Open ' + q(task.title) } };
+  }
+
+  A.assistant = { run: function (ctx, user, req) {
+    const text = clip(req.text, LIMITS.maxAssistText).trim();
+    let audio = null;
+    if (req.wavB64 || req.audioB64) {
+      const wav = String(req.wavB64 || ''), b64 = wav || String(req.audioB64);
+      if (b64.length > LIMITS.maxAssistB64) throw fail('VALIDATION', 'That was too long. Please keep each question under a minute.');
+      const mime = wav ? 'audio/wav' : String(req.mime || 'audio/webm').split(';')[0].trim().toLowerCase();
+      if (AUDIO_MIMES.indexOf(mime) < 0) throw fail('VALIDATION', 'Unsupported audio format');
+      audio = { b64: b64, mime: mime };
+    }
+    if (!text && !audio) throw fail('VALIDATION', 'Please say or type something');
+    const history = (Array.isArray(req.history) ? req.history : []).slice(-12)
+      .map(function (m) { return { role: m && m.role === 'assistant' ? 'assistant' : 'user', text: clip(m && m.text, LIMITS.maxAssistText) }; }).filter(function (m) { return m.text; });
+    const pending = (Array.isArray(req.pending) ? req.pending : []).slice(0, 6).map(function (p) { return clip(p, 300); }).filter(Boolean);
+    let focus = null, files = [];
+    if (req.taskId) {
+      const ft = ctx.rows('Tasks').filter(function (x) { return x.id === String(req.taskId) && isParticipant(x, user.id); })[0];
+      if (ft) { focus = { id: ft.id, title: ft.title }; files = focusFiles(ctx, ft.id); }
+    }
+    const context = aiContextFit(ctx, user, true, 60000);
+    let raw;
+    try { raw = env.ai.assistant({ context: context, history: history, text: text, audio: audio, pending: pending, focus: focus, files: files, userName: user.name }); }
+    catch (e) { env.log('assistant failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.'); }
+    raw = raw || {};
+    const mineById = {}; openTasksOf(ctx, user).forEach(function (t) { mineById[t.id] = t; });
+    const allowed = {}; assignableFor(ctx, user).forEach(function (p) { allowed[p.id] = 1; });
+    const actions = [], problems = [];
+    (Array.isArray(raw.actions) ? raw.actions : []).slice(0, 5).forEach(function (a) {
+      const r = cleanAction(ctx, user, a, mineById, allowed);
+      if (r.ok) { actions.push(r.ok); if (r.partial) problems.push('I left out someone you are not allowed to assign tasks to'); } else problems.push(r.err);
+    });
+    let reply = clip(raw.reply, 2500).trim() || 'Sorry, I did not catch that. Could you say it again?';
+    if (problems.length) reply += '\n\n(Note: ' + problems.filter(function (p, i, arr) { return arr.indexOf(p) === i; }).join('; ') + '.)';
+    const confirm = !actions.length && pending.length && (raw.confirm === 'yes' || raw.confirm === 'no') ? raw.confirm : '';
+    return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, confirm: confirm, actions: actions };
+  } };
+
+  // The overview at the top of the home page. Made again only when something changed (and at most every 20 minutes), kept per person.
+  A.briefing = { run: function (ctx, user, req) {
+    const mine = openTasksOf(ctx, user), now = aiNow();
+    if (!mine.length) return { briefing: { headline: 'You have no open tasks right now.', items: [] }, at: env.now(), stale: false };
+    const sig = env.sha256Hex(now.date + '|' + mine.map(function (t) { return [t.id, t.status, t.progress, t.dueDate, t.updatedAt, t.assigneeIds.length].join(':'); }).sort().join('|'));
+    const row = ctx.rows('Briefings').filter(function (b) { return b.userId === user.id; })[0];
+    const recent = row && row.data && env.now() - row.at < 20 * 60000;
+    if (row && row.data && !req.force && (row.sig === sig || recent)) return { briefing: row.data, at: row.at, stale: row.sig !== sig };
+    let raw;
+    try { raw = env.ai.briefing({ context: aiContextFit(ctx, user, false, 45000), userName: user.name }) || {}; }
+    catch (e) { env.log('briefing failed: ' + e); throw fail('AI_FAILED', 'The overview is not available right now.'); }
+    const tones = ['urgent', 'watch', 'good', 'info'], mineIds = {}; mine.forEach(function (t) { mineIds[t.id] = 1; });
+    const data = {
+      headline: clip(raw.headline, 240).trim() || 'Here is where things stand.',
+      items: (Array.isArray(raw.items) ? raw.items : []).slice(0, 6).map(function (i) { return { tone: tones.indexOf(i && i.tone) >= 0 ? i.tone : 'info', text: clip(i && i.text, 260).trim(), taskId: i && mineIds[i.task_id] ? i.task_id : '' }; }).filter(function (i) { return i.text; })
+    };
+    const at = env.now();
+    ctx.write(function () {
+      if (row) update(ctx, 'Briefings', user.id, { sig: sig, at: at, data: data });
+      else insert(ctx, 'Briefings', { userId: user.id, sig: sig, at: at, data: data });
+    });
+    return { briefing: data, at: at, stale: false };
   } };
 
   /* ---------------- history / archive ---------------- */
@@ -655,7 +950,9 @@ function createCore(env) {
   function renderArchiveHtml(doc) {
     const t = doc.task;
     const msgs = doc.messages.map(function (m) {
-      const body = m.type === 'voice'
+      const body = m.type === 'file' && m.file
+        ? '<em>Shared file: ' + esc(m.file.name) + ' (' + Math.max(1, Math.round(m.file.size / 1024)) + ' KB)</em>' + (m.text ? '<div>' + esc(m.text) + '</div>' : '')
+        : m.type === 'voice'
         ? '<em>Voice message (' + m.audioSecs + 's)</em><div>' + esc(m.transcript || 'No transcript available') + '</div>' + (m.translation && m.translation !== m.transcript ? '<div class="tr">English: ' + esc(m.translation) + '</div>' : '')
         : '<div>' + esc(m.text) + '</div>';
       return '<div class="m ' + esc(m.type) + '"><div class="who">' + esc(m.senderName) + ' &middot; ' + esc(m.time) + '</div>' + body + '</div>';
@@ -670,22 +967,25 @@ function createCore(env) {
 
   function archiveTask(ctx, closer, t) {
     const msgs = messagesOf(ctx, t.id), closedAt = env.now();
+    const hasFiles = msgs.some(function (m) { return m.type === 'file'; });
+    const fileOf = function (m) { const a = hasFiles && m.type === 'file' ? attachmentOf(ctx, m.id) : null; return a ? { name: a.name, mime: a.mime, size: a.size, thumb: a.thumb, w: a.w, h: a.h, fileId: a.fileId } : undefined; };
     const doc = {
       version: 1, id: t.id,
       task: { id: t.id, title: t.title, description: t.description, creator: brief(ctx, t.creatorId), assignees: t.assigneeIds.map(function (id) { return brief(ctx, id); }), createdAt: t.createdAt, closedAt: closedAt, startedText: env.formatDate(t.createdAt), completedText: env.formatDate(closedAt), dueDate: t.dueDate, progress: 100, approvedBy: closer.name, summary: t.summary || null },
-      messages: msgs.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderId ? brief(ctx, m.senderId).name : 'System', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, lang: m.lang, status: m.status, audioFileId: m.audioFileId, audioMime: m.audioMime, audioSecs: m.audioSecs, createdAt: m.createdAt, time: env.formatDate(m.createdAt) }; })
+      messages: msgs.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderId ? brief(ctx, m.senderId).name : 'System', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, lang: m.lang, status: m.status, audioFileId: m.audioFileId, audioMime: m.audioMime, audioSecs: m.audioSecs, createdAt: m.createdAt, time: env.formatDate(m.createdAt), file: fileOf(m) }; })
     };
     const d = env.formatDate(closedAt);
     const folder = d.slice(0, 4) + '/' + d.slice(5, 7) + '/' + t.id + '-' + slug(t.title);
     const saved = env.archive.save({
       folder: folder,
       files: [{ name: 'task.json', content: JSON.stringify(doc, null, 1), mime: 'application/json' }, { name: 'conversation.html', content: renderArchiveHtml(doc), mime: 'text/html' }],
-      audioFileIds: msgs.map(function (m) { return m.audioFileId; }).filter(Boolean)
+      audioFileIds: msgs.map(function (m) { return m.audioFileId; }).concat(doc.messages.map(function (m) { return m.file ? m.file.fileId : ''; })).filter(Boolean)   // voice notes and shared files move into the archive folder
     });
     const participantIds = [t.creatorId].concat(t.assigneeIds);
     insert(ctx, 'ArchiveIndex', { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: doc.task.assignees.map(function (a) { return a.name; }).join(', '), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(t.summary && t.summary.summary_en, 400), messageCount: countContent(msgs) });
     // Only after the archive is safely written do we remove the live rows.
     removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
+    if (hasFiles) removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
     removeWhere(ctx, 'Reads', function (r) { return r.taskId === t.id; });
     removeWhere(ctx, 'Tasks', function (x) { return x.id === t.id; });
     audit(ctx, closer, 'task.archive', t.id);

@@ -103,6 +103,22 @@
   function fakeAi() {
     return {
       transcribe: function () { return { transcript: '(demo) This is a sample transcript of the voice message.', language: 'English', english_translation: '(demo) This is a sample transcript of the voice message.' }; },
+      // Demo stand-ins: they only read the context they are given and cannot really understand speech or questions.
+      assistant: function (input) {
+        const lines = String(input.context).split(/\r?\n/).filter(function (l) { return l.indexOf('TASK id=') === 0; });
+        const titles = lines.map(function (l) { return (/"([^"]*)"/.exec(l) || [])[1]; }).filter(Boolean);
+        const late = lines.filter(function (l) { return l.indexOf('OVERDUE') >= 0; }).length;
+        const said = String(input.text || '').toLowerCase();
+        if (/^(yes|yeah|ok|okay|go ahead|confirm|do it)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Done.', confirm: 'yes', actions: [] };
+        if (/^(no|cancel|stop)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Okay, I will not do that.', confirm: 'no', actions: [] };
+        return { heard: input.audio ? '(demo) voice is not transcribed in demo mode' : '', confirm: '', actions: [],
+          reply: '(Demo) The real assistant answers from your tasks. Right now you have ' + titles.length + ' open task' + (titles.length === 1 ? '' : 's') + (late ? ', ' + late + ' overdue' : '') + (titles.length ? ': ' + titles.slice(0, 4).join('; ') + '.' : '.') };
+      },
+      briefing: function (input) {
+        const lines = String(input.context).split(/\r?\n/).filter(function (l) { return l.indexOf('TASK id=') === 0; });
+        return { headline: '(Demo) You have ' + lines.length + ' open task' + (lines.length === 1 ? '' : 's') + '.',
+          items: lines.slice(0, 3).map(function (l) { return { tone: l.indexOf('OVERDUE') >= 0 ? 'urgent' : 'info', text: (/"([^"]*)"/.exec(l) || [])[1] + ' - ' + ((/\| ([^|]*%[^|]*|WAITING[^|]*) \|/.exec(l) || [])[1] || ''), task_id: (/id=(\S+)/.exec(l) || [])[1] }; }) };
+      },
       summarize: function (input) {
         const msgs = input.messages.filter(function (m) { return m.role !== 'system'; });
         const last = msgs[msgs.length - 1];
@@ -148,7 +164,9 @@
       store: store,
       files: {
         saveAudio: function (o) { const id = 'F' + randomHex(6); files[id] = { b64: o.b64, mime: o.mime }; return id; },
-        readAudio: function (id) { if (!files[id]) throw new Error('Audio is not available in demo mode after a page reload'); return files[id]; }
+        readAudio: function (id) { if (!files[id]) throw new Error('Audio is not available in demo mode after a page reload'); return files[id]; },
+        saveFile: function (o) { const id = 'F' + randomHex(6); files[id] = { b64: o.b64, mime: o.mime }; return id; },
+        readFile: function (id) { if (!files[id]) throw new Error('This file is not available in demo mode after a page reload'); return files[id]; }
       },
       archive: {
         save: function (o) {

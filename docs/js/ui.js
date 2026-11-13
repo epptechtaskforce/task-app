@@ -79,7 +79,14 @@
     trend: ['M23 6l-9.5 9.5-5-5L1 18', 'M17 6h6v6'],
     zap: ['M13 2L3 14h9l-1 8 10-12h-9l1-8z'],
     flag: ['M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z', 'M4 22v-7'],
-    smile: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M8 14s1.5 2 4 2 4-2 4-2', 'M9 9h.01', 'M15 9h.01']
+    smile: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M8 14s1.5 2 4 2 4-2 4-2', 'M9 9h.01', 'M15 9h.01'],
+    paperclip: ['M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'],
+    file: ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', 'M14 2v6h6'],
+    image: ['M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z', 'M8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z', 'M21 15l-5-5L5 21'],
+    download: ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'M7 10l5 5 5-5', 'M12 15V3'],
+    volume: ['M11 5L6 9H2v6h4l5 4z', 'M19.07 4.93a10 10 0 0 1 0 14.14', 'M15.54 8.46a5 5 0 0 1 0 7.07'],
+    volumeOff: ['M11 5L6 9H2v6h4l5 4z', 'M23 9l-6 6', 'M17 9l6 6'],
+    stop: ['M6 6h12v12H6z']
   };
   // opts.fill: solid shape (play/pause). opts.cls: extra class. Decorative by default (aria-hidden).
   function icon(name, size, opts) {
@@ -515,6 +522,87 @@
     return m;
   }
 
+  /* ---------- photos and documents ---------- */
+  const FILE_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.rtf,.odt,.ods';
+  const FILE_EXTS = 'jpg jpeg png webp gif pdf doc docx xls xlsx ppt pptx txt csv rtf odt ods'.split(' ');
+  const MAX_FILE_BYTES = 5 * 1024 * 1024;
+  function fileExt(name) { const m = /\.([A-Za-z0-9]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+  function fileKind(name) {
+    const e = fileExt(name);
+    if (e === 'pdf') return 'pdf'; if (e === 'doc' || e === 'docx' || e === 'rtf' || e === 'odt') return 'doc';
+    if (e === 'xls' || e === 'xlsx' || e === 'csv' || e === 'ods') return 'xls'; if (e === 'ppt' || e === 'pptx') return 'ppt';
+    return 'file';
+  }
+  function fmtSize(b) { b = Number(b) || 0; return b < 1024 ? b + ' B' : b < 1048576 ? Math.round(b / 1024) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
+  function fileIcon(name) { const k = fileKind(name); return h('span', { class: 'file-ico', 'data-k': k, 'aria-hidden': 'true' }, fileExt(name).slice(0, 4) || 'file'); }
+  function readB64(file) {
+    return new Promise(function (res, rej) {
+      const r = new FileReader();
+      r.onload = function () { res(String(r.result).split(',')[1] || ''); };
+      r.onerror = function () { rej(new Error('Could not read that file')); };
+      r.readAsDataURL(file);
+    });
+  }
+  function drawScaled(img, maxSide) {
+    const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const cv = h('canvas', { width: Math.max(1, Math.round(img.naturalWidth * k)), height: Math.max(1, Math.round(img.naturalHeight * k)) }), c = cv.getContext('2d');
+    c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height); c.drawImage(img, 0, 0, cv.width, cv.height);
+    return cv;
+  }
+  // A photo from the phone can be 5-10 MB. Shrink it to a sensible size (1600 px, JPEG) and make a small preview picture.
+  async function prepareImage(file) {
+    let img;
+    try { img = await loadImage(file); } catch (e) { throw new Error('This picture could not be opened. Try a JPG or PNG photo.'); }
+    let side = 1600, q = 0.82, cv = drawScaled(img, side), data = cv.toDataURL('image/jpeg', q);
+    for (let i = 0; i < 5 && data.length > 6000000; i++) { if (q > 0.5) q -= 0.15; else { side = Math.round(side * 0.75); cv = drawScaled(img, side); } data = cv.toDataURL('image/jpeg', q); }
+    let ts = 200, tq = 0.62, thumb = drawScaled(img, ts).toDataURL('image/jpeg', tq);
+    for (let i = 0; i < 6 && thumb.length > 8800; i++) { if (tq > 0.35) tq -= 0.1; else { ts = Math.round(ts * 0.8); } thumb = drawScaled(img, ts).toDataURL('image/jpeg', tq); }
+    const base = String(file.name || 'photo').replace(/\.[^.]*$/, '').slice(0, 60) || 'photo';
+    return { name: base + '.jpg', b64: data.split(',')[1], thumb: thumb.length <= 9000 ? thumb : '', w: cv.width, h: cv.height };
+  }
+  // Turns what the person picked into what the server wants: { name, b64, thumb?, w?, h? }. Throws a friendly error.
+  async function prepareFile(file) {
+    const e = fileExt(file.name), type = String(file.type || '');
+    const isImg = type.indexOf('image/') === 0 || ['jpg', 'jpeg', 'png', 'webp', 'gif'].indexOf(e) >= 0;
+    if (isImg) return prepareImage(file);
+    if (FILE_EXTS.indexOf(e) < 0) throw new Error('"' + file.name + '" is not a file type that can be shared. Use photos, PDF, Word, Excel, PowerPoint or text files.');
+    if (file.size > MAX_FILE_BYTES) throw new Error('"' + file.name + '" is ' + fmtSize(file.size) + '. The limit is 5 MB.');
+    return { name: file.name, b64: await readB64(file) };
+  }
+  function pickFiles(kind) {
+    return new Promise(function (resolve) {
+      const input = h('input', { type: 'file', class: 'hidden', 'aria-hidden': 'true', tabindex: '-1' });
+      if (kind === 'camera') { input.setAttribute('accept', 'image/*'); input.setAttribute('capture', 'environment'); }
+      else if (kind === 'photo') { input.setAttribute('accept', 'image/*'); input.multiple = true; }
+      else { input.setAttribute('accept', FILE_ACCEPT); input.multiple = true; }
+      input.addEventListener('change', function () { const f = Array.prototype.slice.call(input.files || []); input.remove(); resolve(f); });
+      input.addEventListener('cancel', function () { input.remove(); resolve([]); });
+      document.body.appendChild(input); input.click();
+    });
+  }
+  // The "attach" menu. Resolves with the chosen files (or []).
+  function attachMenu() {
+    return new Promise(function (resolve) {
+      let m = null, answered = false;
+      const answer = function (v) { if (!answered) { answered = true; resolve(v); } };
+      const opt = function (ic, title, sub, kind) {
+        return h('button', { type: 'button', class: 'attach-opt', onclick: function () { pickFiles(kind).then(answer); m.close(); } }, h('span', { class: 'ic' }, icon(ic, 22)), h('span', null, title, h('small', null, sub)));
+      };
+      m = modal({ title: 'Share a file', noFocus: true, onClose: function () { setTimeout(function () { answer([]); }, 300); },
+        body: h('div', { class: 'attach-sheet' }, opt('camera', 'Take a photo', 'Use the camera', 'camera'), opt('image', 'Photo from gallery', 'Pictures are shrunk automatically', 'photo'), opt('file', 'Document', 'PDF, Word, Excel, PowerPoint, text (up to 5 MB)', 'doc')) });
+    });
+  }
+  function b64Url(b64, mime) {
+    const bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
+  }
+  function saveUrl(url, name) { const a = h('a', { href: url, download: name || 'file' }); document.body.appendChild(a); a.click(); a.remove(); }
+  function lightbox(url, name) {
+    modal({ title: name, cls: 'wide', body: h('div', { class: 'lightbox' }, h('img', { src: url, alt: name })),
+      actions: [{ label: 'Close' }, { label: 'Download', kind: 'primary', onClick: function () { saveUrl(url, name); return false; } }] });
+  }
+
   /* ---------- button ripple ---------- */
   document.addEventListener('pointerdown', function (e) {
     const b = e.target.closest && e.target.closest('.btn, .send, .mic, .fab');
@@ -537,5 +625,6 @@
   w.UI = { h: h, svg: svg, clear: clear, icon: icon, setIcon: setIcon, date: date, time: time, dateTime: dateTime, dayLabel: dayLabel, ago: ago, duration: duration, dueInfo: dueInfo, greeting: greeting, ymd: ymd,
     toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
     chip: chip, initials: initials, avatar: avatar, avatarStack: avatarStack, hydrateAvatars: hydrateAvatars, pickPhoto: pickPhoto, reduced: reduced,
-    skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply } };
+    skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply },
+    fileIcon: fileIcon, fileKind: fileKind, fmtSize: fmtSize, prepareFile: prepareFile, attachMenu: attachMenu, b64Url: b64Url, saveUrl: saveUrl, lightbox: lightbox, MAX_FILE_BYTES: MAX_FILE_BYTES };
 })(window);

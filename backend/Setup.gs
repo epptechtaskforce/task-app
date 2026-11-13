@@ -93,7 +93,9 @@ function smokeTest() {
   const voice = root.createFolder('Voice'), archive = root.createFolder('Archive');
   const stubAi = {
     transcribe: function () { return { transcript: 'වැඩේ අවසන්', language: 'Sinhala', english_translation: 'The work is finished' }; },
-    summarize: function () { return { summary_en: 'ok', summary_si: 'හරි', health: 'on_track', blockers: [], next_steps: [], progress_note: 'x' }; }
+    summarize: function () { return { summary_en: 'ok', summary_si: 'හරි', health: 'on_track', blockers: [], next_steps: [], progress_note: 'x' }; },
+    assistant: function (input) { return { heard: 'hello', reply: 'Hi ' + input.userName, confirm: '', actions: [] }; },
+    briefing: function () { return { headline: 'All good', items: [{ tone: 'good', text: 'Nothing is late', task_id: '' }] }; }
   };
   try {
     const core = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), ai: stubAi });
@@ -158,6 +160,23 @@ function smokeTest() {
     check(prof && prof.bio === 'Ask me about irrigation' && prof.photo === jpeg, 'picture and bio saved, and the manager can read them');
     check(must('profiles', boss1, { have: JSON.parse('{"' + u2.user.id + '":' + prof.ver + '}') }).profiles[0].photo === undefined, 'an unchanged picture is not sent again');
     check(call('saveProfile', staff1, { photo: 'https://example.com/a.jpg' }).code === 'VALIDATION', 'only small JPEG pictures are accepted');
+
+    // shared files (Attachments sheet is created on first use), the assistant and the overview (Briefings sheet)
+    const t2 = must('createTask', boss1, { title: 'File task', assigneeIds: [u2.user.id] }).task;
+    const pdf = Utilities.base64Encode('%PDF-1.4\nsmoke test file\n');
+    const fm = must('postFile', staff1, { taskId: t2.id, name: 'Smoke report.pdf', b64: pdf, caption: 'draft' }).message;
+    check(fm.type === 'file' && fm.file.name === 'Smoke report.pdf', 'a document can be shared in a task');
+    check(must('getFile', boss1, { messageId: fm.id }).b64 === pdf, 'the shared document is stored in Drive and can be read back');
+    check(call('postFile', staff1, { taskId: t2.id, name: 'x.exe', b64: pdf }).code === 'VALIDATION', 'programs cannot be shared');
+    check(call('getFile', admin, { messageId: fm.id }).ok === false, 'admin cannot open files of other people\'s tasks');
+    const as = must('assistant', boss1, { text: 'what is open?', taskId: t2.id });
+    check(as.reply === 'Hi Boss One' && as.heard === 'hello', 'the assistant answers');
+    check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
+    must('setProgress', staff1, { taskId: t2.id, progress: 100 });
+    must('approveTask', boss1, { taskId: t2.id });
+    const doc2 = must('getArchived', staff1, { taskId: t2.id });
+    const fm2 = doc2.messages.filter(function (m) { return m.type === 'file'; })[0];
+    check(!!fm2 && must('getFile', staff1, { archived: true, taskId: t2.id, messageId: fm2.id }).b64 === pdf, 'a shared document is still readable after the task is archived');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);
@@ -167,6 +186,19 @@ function smokeTest() {
 }
 
 /* ------------------------------ AI helpers ------------------------------ */
+
+// Run once by hand: asks the REAL Gemini model the assistant questions (uses a little of the free quota) and logs the answers.
+function assistantTest() {
+  const ai = new GeminiAi_();
+  const context = 'TODAY: Friday 2026-11-13, 09:00 (company time zone)\nUSER: Kamala Silva (id U1), General Manager, layer 2\nPEOPLE WHO CAN GIVE ME TASKS: Nimal Perera\n' +
+    'PEOPLE I CAN ASSIGN TASKS TO (use these ids):\n- Ruwan Jayasinghe (id U2), Field Officer\n- Ishara Dias (id U3), Field Officer\nOPEN TASKS (1):\n' +
+    'TASK id=T1 | "Check irrigation in Block A" | in progress, 40% | due 2026-11-12 (OVERDUE by 1 day) | my role: creator (I assigned it) | from: Kamala Silva | to: Ruwan Jayasinghe | last activity 2026-11-11 16:00\n' +
+    '  [11-11 16:00] Ruwan Jayasinghe: Two pumps are working, the third needs a new valve.\nRECENTLY COMPLETED TASKS (0 latest):\n(none)';
+  const ask = function (text) { return ai.assistant({ context: context, history: [], text: text, audio: null, pending: [], focus: null, files: [], userName: 'Kamala Silva' }); };
+  Logger.log(JSON.stringify(ask('What is overdue and why?')));
+  Logger.log(JSON.stringify(ask('Give Ishara a task to count the crates in the packing shed by next Tuesday.')));
+  Logger.log(JSON.stringify(ai.briefing({ context: context, userName: 'Kamala Silva' })));
+}
 
 function selfTest() {
   Logger.log(JSON.stringify(new GeminiAi_().summarize({
