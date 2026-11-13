@@ -855,3 +855,9 @@ h1 { letter-spacing: -.025em; }
 .aib-msg.user.listening .aib-kbd svg { width: 13px; height: 13px; }
 .aib-urow .aib-msg.user.listening { max-width: none; }
 .aib-urow.speaking { align-items: center; }
+
+/* working on an answer: one small spinning ring on the AI bubble and the "Thinking…" tag (no bouncing dots) */
+.aib-fab.busy::before { inset: -5px; border: 3px solid transparent; border-top-color: var(--accent-2); border-right-color: var(--accent-2); opacity: 1; transform: none; animation: aibspin .8s linear infinite; }
+.aib-fab.busy .aib-orb { animation: none; }
+@keyframes aibspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .aib-fab.busy::before { animation: none; } }

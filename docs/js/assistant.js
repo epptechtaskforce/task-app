@@ -157,7 +157,6 @@
     if (old) old.remove();
     B.stack.insertBefore(B.botEl, B.userEl ? B.userEl.nextSibling : B.stack.firstChild); sync(); return B.botEl;
   }
-  function dots() { return [h('i'), h('i'), h('i')]; }
   function clearMessages() { dissolve(B.userEl); dissolve(B.botEl); B.userEl = null; B.botEl = null; sync(); }
   // Stops listening / speaking / typing and removes the messages. The remembered conversation (B.history) is untouched.
   function endSession() {
@@ -292,8 +291,9 @@
       if (NO.test(o.text)) { putUser(o.text); return cancelPending(); }
     }
     B.busy = true; B.lastVoice = !!(o.audio || o.voice); B.fab.classList.add('busy');
-    if (o.text) putUser(o.text); else putUser(dots()).classList.add('typing');
-    putBot(dots(), true);
+    // no bouncing dots: the AI bubble itself shows a small spinning ring and "Thinking…" while it works
+    if (o.text) putUser(o.text); else { dissolve(B.userEl); B.userEl = null; }
+    dissolve(B.botEl); B.botEl = null; sync();
     let r;
     try {
       const payload = Object.assign({ history: B.history.slice(-10), pending: B.pending.map(function (p) { return p.label; }), taskId: B.where.task || undefined, archivedId: B.where.archived || undefined, text: o.text || undefined }, o.audio || {});
@@ -365,7 +365,7 @@
   async function confirmPending() {
     if (!B.pending.length || B.busy) return;
     const todo = B.pending; B.pending = []; B.editing = false; drawCard(); store.save();
-    const my = ++B.token; B.busy = true; B.fab.classList.add('busy'); putBot(dots(), true);
+    const my = ++B.token; B.busy = true; B.fab.classList.add('busy'); dissolve(B.botEl); B.botEl = null; sync();
     let done = 0, big = false; const bad = [];
     for (let i = 0; i < todo.length; i++) {
       const a = todo[i];
