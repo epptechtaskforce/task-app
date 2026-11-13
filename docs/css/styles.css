@@ -904,3 +904,37 @@ h1 { letter-spacing: -.025em; }
 @media (prefers-reduced-motion: reduce) { .task .flow .arrow, .task .dbadge.late, .task .newdot, .task .timebar i { animation: none; } }
 .task .flow .avatar-stack { margin-right: .25rem; flex: none; }
 .task .flow .avatar-stack .avatar { box-shadow: 0 0 0 2px var(--solid); }
+
+/* ---------- Today at a glance: icon tiles and a week strip ---------- */
+.glance { padding: 1rem 1rem 1.05rem; border-radius: 24px; overflow: hidden; position: relative; background: linear-gradient(160deg, color-mix(in srgb, var(--accent-soft) 70%, var(--solid)), var(--solid) 60%); }
+.glance-head { display: flex; align-items: center; gap: .45rem; font-weight: 800; font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); margin-bottom: .75rem; }
+.glance-head .grow { flex: 1; } .glance-head .sum-ico { animation: twinkle 3s ease-in-out infinite; }
+.glance .spin { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); animation: aibspin .8s linear infinite; display: inline-block; }
+.glance-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; }
+.gtile { --c: var(--mute); position: relative; display: flex; flex-direction: column; align-items: center; gap: .1rem; padding: .7rem .2rem .55rem; border-radius: 18px; border: 1.5px solid var(--line); background: var(--solid); font: inherit; color: var(--ink); cursor: pointer; opacity: .55; animation: rise .45s var(--ease) both; animation-delay: calc(var(--i, 0) * 60ms); transition: transform .2s var(--spring), border-color .2s; }
+.gtile.has { opacity: 1; border-color: color-mix(in srgb, var(--c) 45%, var(--line)); }
+.gtile.has:hover { transform: translateY(-2px); } .gtile.has:active { transform: scale(.96); }
+.gtile:disabled { cursor: default; }
+.gtile.late { --c: var(--c-late); } .gtile.today { --c: #f08a24; } .gtile.approve { --c: var(--c-wait); } .gtile.fresh { --c: var(--accent-2); }
+.gtile .gi { width: 38px; height: 38px; border-radius: 13px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--c), color-mix(in srgb, var(--c) 60%, #fff)); }
+.gtile:not(.has) .gi { background: var(--line); color: var(--mute); }
+.gtile.has.late .gi { animation: latepulse 1.6s ease-in-out infinite; }
+.gtile b { font-size: 1.5rem; line-height: 1.1; font-weight: 800; }
+.gtile em { font-style: normal; font-size: .7rem; font-weight: 700; color: var(--mute); }
+.glance-clear { display: flex; align-items: center; gap: .8rem; padding: .3rem .2rem; }
+.glance-clear b { font-size: 1.15rem; }
+.okring { width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #2fa04f, #6fd08c); animation: pop .5s var(--spring) both; box-shadow: 0 0 0 8px color-mix(in srgb, #2fa04f 14%, transparent); }
+.wstrip { display: flex; gap: .3rem; margin-top: .9rem; padding-top: .8rem; border-top: 1px dashed var(--line); }
+.wcol { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: .35rem; padding: .3rem .1rem .45rem; border-radius: 14px; }
+.wcol.wtoday { background: color-mix(in srgb, var(--accent-soft) 80%, transparent); box-shadow: inset 0 0 0 1.5px var(--accent-2); }
+.wcol.wlate { background: color-mix(in srgb, var(--bad-soft) 80%, transparent); }
+.whead { display: flex; flex-direction: column; align-items: center; gap: 0; border: 0; background: none; font: inherit; color: var(--ink); padding: .1rem .2rem; cursor: pointer; border-radius: 10px; }
+.whead:disabled { cursor: default; } .whead small { font-size: .62rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--mute); } .whead b { font-size: .95rem; font-weight: 800; }
+.wcol.wlate .whead b, .wcol.wlate .whead small { color: var(--bad); }
+.wdots { display: flex; flex-direction: column; align-items: center; gap: 5px; min-height: 58px; }
+.wcol:not(.has) .wdots::before { content: ""; width: 10px; height: 2px; border-radius: 2px; background: var(--line); margin-top: 6px; }
+.gdot { width: 15px; height: 15px; border-radius: 50%; background: var(--c-new); box-shadow: 0 0 0 2px var(--solid); animation: pop .45s var(--spring) both; animation-delay: var(--d, 0ms); transition: transform .15s; }
+.gdot:hover { transform: scale(1.3); }
+.gdot.late { background: var(--c-late); } .gdot.wait { background: var(--c-wait); } .gdot.active { background: var(--c-active); } .gdot.new { background: var(--c-new); }
+.wmore { font-size: .62rem; font-weight: 800; color: var(--mute); }
+@media (prefers-reduced-motion: reduce) { .gtile, .gdot, .okring, .gtile.has.late .gi, .glance .spin { animation: none; } }

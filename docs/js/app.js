@@ -263,8 +263,70 @@
       used === null ? null : h('div', { class: 'timebar', title: 'Time used', 'aria-hidden': 'true' }, h('i', { style: '--u:' + Math.round(used * 100) + '%' })));
   }
 
+  /* ---------- "Today at a glance": a picture, not a paragraph (built from the task list itself, no AI call) ----------
+     Four icon tiles for what needs you (late, due today, waiting for your approval, new activity) and a week strip: one column per
+     day (late ones first), one dot per task coloured by state. Tap a tile or a column to see just those tasks, tap a dot to open it.
+     People with AI access also get a speaker button that reads the AI overview aloud (nothing to read on screen). */
+  function glanceCard(brief) {
+    const box = h('section', { class: 'card glance', 'aria-label': 'Today at a glance' });
+    let reading = false, loadingVoice = false, last = [];
+    const stateCls = { late: 'late', wait: 'wait', active: 'active', 'new': 'new' };
+    function show(ids, filter) { App.showPage({ page: 'tasks', filter: filter || 'all', taskIds: ids || [] }); }
+    function voiceBtn() {
+      if (!brief || !Speech.supported) return null;
+      return h('button', { class: 'icon-btn', type: 'button', disabled: loadingVoice, title: reading ? 'Stop' : 'Listen to the overview', 'aria-label': reading ? 'Stop' : 'Listen to the overview', onclick: function () {
+        if (reading) { Speech.stop(); reading = false; return update(last); }
+        reading = true; loadingVoice = true; update(last);
+        brief.speak(function () { reading = false; update(last); }).then(function () { loadingVoice = false; update(last); });
+      } }, loadingVoice ? h('span', { class: 'spin', 'aria-hidden': 'true' }) : icon(reading ? 'stop' : 'volume', 18));
+    }
+    function update(tasks) {
+      last = tasks;
+      UI.clear(box);
+      const today = [], late = [], approve = [], fresh = [], cols = [[], [], [], [], [], [], []], lateCol = [];
+      tasks.forEach(function (t) {
+        const due = UI.dueInfo(t.dueDate, t.status), b = bucket(t);
+        if (b === 'late') late.push(t);
+        if (t.role === 'creator' && t.status === 'pending') approve.push(t);
+        if (t.unread) fresh.push(t);
+        if (due && t.status !== 'pending' && due.days === 0) today.push(t);
+        if (due) { if (due.days < 0) lateCol.push(t); else if (due.days <= 6) cols[due.days].push(t); }
+      });
+      const ids = function (a) { return a.map(function (t) { return t.id; }); };
+      box.appendChild(h('div', { class: 'glance-head' }, h('span', { class: 'sum-ico' }, icon('sparkles', 16)), h('span', { class: 'grow' }, 'Today'), voiceBtn()));
+      const tiles = [['late', 'alert', 'Late', late, function () { show([], 'late'); }], ['today', 'zap', 'Today', today, function () { show(ids(today)); }],
+        ['approve', 'checkCircle', 'Approve', approve, function () { show(ids(approve)); }], ['fresh', 'inbox', 'New', fresh, function () { show(ids(fresh)); }]];
+      const total = tiles.reduce(function (n, x) { return n + x[3].length; }, 0);
+      if (!tasks.length) { box.appendChild(h('div', { class: 'glance-clear' }, h('span', { class: 'okring' }, icon('check', 30)), h('b', null, 'No tasks yet'))); return; }
+      if (!total) box.appendChild(h('div', { class: 'glance-clear' }, h('span', { class: 'okring' }, icon('check', 30)), h('b', null, 'All clear')));
+      else box.appendChild(h('div', { class: 'glance-tiles' }, tiles.map(function (x, n) {
+        const k = x[3].length;
+        return h('button', { type: 'button', class: 'gtile ' + x[0] + (k ? ' has' : ''), disabled: !k, style: '--i:' + n, 'aria-label': k + ' ' + x[2], onclick: x[4] }, h('span', { class: 'gi' }, icon(x[1], 20)), h('b', null, k), h('em', null, x[2]));
+      })));
+      // the week strip
+      const dayOf = function (n) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d; };
+      const strip = h('div', { class: 'wstrip', role: 'group', 'aria-label': 'Next seven days' });
+      const column = function (label, sub, list, extra, n) {
+        const dots = list.slice().sort(function (a, b) { return b.updatedAt - a.updatedAt; }).slice(0, 4).map(function (t, k) {
+          return h('a', { class: 'gdot ' + stateCls[bucket(t)], href: '#/task/' + t.id, title: t.title, 'aria-label': t.title, style: '--d:' + (n * 60 + k * 90) + 'ms' });
+        });
+        return h('div', { class: 'wcol' + (extra || '') + (list.length ? ' has' : '') },
+          h('button', { type: 'button', class: 'whead', disabled: !list.length, onclick: function () { show(ids(list)); } }, h('small', null, label), h('b', null, sub)),
+          h('div', { class: 'wdots' }, dots, list.length > 4 ? h('span', { class: 'wmore' }, '+' + (list.length - 4)) : null));
+      };
+      if (lateCol.length) strip.appendChild(column('Late', '!', lateCol, ' wlate', 0));
+      cols.forEach(function (list, n) {
+        const d = dayOf(n);
+        strip.appendChild(column(n === 0 ? 'Today' : d.toLocaleDateString('en-GB', { weekday: 'narrow' }), String(d.getDate()), list, n === 0 ? ' wtoday' : '', n + 1));
+      });
+      box.appendChild(strip);
+    }
+    update([]);
+    return { el: box, update: update };
+  }
+
   function viewTasks() {
-    const brief = S.canUseAi ? Assistant.briefingCard(App) : { el: null, needsRefresh: function () { return false; }, load: function () {} };   // the overview and the bubble are for Senior General Managers and above
+    const glance = glanceCard(S.canUseAi ? Assistant.briefingCard(App) : null);   // the picture card is for everyone; the spoken AI overview and the bubble are for Senior General Managers and above
     const statBox = h('div'), list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show tasks' }), activeBox = h('div');
     const q = h('input', { type: 'search', placeholder: 'Search tasks or people…', 'aria-label': 'Search tasks or people', value: S.q });
     const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest first'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
@@ -274,8 +336,8 @@
       h('div', { class: 'hero2' },
         h('div', { class: 'hero2-top' }, h('span', { class: 'logo' }, icon('checkCircle', 20)), h('span', { class: 'nm' }, S.company || 'Task Manager'), h('a', { href: '#/account', 'aria-label': 'My profile' }, UI.avatar(S.user.name, 'sm', S.user.id))),
         h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), subLine, statBox),
-      h('div', { class: 'home-grid' + (brief.el ? '' : ' solo') },
-        brief.el ? h('div', { class: 'home-side' }, brief.el) : null,
+      h('div', { class: 'home-grid' },
+        h('div', { class: 'home-side' }, glance.el),
         h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, activeBox, list)),
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks', { bare: true });
     let tasks = [], statSig = '', animated = false;
@@ -336,7 +398,7 @@
       }
       UI.clear(activeBox);
       const picked = BUCKETS.filter(function (x) { return x[0] === S.filter; })[0];
-      const label = S.only.length ? S.only.length + (S.only.length === 1 ? ' task' : ' tasks') + ' picked by the assistant' : picked ? picked[1] : S.filter === 'mine' ? 'Assigned to me' : S.filter === 'byme' ? 'Assigned by me' : '';
+      const label = S.only.length ? S.only.length + (S.only.length === 1 ? ' task' : ' tasks') + ' selected' : picked ? picked[1] : S.filter === 'mine' ? 'Assigned to me' : S.filter === 'byme' ? 'Assigned by me' : '';
       if (label) activeBox.appendChild(h('div', { class: 'active-filter' }, UI.chip('Showing: ' + label, 'brand', 'search'), h('button', { class: 'btn ghost small', type: 'button', onclick: function () { S.filter = 'all'; S.only = []; redraw(); } }, 'Show all')));
       const shown = tasks.filter(matches);
       UI.clear(list);
@@ -355,7 +417,7 @@
         items.forEach(function (t) { list.appendChild(taskCard(t, n++)); });
       });
     }
-    function redraw() { drawStats(); drawList(); }
+    function redraw() { drawStats(); drawList(); glance.update(tasks); }
 
     let loaded = false;
     async function load() {
@@ -371,7 +433,7 @@
     const known = Api.cacheGet(cacheKey);
     if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); redraw(); }
     // The list comes first; the overview (an AI call) is only asked for after it, and only when the saved one is old or missing.
-    load().then(function () { if (brief.needsRefresh()) brief.load(false); }, function () { /* the error is already shown */ });
+    load().catch(function () { /* the error is already shown */ });
     poll(load, 40000);
   }
 

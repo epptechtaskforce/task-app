@@ -507,7 +507,14 @@
     draw();
     // Only ask the AI again when there is nothing saved yet or the saved overview is more than 10 minutes old.
     function needsRefresh() { return !data || !data.briefing || !data.at || Date.now() - data.at > 600000 || !!data.stale; }
-    return { el: box, load: load, needsRefresh: needsRefresh };
+    // Reads the AI overview aloud (asking for it first when there is none yet). Used by the speaker button on the picture card.
+    async function speak(done) {
+      if (!data || !data.briefing || needsRefresh()) await load(false);
+      if (!data || !data.briefing) { if (done) done(); return; }
+      Speech.unlock();
+      Speech.speak([data.briefing.headline].concat(data.briefing.items.slice(0, 3).map(function (i) { return i.text; })).join('. '), { onend: function () { if (done) done(); } });
+    }
+    return { el: box, load: load, needsRefresh: needsRefresh, speak: speak };
   }
 
   w.Assistant = { ensure: ensure, where: where, hide: hide, reset: reset, listen: listenNow, settingsCard: settingsCard, briefingCard: briefingCard };
