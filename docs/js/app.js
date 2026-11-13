@@ -222,18 +222,45 @@
     return { overdue: !!(due && due.cls === 'bad'), approve: t.role === 'creator' && t.status === 'pending', unread: !!t.unread, due: due };
   }
 
+  // A task card is a picture first: a progress doughnut, the title, who -> whom as faces with an arrow, and one small time badge.
+  // Colour tells the state (red late, amber waiting for approval, blue going, grey not started); the thin bar at the bottom is how much
+  // of the time has been used (compare it with the doughnut: bar ahead of doughnut = falling behind). No sentences, no dates in words.
+  const first = function (n) { return String(n || '').split(' ')[0]; };
+  function dueBadge(t, f) {
+    if (t.status === 'pending') return t.role === 'creator' ? { cls: 'warn', ic: 'clock', text: 'Review', tip: 'Waiting for your approval' } : { cls: 'warn', ic: 'clock', text: 'Sent', tip: 'Sent for approval' };
+    const d = f.due; if (!d) return null;
+    const n = d.days;
+    if (n < 0) return { cls: 'bad late', ic: 'alert', text: (-n) + 'd late', tip: d.text };
+    if (n === 0) return { cls: 'warn', ic: 'calendar', text: 'Today', tip: d.text };
+    if (n === 1) return { cls: 'warn', ic: 'calendar', text: 'Tomorrow', tip: d.text };
+    if (n <= 6) return { cls: 'soon', ic: 'calendar', text: n + ' days', tip: d.text };
+    return { cls: '', ic: 'calendar', text: new Date(t.dueDate + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), tip: d.text };
+  }
+  function timeUsed(t) {   // 0..1 of the time between creation and the due date that has gone by (null without a due date)
+    if (!t.dueDate || t.status === 'pending') return null;
+    const end = new Date(t.dueDate + 'T23:59:59').getTime(), start = t.createdAt || 0;
+    if (!start || end <= start) return null;
+    return Math.max(0, Math.min(1, (Date.now() - start) / (end - start)));
+  }
   function taskCard(t, i) {
     const f = taskFlags(t), b = bucket(t);
     const state = { late: 'bad', wait: 'warn', active: 'info', 'new': '' }[b];
-    const others = t.role === 'creator' ? t.assignees : [t.creator];
-    const ic = { late: 'alert', wait: 'clock', active: 'trend', 'new': 'flag' }[b];
-    return h('a', { class: 'card task' + (state ? ' st-' + state : '') + (S.spot === t.id ? ' ai-spot' : ''), href: '#/task/' + t.id, 'data-id': t.id, style: '--i:' + Math.min(i || 0, 10) },
-      h('div', { class: 't-row' }, h('span', { class: 't-ico', 'aria-hidden': 'true' }, icon(ic, 22)),
-        h('div', { class: 't-main' }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'new' }, 'NEW') : null),
-          h('div', { class: 'people' }, UI.avatarStack(others), h('span', { class: 't' }, peopleLine(t)))),
-        h('div', { class: 't-ring', style: '--p:' + t.progress, role: 'img', 'aria-label': t.progress + ' percent done' }, h('b', null, t.progress + '%'))),
-      h('div', { class: 'meta' }, statusChip(t), f.due ? UI.chip(f.due.text, f.due.cls, 'calendar') : null, h('span', { class: 'muted small' }, 'Updated ' + UI.ago(t.updatedAt))),
-      t.lastMessage ? h('div', { class: 'last' }, t.lastMessage.senderName + ': ' + (t.lastMessage.type === 'voice' ? '🎤 ' : t.lastMessage.type === 'file' ? '📎 ' : '') + t.lastMessage.text) : null);
+    const mine = t.role === 'creator';
+    const me = S.user || { name: 'You', id: '' };
+    const who = function (p, label) { return h('span', { class: 'who' }, UI.avatar(p.name, 'xs', p.id), h('span', null, label)); };
+    const toLabel = mine ? first(t.assignees[0].name) + (t.assignees.length > 1 ? ' +' + (t.assignees.length - 1) : '') : 'You';
+    const flow = h('div', { class: 'flow', 'aria-label': mine ? 'From you to ' + names(t.assignees).join(', ') : 'From ' + t.creator.name + ' to you' },
+      mine ? who(me, 'You') : who(t.creator, first(t.creator.name)),
+      h('span', { class: 'arrow', 'aria-hidden': 'true' }, icon('arrowRight', 14)),
+      mine ? (t.assignees.length > 1 ? h('span', { class: 'who' }, UI.avatarStack(t.assignees, 3), h('span', null, toLabel)) : who(t.assignees[0], toLabel)) : who(me, 'You'));
+    const due = dueBadge(t, f), used = timeUsed(t);
+    return h('a', { class: 'card task' + (state ? ' st-' + state : '') + (b === 'late' ? ' is-late' : '') + (S.spot === t.id ? ' ai-spot' : ''), href: '#/task/' + t.id, 'data-id': t.id, style: '--i:' + Math.min(i || 0, 10) },
+      h('div', { class: 't-row' },
+        h('div', { class: 't-dn' }, UI.ring(t.progress, '', 58)),
+        h('div', { class: 't-main' },
+          h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'newdot', title: 'New activity', 'aria-label': 'New activity' }) : null),
+          h('div', { class: 'sub-row' }, flow, due ? h('span', { class: 'dbadge ' + due.cls, title: due.tip }, icon(due.ic, 13), due.text) : null))),
+      used === null ? null : h('div', { class: 'timebar', title: 'Time used', 'aria-hidden': 'true' }, h('i', { style: '--u:' + Math.round(used * 100) + '%' })));
   }
 
   function viewTasks() {
