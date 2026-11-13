@@ -235,3 +235,279 @@ function listModels() {
     .filter(function (x) { return (x.supportedGenerationMethods || []).indexOf('generateContent') >= 0; })
     .map(function (x) { return x.name.replace('models/', ''); }).join('\n'));
 }
+
+/* ============================== MOCK DATA (for trying the app before real use) ============================== */
+// mockInspect()  Shows who is in the system (names, job titles, arrows, task counts). Changes nothing.
+function mockInspect() {
+  const env = makeEnv_({});
+  const core = createCore(env);
+  core.TABLES && env.store.init(core.TABLES);
+  const users = env.store.all('Users'), titles = env.store.all('JobTitles'), links = env.store.all('Links');
+  const t = {}; titles.forEach(function (x) { t[x.id] = x.title + ' (layer ' + x.level + ')'; });
+  const u = {}; users.forEach(function (x) { u[x.id] = x.name; });
+  Logger.log('USERS (' + users.length + '):\n' + users.map(function (x) { return '- ' + x.name + ' | ' + x.username + ' | ' + (t[x.jobTitleId] || 'no title') + ' | ' + (x.active ? 'active' : 'inactive') + (x.isAdmin ? ' | admin' : '') + (x.mustChange ? ' | has NOT changed the first password yet' : ''); }).join('\n'));
+  Logger.log('ARROWS (' + links.length + '):\n' + links.map(function (l) { return u[l.fromId] + ' -> ' + u[l.toId]; }).join('\n'));
+  Logger.log('TASKS: open ' + env.store.all('Tasks').length + ', completed ' + env.store.all('ArchiveIndex').length + ', messages ' + env.store.all('Messages').length);
+}
+
+// mockSeed()     Fills the REAL app with about two months of invented work between the people who already exist (their accounts and
+//                arrows are never changed). It runs in batches: run it again until the log says "ALL DONE".
+// mockStatus()   Shows how far it got.
+// mockClean()    Removes everything mockSeed made (tasks, messages, photos, voice files, History entries, Drive folders go to the Drive
+//                trash), and nothing else. Your own real tasks are never touched.
+// How it works safely: the backend is called exactly like a signed-in person would call it (so every rule is checked), but the
+// accounts are only "borrowed" in memory for the run: nothing is written to Users or Sessions, no password is needed, and the AI is
+// switched off (the invented voice messages get their text from the story below).
+
+const MOCK_BASE_ = 'https://epptechtaskforce.github.io/task-app/mock/';
+
+// Events: ['s',day,hour,who,text] typed update, ['v',day,hour,who,secs,what was said] voice message, ['i',day,hour,who,kind,caption] photo,
+// ['f',day,hour,who,docKey,caption] document, ['p',day,hour,who,percent] progress slider, ['ok',day,hour] manager approves (-> History),
+// ['back',day,hour,note] manager sends it back. day = days ago, hour = hour of that day. due = days from today (negative = late).
+const MOCK_TASKS_ = [
+  /* ---------- finished and approved (they end up in History) ---------- */
+  { t: 'Harvest totals report for September', d: 'Collect picking totals for every block and send me one summary before the Friday review.', by: 'amila', to: ['darshana', 'kavishan'], day: 58, hour: 9, due: -53, ev: [
+    ['s', 58, 10, 'amila', 'Please have this ready before the Friday review.'], ['s', 57, 15, 'darshana', 'Blocks A and B are counted. Waiting for the C totals.'],
+    ['v', 56, 11, 'kavishan', 14, 'Block C counting is finished. The total picked in Block C was 3975 kilos and 201 kilos were rejected.'], ['f', 56, 16, 'darshana', 'totals-csv', 'Block totals as a sheet'], ['p', 55, 9, 'darshana', 100], ['ok', 55, 14]] },
+  { t: 'Replace blocked drippers in Block B', d: 'Walk rows 1 to 14, replace every blocked emitter and note how many were changed.', by: 'amila', to: ['kavishan'], day: 56, hour: 8, due: -52, ev: [
+    ['s', 56, 12, 'kavishan', 'Started at row 1. Many emitters are clogged with algae.'], ['i', 55, 10, 'kavishan', 'drip', 'Row 4 with the new emitters fitted'], ['p', 55, 15, 'kavishan', 50],
+    ['s', 54, 11, 'kavishan', 'Rows 8 to 14 done. 63 emitters replaced in total.'], ['p', 54, 12, 'kavishan', 100], ['ok', 54, 16]] },
+  { t: 'Set up the packing line for export order 118', d: 'Line 2 must be ready with labels, punnets and the metal detector tested.', by: 'priyantha', to: ['tharaka', 'janith'], day: 54, hour: 9, due: -50, ev: [
+    ['s', 54, 14, 'tharaka', 'Labels and punnets are in. Metal detector test is booked for tomorrow.'], ['i', 53, 11, 'janith', 'crates', 'Line 2 stacked and ready'],
+    ['f', 53, 15, 'tharaka', 'packing-pdf', 'Packing plan for the order'], ['p', 52, 10, 'tharaka', 100], ['ok', 52, 15]] },
+  { t: 'Calibrate the Brix meter and log the readings', d: 'Use the reference solution and record three readings per batch for two weeks.', by: 'amila', to: ['darshana'], day: 52, hour: 10, due: -40, ev: [
+    ['s', 52, 15, 'darshana', 'Calibrated with the reference solution. Reading is within 0.1.'], ['i', 45, 11, 'darshana', 'chart', 'Two weeks of readings'], ['p', 39, 10, 'darshana', 100], ['ok', 38, 14]] },
+  { t: 'Prepare the board update on export growth', d: 'One page with the volumes, the new buyers and what we need from the board.', by: 'geeth', to: ['amila'], day: 50, hour: 9, due: -43, ev: [
+    ['s', 49, 11, 'amila', 'First draft is with the COO for the logistics numbers.'], ['f', 46, 16, 'amila', 'board-pdf', 'Final one-pager'], ['p', 45, 9, 'amila', 100], ['ok', 45, 13]] },
+  { t: 'Pest scouting in Blocks A to D', d: 'Check 20 plants per block for mites and aphids and photograph anything suspicious.', by: 'amila', to: ['darshana', 'janith', 'kavishan'], day: 47, hour: 8, due: -43, ev: [
+    ['i', 46, 10, 'darshana', 'field', 'Block A, leaves look clean'], ['s', 46, 13, 'janith', 'Block C has light mite damage on the lower leaves.'],
+    ['v', 45, 9, 'kavishan', 21, 'Block D looks clean, no mites. I checked twenty plants near the gate and found only a few aphids on two plants.'],
+    ['i', 45, 12, 'janith', 'field', 'Block C damage, close to the south fence'], ['s', 45, 16, 'amila', 'Thanks. We will spray Block C on Monday.'], ['p', 44, 10, 'darshana', 100], ['ok', 44, 15]] },
+  { t: 'Service the cold room compressor', d: 'Book the technician, keep the room below 4 degrees while the work is done.', by: 'priyantha', to: ['janith'], day: 45, hour: 9, due: -42, ev: [
+    ['s', 45, 14, 'janith', 'Technician comes Thursday morning. I will move the stock to room 1.'], ['i', 43, 12, 'janith', 'cold', 'Room back to 2.4 degrees after the service'], ['p', 43, 13, 'janith', 100], ['ok', 43, 16]] },
+  { t: 'Fix the fence near the Block D gate', d: 'Wild boar broke the lower wire. Repair and add two more posts.', by: 'amila', to: ['kavishan'], day: 43, hour: 8, due: -40, ev: [
+    ['s', 42, 10, 'kavishan', 'Posts are on site. Starting the repair.'], ['i', 41, 14, 'kavishan', 'field', 'Fence repaired, two new posts'], ['p', 41, 15, 'kavishan', 100], ['ok', 41, 17]] },
+  { t: 'Truck slots for the October dispatch', d: 'Match the truck slots with the harvest forecast and share the schedule with the packing house.', by: 'priyantha', to: ['amila'], day: 40, hour: 9, due: -36, ev: [
+    ['s', 39, 11, 'amila', 'Draft schedule is ready, checking it against the forecast.'], ['f', 38, 15, 'amila', 'trucks-pdf', 'Truck schedule for October'], ['p', 38, 16, 'amila', 100], ['ok', 37, 9]] },
+  { t: 'Weekly quality sampling, three batches', d: 'Take samples from three batches, record firmness and sugar, and report any batch below grade.', by: 'amila', to: ['tharaka', 'darshana'], day: 38, hour: 9, due: -33, ev: [
+    ['s', 37, 12, 'tharaka', 'Batch 1 and 2 are fine. Batch 3 firmness is slightly low.'], ['i', 36, 11, 'darshana', 'chart', 'Firmness and sugar results'], ['p', 35, 10, 'tharaka', 100], ['ok', 35, 14]] },
+  { t: 'Review the packaging supplier quotes', d: 'Compare the three quotes on price, delivery time and minimum order.', by: 'geeth', to: ['priyantha'], day: 35, hour: 10, due: -28, ev: [
+    ['s', 34, 14, 'priyantha', 'Supplier B is cheapest but needs 6 weeks. Supplier A delivers in 2 weeks.'], ['f', 31, 11, 'priyantha', 'quotes-pdf', 'Comparison of the three quotes'], ['s', 31, 12, 'geeth', 'Go with A for the next two orders.'], ['p', 30, 9, 'priyantha', 100], ['ok', 30, 12]] },
+  { t: 'Negotiate the cold storage contract renewal', d: 'The contract ends next month. Get a better price per pallet or a longer term.', by: 'geeth', to: ['priyantha'], day: 33, hour: 10, due: -25, ev: [
+    ['s', 32, 11, 'priyantha', 'The owner offered 4 percent off for a two year term.'], ['s', 31, 9, 'geeth', 'Ask for 6 percent and a clause for extra space in peak weeks.'], ['s', 28, 15, 'priyantha', 'Agreed at 5 percent with the peak week clause.'], ['p', 27, 10, 'priyantha', 100], ['ok', 27, 14]] },
+  { t: 'Fertiliser application in Blocks A to C', d: 'Apply the planned mix, record the quantity used per block.', by: 'amila', to: ['darshana', 'kavishan'], day: 32, hour: 7, due: -28, ev: [
+    ['v', 31, 10, 'darshana', 18, 'I started the fertiliser in Block A this morning. The mixer is working fine and we will finish A and B today.'], ['i', 30, 11, 'kavishan', 'field', 'Block B after the application'],
+    ['s', 30, 15, 'darshana', 'A and B are done. 240 kg used in A, 210 kg in B.'], ['p', 29, 10, 'darshana', 100], ['ok', 29, 13]] },
+  { t: 'Safety drill and extinguisher check', d: 'Run the fire drill with the packing house staff and check every extinguisher tag.', by: 'priyantha', to: ['tharaka'], day: 28, hour: 9, due: -24, ev: [
+    ['s', 27, 11, 'tharaka', 'Drill planned for Wednesday 10 am.'], ['i', 25, 14, 'tharaka', 'extinguisher', 'All tags updated, two extinguishers replaced'], ['p', 25, 15, 'tharaka', 100], ['ok', 25, 17]] },
+  { t: 'Update the cold chain temperature log', d: 'The log has gaps for the last two weeks. Fill them from the data logger.', by: 'amila', to: ['janith'], day: 25, hour: 10, due: -22, ev: [
+    ['s', 24, 12, 'janith', 'Downloaded the data logger file, entering it now.'], ['i', 23, 11, 'janith', 'sheet', 'Updated log, no gaps left'], ['p', 23, 12, 'janith', 100], ['ok', 23, 15]] },
+  { t: 'Clear the weeds along the irrigation canal', d: 'Both sides of the main canal, from the pump house to Block E.', by: 'amila', to: ['kavishan', 'darshana'], day: 21, hour: 8, due: -16, ev: [
+    ['s', 20, 12, 'kavishan', 'Started from the pump house side with the two helpers.'], ['i', 18, 11, 'darshana', 'leak', 'Canal bank after clearing'], ['p', 17, 10, 'darshana', 100], ['ok', 17, 14]] },
+  { t: 'Count and label the new picking crates', d: 'About 400 new crates. Number them and record them in the stock sheet.', by: 'priyantha', to: ['janith', 'tharaka'], day: 17, hour: 9, due: -13, ev: [
+    ['s', 16, 13, 'janith', 'Counted 412 crates. Labelling now.'], ['i', 14, 10, 'tharaka', 'crates', 'Labelled stack, ready for the blocks'], ['p', 14, 11, 'janith', 100], ['ok', 14, 15]] },
+  { t: 'Retrain the pickers on ripeness grading', d: 'Short session with the picture cards for every picking team.', by: 'amila', to: ['darshana', 'kavishan'], day: 13, hour: 9, due: -9, ev: [
+    ['v', 12, 10, 'darshana', 24, 'We finished the grading session with teams one and two. The picture cards help a lot and the pickers now understand the colours.'], ['i', 11, 12, 'kavishan', 'field', 'Team 3 with the grading cards'],
+    ['s', 11, 15, 'darshana', 'All five teams are done. Rejects dropped the next day.'], ['p', 10, 10, 'darshana', 100], ['ok', 10, 14]] },
+  { t: 'Approve the Q4 harvest forecast', d: 'Check the forecast sheet and confirm the numbers for the buyers.', by: 'geeth', to: ['amila'], day: 9, hour: 10, due: -5, ev: [
+    ['s', 8, 11, 'amila', 'Forecast is 12 percent above last year. Details in the sheet.'], ['f', 7, 15, 'amila', 'forecast-csv', 'Q4 forecast by block'], ['p', 6, 9, 'amila', 100], ['ok', 5, 11]] },
+  { t: 'Dispatch checklist for the Colombo order', d: 'Check labels, temperature, seals and paperwork before the truck leaves.', by: 'priyantha', to: ['tharaka'], day: 6, hour: 9, due: -3, ev: [
+    ['s', 5, 12, 'tharaka', 'Labels and seals checked. Truck arrives at 4 pm.'], ['i', 4, 17, 'tharaka', 'truck', 'Truck loaded and sealed'], ['p', 3, 9, 'tharaka', 100], ['ok', 3, 12]] },
+
+  /* ---------- finished, waiting for the manager to approve ---------- */
+  { t: 'Prepare the packing schedule for Friday', d: 'Match the truck slots with the harvest forecast.', by: 'amila', to: ['darshana', 'kavishan'], day: 4, hour: 9, due: 0, ev: [
+    ['s', 3, 11, 'darshana', 'Drafted and shared with the packing house.'], ['i', 2, 14, 'kavishan', 'crates', 'Crate stacks for the first truck'], ['p', 0, 8, 'darshana', 100]] },
+  { t: 'Monthly lab results summary', d: 'Summarise the pesticide residue and sugar results from the lab for the file.', by: 'priyantha', to: ['janith'], day: 3, hour: 10, due: 1, unread: true, ev: [
+    ['s', 2, 12, 'janith', 'All residue results are well under the limit.'], ['f', 1, 15, 'janith', 'lab-pdf', 'Lab summary for this month'], ['p', 1, 16, 'janith', 100]] },
+  { t: 'Summarise export order status for the board', d: 'One short note: orders shipped, orders pending and any risk to the dates.', by: 'geeth', to: ['priyantha'], day: 3, hour: 14, due: 2, ev: [
+    ['s', 2, 10, 'priyantha', 'Four orders shipped, two pending. No date is at risk right now.'], ['p', 0, 9, 'priyantha', 100]] },
+
+  /* ---------- in progress ---------- */
+  { t: 'Check irrigation in Block C', d: 'Walk the lines and report any leaks or blocked drippers.', by: 'amila', to: ['darshana', 'kavishan'], day: 6, hour: 9, due: 2, ev: [
+    ['v', 5, 10, 'darshana', 14, 'I walked rows one to ten in Block C. The water pressure is good. I will check the rest of the rows this afternoon.'], ['s', 5, 14, 'kavishan', 'Rows 1 to 10 are fine. Two drippers blocked in row 11, fixing now.'],
+    ['i', 3, 11, 'darshana', 'leak', 'Leak at the joint near row 12'], ['s', 3, 15, 'amila', 'Please fix the joint first, it wastes the most water.'], ['p', 2, 10, 'kavishan', 60]] },
+  { t: 'Transplant new seedlings in Block E', d: 'About 3,000 seedlings. Keep 40 cm between plants.', by: 'amila', to: ['kavishan', 'tharaka'], day: 5, hour: 8, due: 5, ev: [
+    ['s', 4, 11, 'kavishan', 'First 1,200 are in. Soil is moist enough.'], ['i', 3, 12, 'tharaka', 'field', 'New rows in Block E, day 2'],
+    ['v', 1, 10, 'kavishan', 17, 'We planted another eight hundred seedlings in Block E. The soil is moist and the seedlings look healthy.'], ['p', 1, 11, 'kavishan', 40]] },
+  { t: 'Install the shelving in cold room 2', d: 'Six racks, anchored to the floor, and move the stock back.', by: 'priyantha', to: ['tharaka', 'janith'], day: 4, hour: 9, due: 6, ev: [
+    ['s', 3, 12, 'janith', 'Racks delivered. Two are missing the corner brackets.'], ['s', 3, 14, 'priyantha', 'Ask the supplier to send them tomorrow.'], ['i', 1, 13, 'tharaka', 'cold', 'Room 2 with the first racks in place'], ['p', 1, 14, 'janith', 25]] },
+  { t: 'Draft the next season expansion plan', d: 'Land, water, labour and the investment needed for 10 more acres.', by: 'geeth', to: ['amila'], day: 3, hour: 10, due: 10, ev: [
+    ['s', 2, 11, 'amila', 'I have the land and water numbers. Labour costs are next.'], ['f', 1, 16, 'amila', 'plan-pdf', 'First draft of the plan'], ['p', 1, 17, 'amila', 30]] },
+  { t: 'Send soil samples to the lab', d: 'Five samples from different blocks, labelled, with the request form.', by: 'amila', to: ['janith'], day: 2, hour: 9, due: 4, ev: [
+    ['i', 1, 10, 'janith', 'drip', 'Taking the sample next to the drip line in Block B'], ['s', 1, 13, 'janith', 'Three samples collected, two more tomorrow.'], ['p', 1, 14, 'janith', 50]] },
+  { t: 'Prepare the supplier audit documents', d: 'Collect certificates, spray records and training logs for the audit.', by: 'priyantha', to: ['amila'], day: 1, hour: 11, due: 7, unread: true, ev: [
+    ['s', 1, 15, 'amila', 'I have the training logs. The spray records are still with the field team.'], ['f', 0, 9, 'amila', 'audit-pdf', 'Spray record list so far'], ['p', 0, 10, 'amila', 20]] },
+  { t: 'Update the harvest forecast sheet', d: 'Use the latest picking numbers and move the forecast for the next three weeks.', by: 'amila', to: ['darshana'], day: 2, hour: 15, due: 3, ev: [
+    ['s', 1, 9, 'darshana', 'Picking numbers are in. Working on the next three weeks.'], ['p', 1, 10, 'darshana', 45]] },
+
+  /* ---------- overdue ---------- */
+  { t: 'Repair the pump house roof', d: 'The roof leaks over the electric panel. Repair before the rains get heavier.', by: 'amila', to: ['kavishan'], day: 21, hour: 9, due: -9, ev: [
+    ['s', 20, 12, 'kavishan', 'Checked the roof. We need sheets and screws from the hardware shop.'], ['s', 17, 10, 'amila', 'Did the materials arrive?'], ['s', 17, 14, 'kavishan', 'Not yet, the shop says Monday.'],
+    ['i', 12, 11, 'kavishan', 'leak', 'Water marks next to the panel after last night rain'], ['p', 12, 12, 'kavishan', 35], ['s', 8, 9, 'amila', 'This is now late. Please tell me what you need to finish.']] },
+  { t: 'Weekly equipment inspection report', d: 'Check sprayers, pumps and the tractor and report anything that needs repair.', by: 'amila', to: ['tharaka', 'darshana'], day: 18, hour: 8, due: -6, ev: [
+    ['v', 17, 11, 'darshana', 19, 'I checked the sprayers and the water pumps. Sprayer two has a worn seal and pump three is making a noise. I have not checked the tractor yet.'], ['s', 15, 14, 'tharaka', 'Sprayer 2 has a worn seal. Ordered a spare.'], ['p', 14, 10, 'darshana', 70], ['s', 7, 10, 'amila', 'Report still missing the tractor and the pumps.']] },
+  { t: 'Reconcile the packaging material stock', d: 'Count punnets, labels and cartons and match them to the stock sheet.', by: 'priyantha', to: ['janith'], day: 15, hour: 10, due: -4, ev: [
+    ['s', 14, 12, 'janith', 'Counting punnets today, labels tomorrow.'], ['f', 11, 15, 'janith', 'stock-csv', 'Stock count so far'], ['p', 10, 16, 'janith', 55], ['s', 5, 11, 'priyantha', 'Two carton sizes are still missing from the count.']] },
+  { t: 'Submit the compliance checklist to the exporter', d: 'Complete every section, attach the certificates and submit through the exporter portal.', by: 'geeth', to: ['amila', 'priyantha'], day: 12, hour: 9, due: -2, ev: [
+    ['s', 11, 12, 'priyantha', 'Logistics sections are complete. Waiting for the farm sections.'], ['f', 7, 14, 'amila', 'compliance-pdf', 'Farm sections as a draft'], ['p', 6, 15, 'amila', 80], ['s', 3, 9, 'geeth', 'The exporter called. We must submit by this week.']] },
+
+  /* ---------- sent back once, now being reworked ---------- */
+  { t: 'Mark the irrigation valves on the site map', d: 'Every valve numbered on the printed site map, so night staff can find them.', by: 'amila', to: ['darshana'], day: 10, hour: 9, due: 1, ev: [
+    ['s', 9, 12, 'darshana', 'Marked the valves in A and B.'], ['p', 7, 11, 'darshana', 100], ['back', 7, 15, 'Blocks C and D are missing, and valve 14 is in the wrong place.'], ['s', 6, 10, 'darshana', 'Understood, going to C and D tomorrow.'],
+    ['i', 3, 12, 'darshana', 'sheet', 'Updated map with C and D'], ['p', 3, 13, 'darshana', 70]] },
+
+  /* ---------- just assigned ---------- */
+  { t: 'Send the Q4 budget draft', d: '', by: 'geeth', to: ['priyantha'], day: 0, hour: 8, due: 2, unread: true, ev: [] },
+  { t: 'Plan the weekend harvest shifts', d: 'Two shifts on Saturday, one on Sunday. Check who can work.', by: 'amila', to: ['darshana', 'janith'], day: 0, hour: 9, due: 1, unread: true, ev: [] },
+  { t: 'Arrange transport for the Sunday dispatch', d: 'Confirm the truck, the driver and the loading time with the packing house.', by: 'priyantha', to: ['tharaka'], day: 1, hour: 16, due: 1, unread: true, ev: [
+    ['s', 0, 8, 'tharaka', 'I called the transporter. Will confirm the time this afternoon.']] }
+];
+
+function mockPdf_(title, lines) {
+  const esc = function (s) { return String(s).replace(/[\\()]/g, '\\$&'); };
+  let content = 'BT /F1 20 Tf 56 780 Td (' + esc(title) + ') Tj /F1 12 Tf 0 -34 Td 18 TL\n';
+  lines.forEach(function (l) { content += '(' + esc(l) + ') Tj T*\n'; }); content += 'ET';
+  const objs = ['<</Type/Catalog/Pages 2 0 R>>', '<</Type/Pages/Kids[3 0 R]/Count 1>>', '<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>',
+    '<</Length ' + content.length + '>>\nstream\n' + content + '\nendstream', '<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>'];
+  let out = '%PDF-1.4\n'; const offs = [];
+  objs.forEach(function (o, i) { offs.push(out.length); out += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
+  const xref = out.length; out += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n';
+  offs.forEach(function (o) { out += ('0000000000' + o).slice(-10) + ' 00000 n \n'; });
+  out += 'trailer\n<</Size ' + (objs.length + 1) + '/Root 1 0 R>>\nstartxref\n' + xref + '\n%%EOF';
+  return Utilities.base64Encode(out);
+}
+function mockDoc_(key) {
+  const csv = function (name, text) { return { name: name, b64: Utilities.base64Encode(text) }; };
+  const pdf = function (name, title, lines) { return { name: name, b64: mockPdf_(title, lines) }; };
+  const d = {
+    'totals-csv': function () { return csv('block-totals-september.csv', 'Block,Picked kg,Rejected kg\nA,4820,160\nB,4310,142\nC,3975,201\nD,2210,64\n'); },
+    'forecast-csv': function () { return csv('q4-harvest-forecast.csv', 'Block,October kg,November kg,December kg\nA,5200,5600,4800\nB,4700,5100,4300\nC,4300,4700,3900\nD,2600,2900,2400\nE,0,1200,2600\n'); },
+    'stock-csv': function () { return csv('packaging-stock-count.csv', 'Item,Counted,In sheet\nPunnets 250g,18400,18650\nLabels,22100,22100\nCartons small,1320,1500\nCartons large,610,\n'); },
+    'packing-pdf': function () { return pdf('packing-plan-order-118.pdf', 'Packing plan - export order 118', ['Line 2, two shifts.', 'Punnets 250 g, 12 per carton.', 'Metal detector test before the first pallet.', 'Pallets: 14, cold room 1 until dispatch.']); },
+    'board-pdf': function () { return pdf('export-growth-board-update.pdf', 'Export growth - board update', ['Volumes up 18 percent on last season.', 'Two new buyers in the Gulf region.', 'Need: approval for a second cold room.']); },
+    'trucks-pdf': function () { return pdf('october-truck-schedule.pdf', 'October truck schedule', ['Mon, Wed, Fri 4 pm - Colombo.', 'Tue, Thu 6 am - Airport cargo.', 'Extra truck on peak weeks, book 3 days ahead.']); },
+    'quotes-pdf': function () { return pdf('packaging-quotes-comparison.pdf', 'Packaging quotes', ['Supplier A: delivery 2 weeks, minimum 5,000.', 'Supplier B: cheapest, delivery 6 weeks.', 'Supplier C: highest price, same-week delivery.']); },
+    'lab-pdf': function () { return pdf('lab-results-summary.pdf', 'Lab results summary', ['Residue tests: all below the limit.', 'Sugar (Brix): 11.2 to 12.8.', 'Next samples due in 4 weeks.']); },
+    'plan-pdf': function () { return pdf('expansion-plan-draft.pdf', 'Expansion plan - draft 1', ['10 acres next to Block E.', 'Water: second borehole needed.', 'Labour: 12 more pickers in season.']); },
+    'audit-pdf': function () { return pdf('spray-records-list.pdf', 'Spray records', ['Blocks A to D, last 90 days.', 'Products and dates listed.', 'Missing: Block E, to be added.']); },
+    'compliance-pdf': function () { return pdf('compliance-checklist-draft.pdf', 'Exporter compliance checklist', ['Section 1 - Farm: complete.', 'Section 2 - Packing: complete.', 'Section 3 - Traceability: draft.']); }
+  };
+  return d[key]();
+}
+// a soft three-second "voice-like" sample (the invented voice messages have no real recording)
+function mockWavB64_() {
+  const rate = 16000, n = rate * 3, bytes = [];
+  const put16 = function (v) { bytes.push(v & 255, (v >> 8) & 255); }, put32 = function (v) { bytes.push(v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255); }, str = function (s) { for (let i = 0; i < s.length; i++) bytes.push(s.charCodeAt(i)); };
+  str('RIFF'); put32(36 + n * 2); str('WAVE'); str('fmt '); put32(16); put16(1); put16(1); put32(rate); put32(rate * 2); put16(2); put16(16); str('data'); put32(n * 2);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate, f0 = 130 + 25 * Math.sin(t * 2.3), syl = Math.pow(Math.abs(Math.sin(t * 9.4)), 0.7) * (Math.sin(t * 1.7) > -0.8 ? 1 : 0.1);
+    const s = (Math.sin(6.2832 * f0 * t) + 0.5 * Math.sin(6.2832 * 2 * f0 * t) + 0.35 * Math.sin(6.2832 * 3 * f0 * t)) * 0.07 * syl;
+    put16(Math.round(Math.max(-1, Math.min(1, s)) * 32767) & 65535);
+  }
+  return Utilities.base64Encode(bytes.map(function (b) { return b > 127 ? b - 256 : b; }));
+}
+
+function mockSeed() {
+  const props = PropertiesService.getScriptProperties(), started = Date.now();
+  const state = JSON.parse(props.getProperty('MOCK_STATE') || '{"next":0,"ids":[],"failed":[],"done":false}');
+  if (state.done) { Logger.log('The mock data is already in place. Run mockClean() first if you want to start again.'); return; }
+  let said = '';
+  const ai = { transcribe: function () { return { english: said, language: 'English', key_points: '' }; },
+    summarize: function () { throw new Error('AI is off while seeding'); }, assistant: function () { throw new Error('AI is off while seeding'); }, briefing: function () { throw new Error('AI is off while seeding'); } };
+  const env = makeEnv_({ ai: ai }), core = createCore(env);
+  env.store.init(core.TABLES);
+  const realAll = env.store.all.bind(env.store);
+  const people = realAll('Users').filter(function (u) { return u.active && !u.isAdmin; }), byName = {}, tok = {}, virtual = [];
+  people.forEach(function (u) {
+    const key = String(u.name).toLowerCase(); byName[key] = u; tok[key] = 'mock-' + Utilities.getUuid();
+    virtual.push({ tokenHash: env.sha256Hex('token:' + tok[key]), userId: u.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 });
+  });
+  const needed = {}; MOCK_TASKS_.forEach(function (s) { needed[s.by] = 1; s.to.forEach(function (n) { needed[n] = 1; }); });
+  const missing = Object.keys(needed).filter(function (n) { return !byName[n]; });
+  if (missing.length) throw new Error('These people are not in the system (the story needs them): ' + missing.join(', '));
+  // "borrow" the accounts in memory only: nothing is written to Users or Sessions
+  env.store.all = function (name) {
+    const rows = realAll(name);
+    if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); });
+    if (name === 'Sessions') return rows.concat(virtual);
+    return rows;
+  };
+  let clock = Date.now(); env.now = function () { return clock; };
+  const call = function (action, who, params) {
+    const r = core.handle(Object.assign({ action: action, token: tok[who] }, params || {}));
+    if (!r.ok) throw new Error(action + ' as ' + who + ' failed: ' + r.error);
+    return r.data;
+  };
+  const tz = Session.getScriptTimeZone(), mid = new Date(); mid.setHours(0, 0, 0, 0);
+  const M0 = mid.getTime(), real = Date.now(), DAY = 86400000, HOUR = 3600000;
+  const when = function (day, hour) { return Math.min(M0 - day * DAY + hour * HOUR, real - 120000); };
+  const ymd = function (n) { return Utilities.formatDate(new Date(M0 + n * DAY), tz, 'yyyy-MM-dd'); };
+  const save = function () { props.setProperty('MOCK_STATE', JSON.stringify(state)); };
+  const imgs = {}, img = function (kind) {
+    if (!imgs[kind]) {
+      const f = UrlFetchApp.fetch(MOCK_BASE_ + kind + '.jpg'), t = UrlFetchApp.fetch(MOCK_BASE_ + kind + '.thumb.jpg');
+      imgs[kind] = { b64: Utilities.base64Encode(f.getContent()), thumb: 'data:image/jpeg;base64,' + Utilities.base64Encode(t.getContent()) };
+    }
+    return imgs[kind];
+  };
+  const wav = mockWavB64_();
+  let n = 0;
+  for (let i = state.next; i < MOCK_TASKS_.length; i++) {
+    if (Date.now() - started > 210000) { Logger.log('Stopping for now (time limit). ' + i + ' of ' + MOCK_TASKS_.length + ' tasks are done. Run mockSeed() again.'); return; }
+    const spec = MOCK_TASKS_[i];
+    try {
+      clock = when(spec.day, spec.hour);
+      const task = call('createTask', spec.by, { title: spec.t, description: spec.d, assigneeIds: spec.to.map(function (nm) { return byName[nm].id; }), dueDate: ymd(spec.due) }).task;
+      state.ids.push(task.id); save();
+      const events = spec.ev.map(function (e, k) { return { e: e, k: k, t: when(e[1], e[2]) }; }).sort(function (a, b) { return a.t - b.t || a.k - b.k; });
+      let closed = false;
+      events.forEach(function (x) {
+        const e = x.e, kind = e[0]; clock = x.t;
+        if (kind === 's') call('postMessage', e[3], { taskId: task.id, text: e[4] });
+        else if (kind === 'v') { said = e[5] || ''; call('postVoice', e[3], { taskId: task.id, audioB64: wav, wavB64: wav, mime: 'audio/wav', secs: e[4] }); }
+        else if (kind === 'i') { const im = img(e[4]); n++; call('postFile', e[3], { taskId: task.id, name: e[4] + '-' + (state.ids.length) + '-' + n + '.jpg', b64: im.b64, thumb: im.thumb, w: 720, h: 500, caption: e[5] }); }
+        else if (kind === 'f') { const d = mockDoc_(e[4]); call('postFile', e[3], { taskId: task.id, name: d.name, b64: d.b64, caption: e[5] }); }
+        else if (kind === 'p') call('setProgress', e[3], { taskId: task.id, progress: e[4] });
+        else if (kind === 'ok') { call('approveTask', spec.by, { taskId: task.id }); closed = true; }
+        else if (kind === 'back') call('rejectTask', spec.by, { taskId: task.id, note: e[3] });
+      });
+      if (!closed && !spec.unread) { clock = real; [spec.by].concat(spec.to).forEach(function (who) { call('getTask', who, { taskId: task.id }); }); }   // already read (opening a task marks it read)
+      state.next = i + 1; save();
+      Logger.log((i + 1) + '/' + MOCK_TASKS_.length + ' ' + spec.t);
+    } catch (e) {
+      state.failed.push({ i: i, title: spec.t, error: String(e) }); state.next = i + 1; save();
+      Logger.log('FAILED at task ' + (i + 1) + ' (' + spec.t + '): ' + e + ' - it is skipped; the part that was made is removed by mockClean().');
+    }
+  }
+  state.done = true; save();
+  Logger.log('ALL DONE. ' + state.ids.length + ' mock tasks' + (state.failed.length ? ', ' + state.failed.length + ' failed (see MOCK_STATE)' : '') + '. Remove them later with mockClean().');
+}
+
+function mockStatus() {
+  const s = JSON.parse(PropertiesService.getScriptProperties().getProperty('MOCK_STATE') || 'null');
+  Logger.log(s ? 'Mock tasks made: ' + s.ids.length + ', next index ' + s.next + ' of ' + MOCK_TASKS_.length + (s.done ? ', finished' : ', NOT finished') + (s.failed && s.failed.length ? ', failed: ' + JSON.stringify(s.failed) : '') : 'No mock data has been made.');
+}
+
+function mockClean() {
+  const props = PropertiesService.getScriptProperties(), state = JSON.parse(props.getProperty('MOCK_STATE') || 'null');
+  if (!state || !state.ids.length) { Logger.log('There is no mock data to remove.'); return; }
+  const env = makeEnv_({}), core = createCore(env); env.store.init(core.TABLES);
+  const ids = {}; state.ids.forEach(function (id) { ids[id] = 1; });
+  const trash = function (fileId) { if (fileId) { try { DriveApp.getFileById(fileId).setTrashed(true); } catch (e) { /* already gone */ } } };
+  env.store.all('Messages').filter(function (m) { return ids[m.taskId]; }).forEach(function (m) { trash(m.audioFileId); });
+  env.store.all('Attachments').filter(function (a) { return ids[a.taskId]; }).forEach(function (a) { trash(a.fileId); });
+  env.store.all('ArchiveIndex').filter(function (x) { return ids[x.id]; }).forEach(function (x) {
+    try { const parents = DriveApp.getFileById(x.fileId).getParents(); while (parents.hasNext()) parents.next().setTrashed(true); } catch (e) { /* already gone */ }
+  });
+  const out = {
+    messages: env.store.removeWhere('Messages', function (m) { return ids[m.taskId]; }),
+    attachments: env.store.removeWhere('Attachments', function (a) { return ids[a.taskId]; }),
+    reads: env.store.removeWhere('Reads', function (r) { return ids[r.taskId]; }),
+    tasks: env.store.removeWhere('Tasks', function (t) { return ids[t.id]; }),
+    history: env.store.removeWhere('ArchiveIndex', function (x) { return ids[x.id]; }),
+    audit: env.store.removeWhere('AuditLog', function (a) { return ids[a.detail]; }),
+    overviews: env.store.removeWhere('Briefings', function () { return true; })
+  };
+  props.deleteProperty('MOCK_STATE');
+  Logger.log('Mock data removed: ' + JSON.stringify(out) + '. Drive folders and files went to the Drive trash.');
+}
