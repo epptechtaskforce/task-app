@@ -549,7 +549,7 @@ function speechTest() {
   env.store.all = function (name) { const rows = realAll(name); if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); }); if (name === 'Sessions') return rows.concat(virtual); return rows; };
   Logger.log('AI chain: ' + (prop_('ANTHROPIC_API_KEY') ? 'Claude, ' : '') + (prop_('GROQ_API_KEY') ? 'Groq, ' : '') + 'Gemini; asking as ' + me.name);
   ['speech1.wav', 'speech2.wav', 'speech1.wav'].forEach(function (f, i) {
-    const wav = Utilities.base64Encode(UrlFetchApp.fetch('https://epptechtaskforce.github.io/task-app/mock/' + f).getContent());
+    const wav = UrlFetchApp.fetch('https://epptechtaskforce.github.io/task-app/mock/' + f.replace('.wav', '.txt')).getContentText().trim();   // the recording as base64 text (the repository refuses .wav files on purpose)
     GEMINI_LOG_.length = 0; const a = Date.now(), r = core.handle({ action: 'assistant', token: tok, history: [], wavB64: wav }), total = Date.now() - a;
     Logger.log('spoken ' + (i + 1) + ' (' + f + '): ' + total + ' ms | ' + GEMINI_LOG_.map(function (x) { return x.model + ' ' + x.code + ' ' + x.ms + 'ms'; }).join(', ') + ' | HEARD: ' + (r.ok ? r.data.heard + ' | REPLY: ' + String(r.data.reply).slice(0, 110) : r.error));
   });
