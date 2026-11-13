@@ -211,8 +211,7 @@ function voiceTest() {
   ['ඉරිගේෂන් පද්ධතියේ පොම්පය හදලා ඉවරයි, හෙට C කොටසට වතුර දානවා.', 'The pump is fixed and I will water block C tomorrow.'].forEach(function (said) {
     try {
       const v = ai.speak(said); const t0 = Date.now();
-      Logger.log('SAID: ' + said + '
-HEARD: ' + JSON.stringify(ai.transcribe(v.b64, 'audio/wav', 'Task: Irrigation check. People: Ruwan Jayasinghe.')) + '  (' + (Date.now() - t0) + ' ms)');
+      Logger.log('SAID: ' + said + ' / HEARD: ' + JSON.stringify(ai.transcribe(v.b64, 'audio/wav', 'Task: Irrigation check. People: Ruwan Jayasinghe.')) + '  (' + (Date.now() - t0) + ' ms)');
     } catch (e) { Logger.log('FAILED for "' + said + '": ' + e); }
   });
 }
