@@ -326,3 +326,17 @@ test('navigation: the assistant can take the person to a filtered list, chosen t
   assert.deepEqual([r.actions[3].page, r.actions[3].q], ['account', '']);
   assert.deepEqual([r.actions[4].page, r.actions[4].filter], ['tasks', 'all']);                  // unknown values fall back to safe ones
 });
+
+test('ids are never shown or read aloud: they are stripped from the assistant reply, the overview and the summary', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  const t = app.ok('createTask', s.tok.mgr, { title: 'Pump house roof', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('postMessage', s.tok.wk1, { taskId: t.id, text: 'Started' });
+  ai.reply = () => ({ reply: 'The roof job (id ' + t.id + ') is at 35%, task ' + t.id + ' is late. Total 4820 kg.', actions: [] });
+  const r = app.ok('assistant', s.tok.mgr, { text: 'status?' });
+  assert.equal(r.reply.includes(t.id), false);
+  assert.ok(r.reply.includes('35%') && r.reply.includes('4820 kg') && r.reply.includes('The roof job'));
+  assert.equal(r.spoken.includes(t.id), false);
+  ai.briefReply = () => ({ headline: 'Roof ' + t.id + ' is late', items: [{ tone: 'urgent', text: 'Pump house roof (' + t.id + ') needs a new date', task_id: t.id }] });
+  const b = app.ok('briefing', s.tok.mgr, { force: true }).briefing;
+  assert.equal(JSON.stringify(b).replace(new RegExp('"taskId":"' + t.id + '"', 'g'), '').includes(t.id), false);   // the link field keeps the id, the words do not
+});

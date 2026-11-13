@@ -938,3 +938,12 @@ h1 { letter-spacing: -.025em; }
 .gdot.late { background: var(--c-late); } .gdot.wait { background: var(--c-wait); } .gdot.active { background: var(--c-active); } .gdot.new { background: var(--c-new); }
 .wmore { font-size: .62rem; font-weight: 800; color: var(--mute); }
 @media (prefers-reduced-motion: reduce) { .gtile, .gdot, .okring, .gtile.has.late .gi, .glance .spin { animation: none; } }
+
+/* the week-strip column is one button (its dots are only pictures) */
+.wcol { border: 0; font: inherit; color: inherit; background: transparent; cursor: pointer; transition: transform .2s var(--spring), background .2s; }
+.wcol.has:hover { transform: translateY(-2px); background: color-mix(in srgb, var(--accent-soft) 70%, transparent); }
+.wcol.has:active { transform: scale(.96); }
+.wcol:disabled { cursor: default; }
+.wcol.wtoday { background: color-mix(in srgb, var(--accent-soft) 80%, transparent); } .wcol.wlate { background: color-mix(in srgb, var(--bad-soft) 80%, transparent); }
+.whead { cursor: inherit; }
+.gdot:hover { transform: none; }

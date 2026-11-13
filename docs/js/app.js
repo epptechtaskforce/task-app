@@ -308,10 +308,10 @@
       const strip = h('div', { class: 'wstrip', role: 'group', 'aria-label': 'Next seven days' });
       const column = function (label, sub, list, extra, n) {
         const dots = list.slice().sort(function (a, b) { return b.updatedAt - a.updatedAt; }).slice(0, 4).map(function (t, k) {
-          return h('a', { class: 'gdot ' + stateCls[bucket(t)], href: '#/task/' + t.id, title: t.title, 'aria-label': t.title, style: '--d:' + (n * 60 + k * 90) + 'ms' });
+          return h('span', { class: 'gdot ' + stateCls[bucket(t)], 'aria-hidden': 'true', style: '--d:' + (n * 60 + k * 90) + 'ms' });   // only a picture: the whole column opens the list
         });
-        return h('div', { class: 'wcol' + (extra || '') + (list.length ? ' has' : '') },
-          h('button', { type: 'button', class: 'whead', disabled: !list.length, onclick: function () { show(ids(list)); } }, h('small', null, label), h('b', null, sub)),
+        return h('button', { type: 'button', class: 'wcol' + (extra || '') + (list.length ? ' has' : ''), disabled: !list.length, 'aria-label': (list.length || 'No') + ' task' + (list.length === 1 ? '' : 's') + ' ' + (label === 'Late' ? 'late' : label === 'Today' ? 'today' : 'on ' + sub), onclick: function () { show(ids(list)); } },
+          h('span', { class: 'whead' }, h('small', null, label), h('b', null, sub)),
           h('div', { class: 'wdots' }, dots, list.length > 4 ? h('span', { class: 'wmore' }, '+' + (list.length - 4)) : null));
       };
       if (lateCol.length) strip.appendChild(column('Late', '!', lateCol, ' wlate', 0));

@@ -91,6 +91,13 @@ function createCore(env) {
 
   function fail(code, message) { const e = new Error(message); e.code = code; return e; }
   function newId(prefix) { return prefix + env.uuid().replace(/-/g, '').slice(0, 10); }
+  // Ids such as "Tb639c32335" are for the app, not for people: they are never shown or read aloud, even if a model quotes one.
+  function noIds(text) {
+    return String(text == null ? '' : text)
+      .replace(/\(?\b(?:task\s+|user\s+)?ids?\b[\s:=#]*[A-Za-z](?=[A-Za-z0-9]*\d)[A-Za-z0-9]{7,14}\b\)?/gi, '')
+      .replace(/\b[A-Za-z](?=[0-9a-f]*\d)[0-9a-f]{9,11}\b/g, '')
+      .replace(/\(\s*\)/g, '').replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.;:!?])/g, '$1');
+  }
   function clip(v, max) { return String(v == null ? '' : v).slice(0, max); }
 
   function str(v, field, max, opts) {
@@ -231,9 +238,9 @@ function createCore(env) {
 
   function normalizeSummary(o) {
     o = o || {};
-    const list = function (x) { return Array.isArray(x) ? x.map(function (i) { return clip(i, 300); }).slice(0, 8) : []; };
+    const list = function (x) { return Array.isArray(x) ? x.map(function (i) { return noIds(clip(i, 300)); }).slice(0, 8) : []; };
     const health = ['on_track', 'at_risk', 'blocked', 'done', 'unknown'].indexOf(o.health) >= 0 ? o.health : 'unknown';
-    return { summary_en: clip(o.summary_en, 1200), progress_note: clip(o.progress_note, 600), health: health, blockers: list(o.blockers), next_steps: list(o.next_steps) };
+    return { summary_en: noIds(clip(o.summary_en, 1200)), progress_note: noIds(clip(o.progress_note, 600)), health: health, blockers: list(o.blockers), next_steps: list(o.next_steps) };
   }
 
   /* ============================== sessions / auth ============================== */
@@ -952,7 +959,7 @@ function createCore(env) {
       const r = cleanAction(ctx, user, a, mineById, allowed);
       if (r.ok) { actions.push(r.ok); if (r.partial) problems.push('I left out someone you are not allowed to assign tasks to'); } else problems.push(r.err);
     });
-    let reply = clip(raw.reply, 2500).trim() || 'Sorry, I did not catch that. Could you say it again?';
+    let reply = noIds(clip(raw.reply, 2500)).trim() || 'Sorry, I did not catch that. Could you say it again?';
     if (problems.length) reply += '\n\n(Note: ' + problems.filter(function (p, i, arr) { return arr.indexOf(p) === i; }).join('; ') + '.)';
     const confirm = !actions.length && pending.length && (raw.confirm === 'yes' || raw.confirm === 'no') ? raw.confirm : '';
     // what is said aloud is the whole answer, word for word (the note about actions that could not be done stays on screen only)
@@ -985,8 +992,8 @@ function createCore(env) {
     catch (e) { env.log('briefing failed: ' + e); throw fail('AI_FAILED', 'The overview is not available right now.'); }
     const tones = ['urgent', 'watch', 'good', 'info'], mineIds = {}; mine.forEach(function (t) { mineIds[t.id] = 1; });
     const data = {
-      headline: clip(raw.headline, 240).trim() || 'Here is where things stand.',
-      items: (Array.isArray(raw.items) ? raw.items : []).slice(0, 6).map(function (i) { return { tone: tones.indexOf(i && i.tone) >= 0 ? i.tone : 'info', text: clip(i && i.text, 260).trim(), taskId: i && mineIds[i.task_id] ? i.task_id : '' }; }).filter(function (i) { return i.text; })
+      headline: noIds(clip(raw.headline, 240)).trim() || 'Here is where things stand.',
+      items: (Array.isArray(raw.items) ? raw.items : []).slice(0, 6).map(function (i) { return { tone: tones.indexOf(i && i.tone) >= 0 ? i.tone : 'info', text: noIds(clip(i && i.text, 260)).trim(), taskId: i && mineIds[i.task_id] ? i.task_id : '' }; }).filter(function (i) { return i.text; })
     };
     const at = env.now();
     ctx.write(function () {

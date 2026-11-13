@@ -35,7 +35,7 @@
     return mine || english[0] || null;
   }
   function clean(text) {
-    return String(text || '').replace(/\(Note:[^)]*\)/g, '').replace(/[*_#`>~]/g, '').replace(/^\s*[-•]\s+/gm, '').replace(/\s*\n+\s*/g, '. ').replace(/\s+/g, ' ').trim();
+    return String(text || '').replace(/\(Note:[^)]*\)/g, '').replace(/\(?\b(?:task\s+|user\s+)?ids?\b[\s:=#]*[A-Za-z](?=[A-Za-z0-9]*\d)[A-Za-z0-9]{7,14}\b\)?/gi, '').replace(/\b[A-Za-z](?=[0-9a-f]*\d)[0-9a-f]{9,11}\b/g, '').replace(/[*_#`>~]/g, '').replace(/^\s*[-•]\s+/gm, '').replace(/\s*\n+\s*/g, '. ').replace(/\s+/g, ' ').trim();
   }
   function sentences(text, max) {
     const out = []; let cur = '';
