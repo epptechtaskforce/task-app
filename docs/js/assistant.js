@@ -55,8 +55,9 @@
     const right = p.x + SIZE / 2 > vw / 2, above = p.y + SIZE / 2 > vh / 2;
     B.stack.style.width = W + 'px';
     B.stack.style.left = Math.max(12, Math.min(vw - W - 12, right ? p.x + SIZE - W : p.x)) + 'px';
-    if (above) { B.stack.style.top = 'auto'; B.stack.style.bottom = (vh - p.y + 10) + 'px'; B.stack.style.maxHeight = Math.max(120, p.y - 24) + 'px'; }
-    else { B.stack.style.bottom = 'auto'; B.stack.style.top = (p.y + SIZE + 10) + 'px'; B.stack.style.maxHeight = Math.max(120, vh - p.y - SIZE - 24) + 'px'; }
+    if (above) { B.stack.style.top = 'auto'; B.stack.style.bottom = (vh - p.y + 26) + 'px'; B.stack.style.maxHeight = Math.max(120, p.y - 40) + 'px'; }
+    else { B.stack.style.bottom = 'auto'; B.stack.style.top = (p.y + SIZE + 26) + 'px'; B.stack.style.maxHeight = Math.max(120, vh - p.y - SIZE - 40) + 'px'; }
+    B.stack.style.setProperty('--aib-max', Math.max(150, parseInt(B.stack.style.maxHeight, 10) - 84) + 'px');   // room left for the answer (the question takes about 70px)
     B.stack.classList.toggle('above', above); B.stack.classList.toggle('below', !above); B.stack.classList.toggle('right', right); B.stack.classList.toggle('left', !right);
   }
   function wireDrag() {
@@ -91,7 +92,23 @@
     if (old) old.remove();
     B.stack.insertBefore(B.userEl, B.stack.firstChild); return B.userEl;
   }
+  // The assistant's words: a small name tag, then the text laid out in lines (lines starting with "- " become bullets) with the
+  // words fading in one after another, so it feels like it is speaking. Very long answers skip the per-word effect.
+  function botCard(text) {
+    const lines = String(text).split('\n').filter(function (l) { return l.trim(); });
+    const total = String(text).split(/\s+/).length, fancy = total <= 140, step = Math.max(14, Math.min(46, 1500 / Math.max(1, total)));
+    let n = 0;
+    const body = h('div', { class: 'aib-body' }, lines.map(function (line) {
+      const bullet = /^\s*[-•]\s+/.test(line), note = /^\(Note:/.test(line.trim()), words = line.replace(/^\s*[-•]\s+/, '').split(/(\s+)/);
+      const span = h('span', { class: 'txt' }, fancy ? words.map(function (w) {
+        return /^\s*$/.test(w) ? document.createTextNode(w || '') : h('span', { class: 'w', style: 'animation-delay:' + Math.min(Math.round(n++ * step), 1800) + 'ms' }, w);
+      }) : line.replace(/^\s*[-•]\s+/, ''));
+      return h('div', { class: 'aib-line' + (bullet ? ' li' : '') + (note ? ' note' : '') }, bullet ? h('i', { class: 'pt' }) : null, span);
+    }));
+    return [h('div', { class: 'aib-who' }, h('span', { class: 'aib-mini' }, icon('sparkles', 11)), 'Assistant'), body];
+  }
   function putBot(content, typing) {
+    if (typeof content === 'string') content = botCard(content);
     const old = B.botEl; B.botEl = bubbleEl('bot' + (typing ? ' typing' : ''), content);
     if (old) old.remove();
     B.stack.insertBefore(B.botEl, B.userEl ? B.userEl.nextSibling : B.stack.firstChild); return B.botEl;
@@ -182,7 +199,7 @@
     if (r.confirm === 'yes' && B.pending.length) return confirmPending();           // it says "Done" itself
     putBot(r.reply);
     free.forEach(openTask);
-    say(r.spoken || r.reply, my, r.reply);
+    say(String(r.reply).split('\n\n(Note:')[0], my, r.reply);          // the whole answer is read aloud, word for word
   }
   function say(text, my, shown) {
     const again = function () {                                                      // it asked something: listen for the answer

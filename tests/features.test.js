@@ -222,12 +222,13 @@ test('voice notes: the AI is told who is in the task, to help it spell names', (
   assert.match(seen[0], /Irrigation check/); assert.match(seen[0], /WK1/); assert.match(seen[0], /MGR/);
 });
 
-test('assistant: a short spoken version is always returned; the speak action needs a voice and fails politely without one', () => {
+test('assistant: the whole answer is what gets spoken; the speak action needs a voice and fails politely without one', () => {
   const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
   ai.reply = () => ({ reply: 'You have two tasks. One is late and needs a call today. The other is fine.', spoken: 'Two tasks, one is late.', actions: [] });
-  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken, 'Two tasks, one is late.');
-  ai.reply = () => ({ reply: 'You have two tasks. One is late and needs a call today. The other is fine.', actions: [] });
-  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken, 'You have two tasks. One is late and needs a call today.');
+  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken, 'You have two tasks. One is late and needs a call today. The other is fine.');   // not a shortened version
+  ai.reply = () => ({ reply: 'Done.', actions: [{ type: 'open_task', task_id: 'T-nope' }] });
+  const withNote = app.ok('assistant', s.tok.mgr, { text: 'x' });
+  assert.ok(withNote.reply.includes('(Note:') && withNote.spoken === 'Done.');                                                                                     // the note is never read aloud
   app.err('speak', s.tok.mgr, { text: '   ' }, 'VALIDATION');
   app.err('speak', s.tok.mgr, { text: 'Hello' }, 'AI_FAILED');                    // the stand-in AI has no voice
   ai.speak = (t) => ({ b64: 'AAAA', mime: 'audio/L16;codec=pcm;rate=24000', t });
@@ -276,30 +277,4 @@ test('bubble: show or enter a task, completed tasks can be opened and read, and 
   assert.equal(withArchive.focus.id, old.id);
   app.ok('assistant', s.tok.wk2, { text: 'what was the total?', archivedId: old.id });          // someone who was not part of it gets nothing
   assert.equal(ai.calls[ai.calls.length - 1].context.includes('4820'), false);
-});
-
-test('demo AI relay: needs no login, reads no stored data, passes only whitelisted input, and is capped', () => {
-  const got = []; const ai = spyAi();
-  ai.assistant = (i) => { got.push(i); return { reply: 'hi', actions: [] }; };
-  ai.summarize = (i) => { got.push(i); return { summary_en: 'x' }; };
-  ai.briefing = (i) => { got.push(i); return { headline: 'h', items: [] }; };
-  ai.transcribe = (b, m, hints) => { got.push({ b, m, hints }); return { english: 'said', language: 'English', key_points: '' }; };
-  const app = makeApp({ ai, settings: { DEMO_AI_HOURLY: '5', DEMO_AI_DAILY: '8' } }); const s = seed(app);
-  const r = app.ok('demoAi', null, { kind: 'assistant', input: { context: 'TODAY: x', text: 'hello', history: [{ role: 'assistant', text: 'a' }, { role: 'user', text: 'b' }], secret: 'SHOULD NOT PASS', userName: 'Kamala', pending: ['p'], focus: { id: 'T1', title: 'T' }, audio: null, files: [{ name: 'a.exe', mime: 'application/x-msdownload', b64: 'AA' }] } });
-  assert.equal(r.reply, 'hi');
-  assert.deepEqual(Object.keys(got[0]).sort(), ['audio', 'context', 'files', 'focus', 'history', 'pending', 'text', 'userName']);   // nothing else gets through
-  assert.equal(got[0].files.length, 0);                                                                                              // a program is not passed on
-  assert.equal(got[0].context.includes('Voice test'), false);                                                                         // it never reads the database
-  app.ok('demoAi', null, { kind: 'summarize', input: { task: { title: 'T', assignees: ['A'] }, messages: [{ from: 'A', text: 'hi', extra: 1 }] } });
-  assert.deepEqual(Object.keys(got[1].messages[0]).sort(), ['from', 'role', 'text', 'time', 'type']);
-  app.ok('demoAi', null, { kind: 'briefing', input: { context: 'c', userName: 'u' } });
-  assert.equal(app.ok('demoAi', null, { kind: 'transcribe', input: { b64: 'AAAA', mime: 'audio/wav', hints: 'Task: x' } }).english, 'said');
-  app.err('demoAi', null, { kind: 'delete_everything', input: {} }, 'VALIDATION');
-  app.err('demoAi', null, { kind: 'assistant' }, 'VALIDATION');
-  app.ok('demoAi', null, { kind: 'briefing', input: { context: 'c' } });
-  app.err('demoAi', null, { kind: 'briefing', input: { context: 'c' } }, 'AI_FAILED');                                                // 6th call this hour: over the cap of 5
-  app.tick(3600000 + 1000);
-  app.ok('demoAi', null, { kind: 'briefing', input: { context: 'c' } });                                                             // a new hour
-  const off = makeApp({ ai, settings: { DEMO_AI: 'off' } });
-  off.err('demoAi', null, { kind: 'briefing', input: { context: 'c' } }, 'AI_FAILED');
 });

@@ -927,57 +927,9 @@ function createCore(env) {
     let reply = clip(raw.reply, 2500).trim() || 'Sorry, I did not catch that. Could you say it again?';
     if (problems.length) reply += '\n\n(Note: ' + problems.filter(function (p, i, arr) { return arr.indexOf(p) === i; }).join('; ') + '.)';
     const confirm = !actions.length && pending.length && (raw.confirm === 'yes' || raw.confirm === 'no') ? raw.confirm : '';
-    // what is said aloud: a short version (the model writes it; otherwise the first two sentences of the answer)
-    let spoken = clip(raw.spoken, 400).trim();
-    if (!spoken) spoken = (reply.split('\n\n(Note:')[0].replace(/\s+/g, ' ').match(/^.*?[.!?](\s.*?[.!?])?(\s|$)/) || [reply.slice(0, 200)])[0].trim();
-    return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, spoken: clip(spoken, 400), confirm: confirm, actions: actions };
-  } };
-
-  // DEMO ONLY. The browser demo has fake data and no secret key, so it asks the backend to run the AI model on the prompt the
-  // demo built itself. It touches NO stored data (it never reads the database), only forwards a size-limited, whitelisted
-  // input to the model, and it is capped per hour and per day so it cannot drain the shared free quota.
-  // Script properties: DEMO_AI = off (switch it off), DEMO_AI_DAILY (default 120), DEMO_AI_HOURLY (default 40).
-  A.demoAi = { auth: false, run: function (ctx, _u, req) {
-    if (env.setting('DEMO_AI') === 'off') throw fail('AI_FAILED', 'The demo assistant is switched off.');
-    const kind = String(req.kind || ''), inp = req.input;
-    if (['assistant', 'briefing', 'summarize', 'transcribe'].indexOf(kind) < 0 || !inp || typeof inp !== 'object') throw fail('VALIDATION', 'Unknown AI request');
-    if (JSON.stringify(inp).length > 8000000) throw fail('VALIDATION', 'That request is too big');
-    const daily = Number(env.setting('DEMO_AI_DAILY')) || 120, hourly = Number(env.setting('DEMO_AI_HOURLY')) || 40;
-    const nDay = env.counter('demoai-day', 86400), nHour = env.counter('demoai-hour', 3600);
-    if (nDay > daily || nHour > hourly) throw fail('AI_FAILED', 'The demo assistant has reached its limit for now. Please try again later.');
-    const s = function (v, n) { return clip(typeof v === 'string' ? v : '', n); };
-    const arr = function (v, n) { return Array.isArray(v) ? v.slice(0, n) : []; };
-    try {
-      if (kind === 'transcribe') {
-        const mime = s(inp.mime, 40).toLowerCase();
-        if (AUDIO_MIMES.indexOf(mime) < 0 || !inp.b64 || String(inp.b64).length > LIMITS.maxWavB64) throw fail('VALIDATION', 'Unsupported audio');
-        return env.ai.transcribe(String(inp.b64), mime, s(inp.hints, 400));
-      }
-      if (kind === 'summarize') {
-        const t = inp.task || {};
-        return env.ai.summarize({
-          task: { title: s(t.title, 120), description: s(t.description, 2000), progress: Number(t.progress) || 0, status: s(t.status, 20), dueDate: s(t.dueDate, 12), manager: s(t.manager, 80), assignees: arr(t.assignees, 20).map(function (x) { return s(x, 80); }) },
-          messages: arr(inp.messages, 300).map(function (m) { m = m || {}; return { time: s(m.time, 20), from: s(m.from, 80), role: s(m.role, 20), type: s(m.type, 12), text: s(m.text, 1500) }; })
-        });
-      }
-      if (kind === 'briefing') return env.ai.briefing({ context: s(inp.context, 45000), userName: s(inp.userName, 80) });
-      let audio = null;
-      if (inp.audio && inp.audio.b64) {
-        const mime = s(inp.audio.mime, 40).toLowerCase();
-        if (AUDIO_MIMES.indexOf(mime) < 0 || String(inp.audio.b64).length > LIMITS.maxAssistB64) throw fail('VALIDATION', 'Unsupported audio');
-        audio = { b64: String(inp.audio.b64), mime: mime };
-      }
-      const files = arr(inp.files, 3).filter(function (f) { return f && typeof f.b64 === 'string' && /^(image\/(jpeg|png|webp)|application\/pdf|text\/plain|text\/csv)$/.test(String(f.mime)); })
-        .map(function (f) { return { name: s(f.name, 100), mime: String(f.mime), b64: f.b64 }; });
-      return env.ai.assistant({
-        context: s(inp.context, 45000), history: arr(inp.history, 12).map(function (m) { return { role: m && m.role === 'assistant' ? 'assistant' : 'user', text: s(m && m.text, LIMITS.maxAssistText) }; }).filter(function (m) { return m.text; }),
-        text: s(inp.text, LIMITS.maxAssistText), audio: audio, pending: arr(inp.pending, 6).map(function (p) { return s(p, 300); }),
-        focus: inp.focus && inp.focus.id ? { id: s(inp.focus.id, 60), title: s(inp.focus.title, 120) } : null, files: files, userName: s(inp.userName, 80)
-      });
-    } catch (e) {
-      if (e && e.code) throw e;
-      env.log('demoAi failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.');
-    }
+    // what is said aloud is the whole answer, word for word (the note about actions that could not be done stays on screen only)
+    const spoken = reply.split('\n\n(Note:')[0].trim();
+    return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, spoken: spoken, confirm: confirm, actions: actions };
   } };
 
   // Natural-sounding speech for the assistant's answers (a few seconds of audio per call). The browser falls back to its own voice if this fails.

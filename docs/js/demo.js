@@ -87,62 +87,6 @@
     });
   }
 
-  /* ---------- the AI in the demo ----------
-   * The demo's data and rules (core.js) run in this browser, so the real "business logic" builds the prompt: it decides what
-   * this person may see, writes the context, and later checks every proposed action. Only the model call itself goes out,
-   * through the backend's capped demoAi relay (which holds the key and reads no stored data). Core is synchronous, so it is run
-   * twice: first to collect the model input, then again with the model's answer. Without a backend address (a local copy)
-   * the simple built-in stand-in answers instead. */
-  const PROXIED = { assistant: 1, briefing: 1, refreshSummary: 1, postVoice: 1 };
-  // The relay is OFF unless js/config.js says demoAi: true (and has a backend address): it is a public, capped endpoint that uses the shared AI quota, so the administrator must choose it.
-  function backendUrl() { return w.APP_CONFIG && w.APP_CONFIG.demoAi === true && w.APP_CONFIG.backendUrl ? w.APP_CONFIG.backendUrl : ''; }
-  function relay(kind, input) {
-    const ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 100000);
-    return fetch(backendUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'demoAi', kind: kind, input: input }), signal: ctl.signal })
-      .then(function (r) { return r.json(); })
-      .then(function (res) { if (!res || !res.ok) throw new Error((res && res.error) || 'The assistant is not available right now.'); return res.data; })
-      .catch(function (e) { throw new Error(e.name === 'AbortError' ? 'The assistant took too long. Please try again.' : (e.message && !/fetch|network/i.test(e.message) ? e.message : 'Could not reach the assistant. Check your internet connection.')); })
-      .finally(function () { clearTimeout(timer); });
-  }
-  function setupAi(env) {
-    const stand = env.ai;                                   // the simple built-in stand-in (also used by the tests)
-    let mode = null;                                        // { capture: {} } while collecting the input, { replay: {kind, value} } while using the answer
-    const Captured = function () {};
-    const hook = function (kind, input, fallback) {
-      if (!backendUrl()) return fallback();
-      if (mode && mode.replay && mode.replay.kind === kind) return mode.replay.value;
-      if (mode && mode.capture) { mode.capture.kind = kind; mode.capture.input = input; if (mode.capture.carryOn) return mode.capture.placeholder; throw new Captured(); }
-      return fallback();
-    };
-    env.ai = {
-      transcribe: function (b64, mime, hints) { return hook('transcribe', { b64: b64, mime: mime, hints: hints }, function () { return stand.transcribe(b64, mime, hints); }); },
-      summarize: function (input) { return hook('summarize', input, function () { return stand.summarize(input); }); },
-      assistant: function (input) { return hook('assistant', input, function () { return stand.assistant(input); }); },
-      briefing: function (input) { return hook('briefing', input, function () { return stand.briefing(input); }); }
-    };
-    return async function handle(req) {
-      if (!backendUrl() || !PROXIED[req.action]) return core.handle(req);
-      if (req.action === 'postVoice') {
-        // the message is saved at once; what the AI understands from it is added in the background (it is never shown)
-        mode = { capture: { carryOn: true, placeholder: { english: '', language: '', key_points: '' } } };
-        let r; try { r = core.handle(req); } finally { var cap = mode.capture; mode = null; }
-        if (r.ok && cap.kind === 'transcribe') {
-          relay('transcribe', cap.input).then(function (t) {
-            env.store.update('Messages', r.data.message.id, { transcript: String(t.english || t.english_translation || t.transcript || '').slice(0, 8000), translation: String(t.key_points || '').slice(0, 600), lang: String(t.language || '').slice(0, 40), status: 'ok' });
-          }).catch(function () { /* the demo simply has no memory of this message */ });
-        }
-        return r;
-      }
-      mode = { capture: {} };
-      let r; try { r = core.handle(req); } finally { var cap2 = mode.capture; mode = null; }
-      if (!cap2.kind) return r;                             // nothing needed the model (for example: no messages to summarise)
-      let raw;
-      try { raw = await relay(cap2.kind, cap2.input); } catch (e) { return { ok: false, code: 'AI_FAILED', error: e.message }; }
-      mode = { replay: { kind: cap2.kind, value: raw } };
-      try { return core.handle(req); } finally { mode = null; }
-    };
-  }
-
   const Demo = {
     ready: null,
     init: function () {
@@ -162,7 +106,7 @@
           seed(env, function (ms) { offset = ms; });
           offset = 0;
         } else env.store.init(core.TABLES);
-        w.DemoBackend = { handle: setupAi(env), realAi: !!backendUrl() };
+        w.DemoBackend = { handle: function (req) { return core.handle(req); } };
       })();
       return Demo.ready;
     },

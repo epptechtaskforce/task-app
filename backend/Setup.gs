@@ -172,7 +172,7 @@ function smokeTest() {
     check(call('getFile', admin, { messageId: fm.id }).ok === false, 'admin cannot open files of other people\'s tasks');
     const as = must('assistant', boss1, { text: 'what is open?', taskId: t2.id });
     check(as.reply === 'Hi Boss One' && as.heard === 'hello', 'the assistant answers');
-    check(as.spoken === 'Hi Boss One.' || as.spoken.length > 0, 'a short spoken version of the answer is made');
+    check(as.spoken.length > 0, 'the answer is also given as text to speak');
     check(must('speak', boss1, { text: 'Hello there' }).mime.indexOf('audio/') === 0, 'the speak action returns audio');
     check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
     must('setProgress', staff1, { taskId: t2.id, progress: 100 });
