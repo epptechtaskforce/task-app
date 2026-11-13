@@ -10,12 +10,48 @@
   function load(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
   function save(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) { /* storage blocked */ } }
 
-  const READS = ['info', 'me', 'listTasks', 'getTask', 'listHistory', 'getArchived', 'assignable', 'adminOverview'];   // safe to ask twice
+  const SAFE = ['login', 'info', 'me', 'listTasks', 'getTask', 'listHistory', 'getArchived', 'assignable', 'adminOverview'];   // safe to ask twice (the sign-in too)
+
+  function fetchJson(req, ctl) {
+    return fetch(cfg.backendUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(req), signal: ctl.signal }).then(function (r) { return r.json(); });
+  }
+  function slowError(e) {
+    const err = new Error(e && e.name === 'AbortError' ? 'The server is slow right now. Please try again in a moment.' : 'Could not reach the server. Check your internet connection and try again.');
+    err.network = true; return err;
+  }
+  function single(req, ms) {
+    const ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, ms);
+    return fetchJson(req, ctl).catch(function (e) { throw slowError(e); }).then(function (r) { clearTimeout(timer); return r; }, function (e) { clearTimeout(timer); throw e; });
+  }
+  function hedged(req, launches, deadline) {
+    return new Promise(function (resolve, reject) {
+      let done = false, pending = 0, next = 0, timer = 0, lastErr = null;
+      const ctls = [], slow = setTimeout(function () { Api.onSlow(true); }, 6000);
+      const finish = function (fn, v) {
+        if (done) return; done = true; clearTimeout(timer); clearTimeout(slow); clearTimeout(stop); Api.onSlow(false);
+        ctls.forEach(function (c) { try { c.abort(); } catch (e) { /* already finished */ } }); fn(v);
+      };
+      const stop = setTimeout(function () { const e = new Error('slow'); e.name = 'AbortError'; finish(reject, slowError(e)); }, deadline);
+      const launch = function () {
+        if (done || next >= launches.length) return;
+        const ctl = new AbortController(); ctls.push(ctl); pending++; next++;
+        clearTimeout(timer);
+        if (next < launches.length) timer = setTimeout(launch, Math.max(0, launches[next] - launches[next - 1]));
+        fetchJson(req, ctl).then(function (r) { finish(resolve, r); }, function (e) {
+          if (done) return;
+          lastErr = e; pending--;
+          if (!pending) { if (next < launches.length) launch(); else finish(reject, slowError(lastErr)); }   // everything failed: try the next one at once
+        });
+      };
+      launch();
+    });
+  }
 
   const Api = {
     demo: demo,
     token: load(demo ? 'taskapp.demo.token' : TOKEN_KEY),
     configured: demo || !!cfg.backendUrl,
+    timing: { launches: [0, 4500, 9500], deadline: 24000 },
     onAuthLost: function () {},
     onSlow: function () {},   // the app shows a small "still trying" note while a read is slow
 
@@ -42,26 +78,12 @@
         await new Promise(function (r) { setTimeout(r, 120); });
         res = await w.DemoBackend.handle(JSON.parse(JSON.stringify(req)));
       } else {
-        // Reading is safe to repeat, so a read that hangs is given up after 20 s and asked once more (Apps Script sometimes
-        // leaves a request hanging while the next one is answered at once). Writes are never repeated: they wait their full time.
-        const isRead = !opts.timeout && READS.indexOf(action) >= 0;
-        const tries = isRead ? 2 : 1;
-        let lastErr = null;
-        for (let n = 1; n <= tries && !res; n++) {
-          const ctl = new AbortController();
-          const timer = setTimeout(function () { ctl.abort(); }, opts.timeout || (isRead ? 20000 : 60000));
-          const hint = isRead ? setTimeout(function () { Api.onSlow(true); }, 6000) : 0;
-          try {
-            const r = await fetch(cfg.backendUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(req), signal: ctl.signal });
-            res = await r.json();
-          } catch (e) {
-            lastErr = e;
-          } finally { clearTimeout(timer); clearTimeout(hint); if (isRead) Api.onSlow(false); }
-        }
-        if (!res) {
-          const err = new Error(lastErr && lastErr.name === 'AbortError' ? 'The server is slow right now. Please try again in a moment.' : 'Could not reach the server. Check your internet connection and try again.');
-          err.network = true; throw err;
-        }
+        // Apps Script sometimes loses a request completely (it never even starts) while the next one is answered in about
+        // 2 s. So for reads and sign-in, if nothing has come back after 4.5 s the same request is sent again alongside the first
+        // (and once more after 9.5 s), and whichever answers first wins. Writes are sent once and wait their full time.
+        const safe = !opts.timeout && SAFE.indexOf(action) >= 0;
+        if (safe) res = await hedged(req, Api.timing.launches, Api.timing.deadline);
+        else res = await single(req, opts.timeout || 60000);
       }
       if (!res || !res.ok) {
         const err = new Error((res && res.error) || 'Unknown error');

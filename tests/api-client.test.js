@@ -20,20 +20,38 @@ function client(script) {
       else resolve({ json: async () => ({ ok: true, data: { n: calls.length } }) });
     }),
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'api.js'), 'utf8').replace('20000 :', '60 :'), ctx);   // 60 ms instead of 20 s
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'api.js'), 'utf8'), ctx);
+  win.Api.timing = { launches: [0, 40, 90], deadline: 300 };   // the same shape, in milliseconds
   return { api: win.Api, calls };
 }
 
-test('a read that hangs is asked a second time and succeeds', async () => {
+test('a read that gets no answer is sent again alongside the first, and the first answer wins', async () => {
   const c = client(['hang', 'ok']);
   const r = await c.api.call('listTasks');
   assert.equal(r.n, 2); assert.deepEqual(c.calls, ['listTasks', 'listTasks']);
 });
 
+test('signing in is also sent again when the first request is lost', async () => {
+  const c = client(['hang', 'ok']);
+  assert.equal((await c.api.call('login', { username: 'a', password: 'b' })).n, 2);
+});
+
+test('a read answered quickly is sent only once', async () => {
+  const c = client(['ok']);
+  await c.api.call('listTasks'); await new Promise((r) => setTimeout(r, 120));
+  assert.equal(c.calls.length, 1);
+});
+
+test('a request that fails at once (no network) is retried straight away, then reported', async () => {
+  const c = client(['down']);
+  await assert.rejects(c.api.call('listTasks'), (e) => /Could not reach/.test(e.message));
+  assert.equal(c.calls.length, 3);
+});
+
 test('a read that hangs twice gives a plain "server is slow" message', async () => {
   const c = client(['hang', 'hang']);
   await assert.rejects(c.api.call('getTask', { taskId: 'x' }), (e) => /slow/.test(e.message) && e.network === true);
-  assert.equal(c.calls.length, 2);
+  assert.equal(c.calls.length, 3);
 });
 
 test('a write is never repeated automatically', async () => {
