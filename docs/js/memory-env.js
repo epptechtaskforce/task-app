@@ -140,17 +140,29 @@
     options = options || {};
     const files = {}, archives = {};
     let counter = 0;
+    let timer = null, filesDirty = false;
+    const saveNow = function (s) {
+      timer = null;
+      try { root.localStorage.setItem(options.persistKey, JSON.stringify({ t: s.t, archives: archives })); } catch (e) { /* quota */ }
+      if (filesDirty) { filesDirty = false; try { root.localStorage.setItem(options.persistKey + '.files', JSON.stringify(files)); } catch (e) { /* quota: files then only live until the page is closed */ } }
+    };
     const store = new MemoryStore(function (s) {
-      if (options.persistKey && root.localStorage) {
-        try { root.localStorage.setItem(options.persistKey, JSON.stringify({ t: s.t, archives: archives })); } catch (e) { /* quota */ }
-      }
+      if (options.persistKey && root.localStorage && !timer) timer = setTimeout(function () { saveNow(s); }, 150);   // one write per burst of changes
     });
     if (options.persistKey && root.localStorage) {
       try {
         const saved = JSON.parse(root.localStorage.getItem(options.persistKey) || 'null');
         if (saved) { store.t = saved.t; Object.assign(archives, saved.archives || {}); }
+        Object.assign(files, JSON.parse(root.localStorage.getItem(options.persistKey + '.files') || '{}'));
       } catch (e) { /* ignore */ }
     }
+    const byContent = {};   // the same picture or sound is stored once
+    const keep = function (o) {
+      const k = o.mime + '|' + o.b64.length + '|' + o.b64.slice(0, 40) + o.b64.slice(-40);
+      if (byContent[k] && files[byContent[k]]) return byContent[k];
+      const id = 'F' + randomHex(6); files[id] = { b64: o.b64, mime: o.mime }; byContent[k] = id; filesDirty = true;
+      return id;
+    };
     const env = {
       hashRounds: options.hashRounds || 50,
       now: options.now || function () { return Date.now(); },
@@ -162,9 +174,9 @@
       formatDate: formatDate,
       store: store,
       files: {
-        saveAudio: function (o) { const id = 'F' + randomHex(6); files[id] = { b64: o.b64, mime: o.mime }; return id; },
+        saveAudio: function (o) { return keep(o); },
         readAudio: function (id) { if (!files[id]) throw new Error('Audio is not available in demo mode after a page reload'); return files[id]; },
-        saveFile: function (o) { const id = 'F' + randomHex(6); files[id] = { b64: o.b64, mime: o.mime }; return id; },
+        saveFile: function (o) { return keep(o); },
         readFile: function (id) { if (!files[id]) throw new Error('This file is not available in demo mode after a page reload'); return files[id]; }
       },
       archive: {

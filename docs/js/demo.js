@@ -4,7 +4,7 @@
 (function (w) {
   'use strict';
 
-  const KEY = 'taskapp.demo.db.v1';
+  const KEY = 'taskapp.demo.db.v2';
   const DAY = 86400000;
   const PASSWORD = 'demo1234';
   let core = null;
@@ -17,75 +17,69 @@
     });
   }
 
-  // half a second of silence, so the demo voice messages have something playable
-  function silentWavB64() {
-    const n = 8000, bytes = new Uint8Array(44 + n * 2), v = new DataView(bytes.buffer);
-    const str = function (o, s) { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-    v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
-    let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
-  }
-
   function seed(env, setOffset) {
     const call = function (action, token, params) {
       const r = core.handle(Object.assign({ action: action, token: token }, params || {}));
       if (!r.ok) throw new Error('Demo seed failed at ' + action + ': ' + r.error);
       return r.data;
     };
+    const D = w.DemoData;
     core.setup({ companyName: 'Acme Foods (demo)', adminName: 'Demo Admin', adminUsername: 'admin', adminPassword: 'demo-admin-1' });
     const first = call('login', null, { username: 'admin', password: 'demo-admin-1' });
     call('changePassword', first.token, { oldPassword: 'demo-admin-1', newPassword: PASSWORD });
     const A = call('login', null, { username: 'admin', password: PASSWORD }).token;
 
     const T = {};
-    [['Chairman', 1], ['General Manager', 2], ['Supervisor', 3], ['Field Officer', 4]].forEach(function (p) { T[p[0]] = call('adminSaveJobTitle', A, { title: p[0], level: p[1] }).id; });
+    D.titles.forEach(function (p) { T[p[0]] = call('adminSaveJobTitle', A, { title: p[0], level: p[1] }).id; });
     const U = {}, tok = {};
-    [['nimal.perera', 'Nimal Perera', 'Chairman'], ['kamala.silva', 'Kamala Silva', 'General Manager'], ['sunil.fernando', 'Sunil Fernando', 'Supervisor'],
-     ['ruwan.jayasinghe', 'Ruwan Jayasinghe', 'Field Officer'], ['ishara.dias', 'Ishara Dias', 'Field Officer']].forEach(function (p) {
+    D.people.forEach(function (p) {
       const r = call('adminSaveUser', A, { name: p[1], username: p[0], jobTitleId: T[p[2]] });
       U[p[0]] = r.user.id;
       const l = call('login', null, { username: p[0], password: r.tempPassword });
       call('changePassword', l.token, { oldPassword: r.tempPassword, newPassword: PASSWORD });
       tok[p[0]] = call('login', null, { username: p[0], password: PASSWORD }).token;
     });
-    const L = function (a, b) { return { fromId: U[a], toId: U[b] }; };
-    call('adminSaveLinks', A, { note: 'Demo structure', links: [L('nimal.perera', 'kamala.silva'), L('nimal.perera', 'sunil.fernando'), L('kamala.silva', 'sunil.fernando'), L('kamala.silva', 'ruwan.jayasinghe'), L('sunil.fernando', 'ruwan.jayasinghe'), L('sunil.fernando', 'ishara.dias')] });
+    const uid = function (short) { return U[D.short[short]]; }, tk = function (short) { return tok[D.short[short]]; };
+    const links = [];
+    Object.keys(D.arrows).forEach(function (from) { D.arrows[from].forEach(function (to) { links.push({ fromId: uid(from), toId: uid(to) }); }); });
+    call('adminSaveLinks', A, { note: 'Demo structure', links: links });
+    D.people.forEach(function (p) { call('saveProfile', tok[p[0]], { bio: p[3] }); });
 
-    // short bios, so the profile cards look alive in the demo
-    [['nimal.perera', 'Chairman. Ask me about strategy and budgets.'], ['kamala.silva', 'General Manager. Keeps the harvest and packing schedules running.'], ['sunil.fernando', 'Supervisor of the field teams. Irrigation and quality checks.'],
-     ['ruwan.jayasinghe', 'Field officer, Blocks A to C.'], ['ishara.dias', 'Field officer. Ask me about drip lines.']].forEach(function (p) { call('saveProfile', tok[p[0]], { bio: p[1] }); });
+    /* two months of work: every task is created at its own time in the past, with the updates that followed */
+    const H = 3600000, midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    const M0 = midnight.getTime(), realNow = Date.now();
+    const when = function (day, hour) { return Math.min(M0 - day * DAY + hour * H, realNow - 120000); };
+    const at = function (day, hour) { setOffset(when(day, hour) - realNow); };
+    const ymd = function (ms) { const d = new Date(ms); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); };
+    const wav = D.voice(), pics = {}, active = [];
 
-    const wav = silentWavB64();
-    const ymd = function (offsetDays) { const d = new Date(Date.now() + offsetDays * DAY); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); };
+    D.tasks.forEach(function (spec) {
+      at(spec.day, spec.hour);
+      const task = call('createTask', tk(spec.by), { title: spec.t, description: spec.d, assigneeIds: spec.to.map(uid), dueDate: ymd(M0 + spec.due * DAY) }).task;
+      const events = spec.ev.map(function (e, i) { return { e: e, i: i, t: when(e[1], e[2]) }; }).sort(function (x, y) { return x.t - y.t || x.i - y.i; });
+      let closed = false;
+      events.forEach(function (x) {
+        const e = x.e, kind = e[0];
+        at(e[1], e[2]);
+        if (kind === 's') call('postMessage', tk(e[3]), { taskId: task.id, text: e[4] });
+        else if (kind === 'v') call('postVoice', tk(e[3]), { taskId: task.id, audioB64: wav, wavB64: wav, mime: 'audio/wav', secs: e[4] });
+        else if (kind === 'i') {
+          const key = e[4] + '|' + e[5]; const img = pics[key] || (pics[key] = D.image(e[4], e[5]));
+          call('postFile', tk(e[3]), { taskId: task.id, name: e[4] + '-' + (Object.keys(pics).length) + '.jpg', b64: img.b64, thumb: img.thumb, w: img.w, h: img.h, caption: e[5] });
+        } else if (kind === 'f') { const d = D.doc(e[4]); call('postFile', tk(e[3]), { taskId: task.id, name: d.name, b64: d.b64, caption: e[5] }); }
+        else if (kind === 'p') call('setProgress', tk(e[3]), { taskId: task.id, progress: e[4] });
+        else if (kind === 'ok') { call('approveTask', tk(spec.by), { taskId: task.id }); closed = true; }
+        else if (kind === 'back') call('rejectTask', tk(spec.by), { taskId: task.id, note: e[3] });
+      });
+      if (!closed) active.push({ id: task.id, spec: spec });
+    });
 
-    // 1. an old, finished task -> History
-    setOffset(-3 * DAY);
-    const t1 = call('createTask', tok['kamala.silva'], { title: 'Weekly harvest report', description: 'Collect picking totals from all blocks and send me the summary.', assigneeIds: [U['sunil.fernando'], U['ruwan.jayasinghe']] }).task;
-    setOffset(-3 * DAY + 3600000); call('postMessage', tok['kamala.silva'], { taskId: t1.id, text: 'Please have this ready before the Friday review.' });
-    setOffset(-3 * DAY + 2 * 3600000); call('postMessage', tok['sunil.fernando'], { taskId: t1.id, text: 'Blocks A and B are counted. Waiting for C.' });
-    setOffset(-2 * DAY); call('postVoice', tok['ruwan.jayasinghe'], { taskId: t1.id, audioB64: wav, wavB64: wav, mime: 'audio/wav', secs: 8 });
-    setOffset(-2 * DAY + 3600000); call('setProgress', tok['sunil.fernando'], { taskId: t1.id, progress: 100 });
-    setOffset(-2 * DAY + 2 * 3600000); call('approveTask', tok['kamala.silva'], { taskId: t1.id });
-
-    // 2. in progress, with a voice update
-    setOffset(-1 * DAY);
-    const t2 = call('createTask', tok['sunil.fernando'], { title: 'Check irrigation in Block C', description: 'Walk the lines and report any leaks or blocked drippers.', assigneeIds: [U['ruwan.jayasinghe'], U['ishara.dias']], dueDate: ymd(1) }).task;
-    setOffset(-1 * DAY + 3600000); call('postVoice', tok['ruwan.jayasinghe'], { taskId: t2.id, audioB64: wav, wavB64: wav, mime: 'audio/wav', secs: 14 });
-    setOffset(-1 * DAY + 2 * 3600000); call('postMessage', tok['ishara.dias'], { taskId: t2.id, text: 'Rows 1 to 10 are fine. Two drippers blocked in row 11, fixing now.' });
-    setOffset(-1 * DAY + 3 * 3600000); call('setProgress', tok['ishara.dias'], { taskId: t2.id, progress: 60 });
-    setOffset(0); call('refreshSummary', tok['sunil.fernando'], { taskId: t2.id });
-
-    // 3. finished, waiting for the manager to approve
-    setOffset(-4 * 3600000);
-    const t3 = call('createTask', tok['kamala.silva'], { title: 'Prepare packing schedule for Friday', description: 'Match the truck slots with the harvest forecast.', assigneeIds: [U['sunil.fernando']], dueDate: ymd(0) }).task;
-    setOffset(-3 * 3600000); call('postMessage', tok['sunil.fernando'], { taskId: t3.id, text: 'Schedule drafted and shared with the packing house.' });
-    setOffset(-2 * 3600000); call('setProgress', tok['sunil.fernando'], { taskId: t3.id, progress: 100 });
-    setOffset(0); call('refreshSummary', tok['kamala.silva'], { taskId: t3.id });
-
-    // 4. just assigned, nothing happened yet
-    const t4 = call('createTask', tok['nimal.perera'], { title: 'Send the Q4 budget draft', description: '', assigneeIds: [U['kamala.silva']], dueDate: ymd(1) }).task;
-    return t4;
+    // today: mark what people have already read (except the tasks that should look new), and write the AI summaries
+    setOffset(0);
+    active.forEach(function (a) {
+      if (!a.spec.unread) [a.spec.by].concat(a.spec.to).forEach(function (who) { call('getTask', tk(who), { taskId: a.id }); });
+      if (a.spec.ev.length) call('refreshSummary', tk(a.spec.by), { taskId: a.id });
+    });
   }
 
   const Demo = {
@@ -94,8 +88,10 @@
       if (Demo.ready) return Demo.ready;
       Demo.ready = (async function () {
         await loadScript('js/memory-env.js');
+        await loadScript('js/demo-data.js');
         await loadScript('js/core.js');
         let offset = 0;
+        try { localStorage.removeItem('taskapp.demo.db.v1'); } catch (e) { /* ignore */ }
         const env = w.MemoryEnv.createMemoryEnv({ persistKey: KEY, now: function () { return Date.now() + offset; }, hashRounds: 30 });
         core = createCore(env);
         let existing = null;
@@ -112,8 +108,9 @@
     reset: function () { try { localStorage.removeItem(KEY); localStorage.removeItem('taskapp.demo.token'); } catch (e) { /* ignore */ } if (window.Api) window.Api.cacheClear(); location.reload(); },
     accounts: [
       ['admin', 'Administrator (users, job titles, org chart)'],
-      ['nimal.perera', 'Chairman (top layer)'], ['kamala.silva', 'General Manager'], ['sunil.fernando', 'Supervisor'],
-      ['ruwan.jayasinghe', 'Field Officer'], ['ishara.dias', 'Field Officer']
+      ['nimal.perera', 'Chairman (top layer)'], ['kamala.silva', 'General Manager, Operations'], ['dinesh.rathnayake', 'General Manager, Logistics'],
+      ['sunil.fernando', 'Supervisor'], ['nadeesha.wickrama', 'Supervisor, Quality'],
+      ['ruwan.jayasinghe', 'Field Officer'], ['ishara.dias', 'Field Officer'], ['kasun.bandara', 'Field Officer'], ['thilini.herath', 'Field Officer'], ['mahesh.kumara', 'Field Officer']
     ],
     password: PASSWORD
   };
