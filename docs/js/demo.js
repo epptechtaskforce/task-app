@@ -94,7 +94,8 @@
    * twice: first to collect the model input, then again with the model's answer. Without a backend address (a local copy)
    * the simple built-in stand-in answers instead. */
   const PROXIED = { assistant: 1, briefing: 1, refreshSummary: 1, postVoice: 1 };
-  function backendUrl() { return (w.APP_CONFIG && w.APP_CONFIG.backendUrl) || ''; }
+  // The relay is OFF unless js/config.js says demoAi: true (and has a backend address): it is a public, capped endpoint that uses the shared AI quota, so the administrator must choose it.
+  function backendUrl() { return w.APP_CONFIG && w.APP_CONFIG.demoAi === true && w.APP_CONFIG.backendUrl ? w.APP_CONFIG.backendUrl : ''; }
   function relay(kind, input) {
     const ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 100000);
     return fetch(backendUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'demoAi', kind: kind, input: input }), signal: ctl.signal })
