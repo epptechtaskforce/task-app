@@ -13,12 +13,12 @@ function world(props, route) {
     PropertiesService: { getScriptProperties: function () { return { getProperty: function (k) { return Object.prototype.hasOwnProperty.call(props, k) ? props[k] : null; } }; } },
     CacheService: { getScriptCache: function () { return { get: function (k) { return cache.has(k) ? cache.get(k) : null; }, put: function (k, v) { cache.set(k, String(v)); }, getAll: function () { return {}; }, remove: function (k) { cache.delete(k); } }; } },
     UrlFetchApp: { fetch: function (url, opts) {
-      const body = JSON.parse(opts.payload); calls.push({ url: url, body: body, headers: opts.headers });
+      const body = typeof opts.payload === 'string' ? JSON.parse(opts.payload) : (opts.payload || {}); calls.push({ url: url, body: body, headers: opts.headers });
       const r = route(url, body, calls.length);
       return { getResponseCode: function () { return r.code; }, getContentText: function () { return r.text; } };
     } },
     LockService: { getScriptLock: function () { return { waitLock: function () {}, releaseLock: function () {} }; } },
-    Utilities: { base64Decode: function (s) { return Buffer.from(s, 'base64'); }, newBlob: function (b) { return { getDataAsString: function () { return Buffer.from(b).toString('utf8'); } }; } },
+    Utilities: { base64Decode: function (s) { return Buffer.from(s, 'base64'); }, newBlob: function (b, mime, name) { return { bytes: b, mime: mime, name: name, getDataAsString: function () { return Buffer.from(b).toString('utf8'); } }; } },
     Session: { getScriptTimeZone: function () { return 'UTC'; } },
     DriveApp: {}, SpreadsheetApp: {}, ScriptApp: {}
   };
@@ -94,4 +94,79 @@ test('a Gemini model that just said "busy" is tried last for a few minutes', () 
   const before = w.calls.length;
   ai.assistant(INPUT);
   assert.ok(!/flash-lite/.test(w.calls[before].url));                                   // the busy one is not waited for again
+});
+
+const groqChat = (obj) => ({ code: 200, text: JSON.stringify({ choices: [{ message: { content: JSON.stringify(obj) } }] }) });
+const GROQ_MODELS = { code: 200, text: JSON.stringify({ data: [{ id: 'llama-3.1-8b-instant' }, { id: 'whisper-large-v3' }, { id: 'llama-3.3-70b-versatile' }, { id: 'openai/gpt-oss-20b' }, { id: 'something-else' }] }) };
+const isGroq = (u) => u.indexOf('api.groq.com') > 0;
+
+test('Groq: the best available models are found, and the chat request is shaped like the OpenAI API with JSON mode', () => {
+  const w = world({ GROQ_API_KEY: 'gsk-test' }, (url) => (/\/models$/.test(url) ? GROQ_MODELS : isGroq(url) ? groqChat({ reply: 'from groq', actions: [] }) : gemini({ reply: 'g' })));
+  const out = w.sb.makeAi_().assistant(INPUT);
+  assert.equal(out.reply, 'from groq');
+  const chat = w.calls.filter((c) => /chat\/completions$/.test(c.url))[0];
+  assert.equal(chat.headers.Authorization, 'Bearer gsk-test');
+  assert.equal(chat.body.model, 'llama-3.3-70b-versatile');                                 // preferred over the 8B one even though it is listed later
+  assert.deepEqual(chat.body.response_format, { type: 'json_object' });
+  assert.equal(chat.body.messages[0].role, 'system'); assert.ok(chat.body.messages[0].content.includes('=== CONTEXT ==='));
+  assert.deepEqual(chat.body.messages.slice(1).map((m) => m.role), ['user', 'assistant', 'user']);
+  assert.equal(chat.body.reasoning_effort, undefined);
+});
+
+test('Groq: a model that says "slow down" (429) is skipped, the next one answers, and the busy one is left alone next time', () => {
+  const w = world({ GROQ_API_KEY: 'k', GROQ_MODELS: 'llama-3.3-70b-versatile,openai/gpt-oss-20b' }, (url, body) => (body.model === 'llama-3.3-70b-versatile' ? { code: 429, text: 'rate limit' } : groqChat({ reply: 'second model' })));
+  const ai = w.sb.makeAi_();
+  assert.equal(ai.assistant(INPUT).reply, 'second model');
+  assert.equal(w.calls[1].body.reasoning_effort, 'low');                                   // gpt-oss: no long hidden thinking
+  const n = w.calls.length;
+  ai.assistant(INPUT);
+  assert.equal(w.calls[n].body.model, 'openai/gpt-oss-20b');                                // went straight to the one that works
+});
+
+test('Groq: when every model is busy, Gemini answers (and Groq is not asked again for a minute or two)', () => {
+  const w = world({ GROQ_API_KEY: 'k', GEMINI_API_KEY: 'g', GROQ_MODELS: 'a,b' }, (url) => (isGroq(url) ? { code: 429, text: 'busy' } : gemini({ reply: 'from gemini' })));
+  const ai = w.sb.makeAi_();
+  assert.equal(ai.assistant(INPUT).reply, 'from gemini');
+  const n = w.calls.length;
+  assert.equal(ai.assistant(INPUT).reply, 'from gemini');
+  assert.ok(w.calls.slice(n).every((c) => !isGroq(c.url)));
+});
+
+test('Groq: a spoken question is heard by Whisper (any language to English, with names as hints) and then answered like a typed one', () => {
+  const w = world({ GROQ_API_KEY: 'k', GROQ_MODELS: 'llama-3.3-70b-versatile' }, (url) => (/audio\/translations$/.test(url) ? { code: 200, text: JSON.stringify({ text: ' Give Janith a task to check the cold room. ' }) } : groqChat({ heard: 'wrong', reply: 'done', actions: [] })));
+  const out = w.sb.makeAi_().assistant(Object.assign({}, INPUT, { text: '', audio: { b64: Buffer.from('RIFFxxxx').toString('base64'), mime: 'audio/wav' } }));
+  const whisper = w.calls.filter((c) => /translations$/.test(c.url))[0];
+  assert.equal(whisper.body.model, 'whisper-large-v3'); assert.equal(whisper.body.file.name, 'speech.wav'); assert.ok(whisper.body.prompt.includes('TODAY'));
+  const chat = w.calls.filter((c) => /chat\/completions$/.test(c.url))[0];
+  assert.equal(chat.body.messages[chat.body.messages.length - 1].content, 'Give Janith a task to check the cold room.');
+  assert.equal(out.heard, 'Give Janith a task to check the cold room.');                  // what Whisper heard, not the chat model's guess
+  assert.ok(w.calls.every((c) => c.url.indexOf('generativelanguage') < 0));
+});
+
+test('Groq: if Whisper fails, Gemini listens to the sound instead', () => {
+  const w = world({ GROQ_API_KEY: 'k', GEMINI_API_KEY: 'g' }, (url) => (isGroq(url) ? { code: 500, text: 'down' } : gemini({ heard: 'ok', reply: 'from gemini' })));
+  const out = w.sb.makeAi_().assistant(Object.assign({}, INPUT, { text: '', audio: { b64: 'AAAA', mime: 'audio/wav' } }));
+  assert.equal(out.reply, 'from gemini');
+  const g = w.calls.filter((c) => c.url.indexOf('generativelanguage') > 0)[0];
+  assert.ok(JSON.stringify(g.body).indexOf('inlineData') > 0);                              // the audio went to Gemini
+});
+
+test('Groq: voice messages in a chat are written in English by Whisper (names as hints)', () => {
+  const w = world({ GROQ_API_KEY: 'k' }, () => ({ code: 200, text: JSON.stringify({ text: 'The pump is fixed.' }) }));
+  const out = w.sb.makeAi_().transcribe('AAAA', 'audio/webm', 'Task: Irrigation. People: Janith.');
+  assert.equal(out.english, 'The pump is fixed.');
+  assert.equal(w.calls[0].body.file.name, 'speech.webm'); assert.ok(w.calls[0].body.prompt.includes('Janith'));
+});
+
+test('Groq cannot look at pictures or PDFs, so a question with files goes to a provider that can', () => {
+  const w = world({ GROQ_API_KEY: 'k', GEMINI_API_KEY: 'g' }, (url) => (isGroq(url) ? groqChat({ reply: 'groq' }) : gemini({ reply: 'from gemini, with the picture' })));
+  const out = w.sb.makeAi_().assistant(Object.assign({}, INPUT, { files: [{ name: 'a.jpg', mime: 'image/jpeg', b64: 'AAAA' }] }));
+  assert.equal(out.reply, 'from gemini, with the picture');
+  assert.ok(w.calls.every((c) => !isGroq(c.url)));
+});
+
+test('the chain order is Claude, then Groq, then Gemini', () => {
+  const w = world({ ANTHROPIC_API_KEY: 'a', GROQ_API_KEY: 'g', GEMINI_API_KEY: 'x', GROQ_MODELS: 'm' }, (url) => (url.indexOf('anthropic') > 0 ? { code: 529, text: 'overloaded' } : isGroq(url) ? groqChat({ reply: 'groq answered' }) : gemini({ reply: 'gemini' })));
+  assert.equal(w.sb.makeAi_().assistant(INPUT).reply, 'groq answered');
+  assert.ok(w.calls[0].url.indexOf('anthropic') > 0 && isGroq(w.calls[1].url));
 });

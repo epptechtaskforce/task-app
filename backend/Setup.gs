@@ -515,7 +515,8 @@ function mockClean() {
 // speedTest()  Times the assistant on your real data (as the first active person, without changing anything): whole request, the model
 //              call alone, typed and spoken, so we can see where the waiting goes. Writes nothing.
 function speedTest() {
-  const real = new GeminiAi_(), env = makeEnv_({ ai: real }), core = createCore(env); env.store.init(core.TABLES);
+  const real = makeAi_(), env = makeEnv_({ ai: real }), core = createCore(env); env.store.init(core.TABLES);   // the same AI chain the app uses (Claude / Groq if they have keys, then Gemini)
+  Logger.log('AI chain: ' + (prop_('ANTHROPIC_API_KEY') ? 'Claude, ' : '') + (prop_('GROQ_API_KEY') ? 'Groq (' + groqModels_().join(', ') + '), ' : '') + 'Gemini');
   const props = PropertiesService.getScriptProperties(), before = props.getProperty('ASSISTANT_AUDIO_MODEL');
   const realAll = env.store.all.bind(env.store);
   const me = realAll('Users').filter(function (u) { return u.active && !u.isAdmin; })[0], tok = 'speed-' + Utilities.getUuid();
@@ -530,7 +531,7 @@ function speedTest() {
   run('typed', { text: 'What needs my attention today?' });
   const phrases = ['Which tasks are overdue and who is responsible for them?', 'Give Janith a task to check the cold room temperature by Friday.', 'ඉරිගේෂන් පද්ධතියේ ඉදිරි වැට මොනවාද කියලා කියන්න'];
   const samples = [];
-  phrases.forEach(function (ph) { try { samples.push({ ph: ph, b64: real.speak(ph).b64 }); } catch (e) { Logger.log('could not make a speech sample (' + e + ')'); } });
+  phrases.forEach(function (ph) { try { samples.push({ ph: ph, b64: new GeminiAi_().speak(ph).b64 }); } catch (e) { Logger.log('could not make a speech sample (' + e + ')'); } });
   try {
     ['main', 'fast'].forEach(function (order) {
       props.setProperty('ASSISTANT_AUDIO_MODEL', order);

@@ -615,20 +615,143 @@ ClaudeAi_.prototype.summarize = function (input) {
   return callClaude_(p.system + '\nReply with the JSON object only.', [{ role: 'user', content: p.text }], { temperature: 0.2, maxTokens: 800 });
 };
 
-// Claude first for text; Gemini for everything Claude cannot do and as the back-up when Claude fails.
-function CompositeAi_(primary, backup) { this.primary = primary; this.backup = backup; }
-['assistant', 'briefing', 'summarize'].forEach(function (name) {
-  CompositeAi_.prototype[name] = function (input) {
-    if (name === 'assistant' && input.audio) return this.backup.assistant(input);          // Claude cannot hear
-    let cache = null; try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
-    let broken = false; try { broken = !!(cache && cache.get('claudebad')); } catch (e) { broken = false; }
-    if (!broken) {
-      try { return this.primary[name](input); }
-      catch (e) { console.error('Claude ' + name + ' failed, using Gemini: ' + e); try { if (cache) cache.put('claudebad', '1', 120); } catch (x) { /* ignore */ } }   // do not wait for it again for 2 minutes
+/* ============================== Groq (free, very fast: Llama / gpt-oss models and Whisper speech-to-text) ============================== */
+// Needs the script property GROQ_API_KEY (a free key from console.groq.com, no card). Optional: GROQ_MODELS = comma-separated model ids
+// (otherwise the best available are found automatically). The free tier has small per-model limits, so a model that says "slow down"
+// (429) is left alone for a minute and the next one is used; if all are busy the next provider answers.
+const GROQ_BASE = 'https://api.groq.com/openai/v1';
+
+function groqModels_() {
+  const given = prop_('GROQ_MODELS');
+  if (given) return given.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  let cache = null; try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
+  try { const hit = cache && cache.get('groqmodels'); if (hit) return JSON.parse(hit); } catch (e) { /* ignore */ }
+  let list = ['llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'llama-3.1-8b-instant'];
+  try {
+    const res = UrlFetchApp.fetch(GROQ_BASE + '/models', { headers: { Authorization: 'Bearer ' + prop_('GROQ_API_KEY') }, muteHttpExceptions: true });
+    if (res.getResponseCode() === 200) {
+      const ids = (JSON.parse(res.getContentText()).data || []).map(function (m) { return m.id; });
+      const picked = [];
+      [/^llama-3\.3-70b/, /gpt-oss-120b/, /gpt-oss-20b/, /^llama-3\.1-8b-instant/, /llama-4-scout/].forEach(function (re) {
+        const f = ids.filter(function (id) { return re.test(id) && picked.indexOf(id) < 0; })[0]; if (f) picked.push(f);
+      });
+      if (picked.length) list = picked;
     }
-    return this.backup[name](input);
-  };
-});
-CompositeAi_.prototype.transcribe = function (b64, mime, hints) { return this.backup.transcribe(b64, mime, hints); };
-CompositeAi_.prototype.speak = function (text) { return this.backup.speak(text); };
-function makeAi_() { return prop_('ANTHROPIC_API_KEY') ? new CompositeAi_(new ClaudeAi_(), new GeminiAi_()) : new GeminiAi_(); }
+  } catch (e) { /* use the defaults */ }
+  try { if (cache) cache.put('groqmodels', JSON.stringify(list), 21600); } catch (e) { /* ignore */ }
+  return list;
+}
+
+function callGroq_(system, turns, opts) {
+  opts = opts || {};
+  const key = prop_('GROQ_API_KEY');
+  if (!key) throw new Error('GROQ_API_KEY is not set in Script properties');
+  let cache = null; try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
+  const isBad = function (m) { try { return !!(cache && cache.get('groqbad:' + m)); } catch (e) { return false; } };
+  const markBad = function (m) { try { if (cache) cache.put('groqbad:' + m, '1', 60); } catch (e) { /* ignore */ } };
+  const all = groqModels_(), models = all.filter(function (m) { return !isBad(m); }).concat(all.filter(isBad));
+  const started = Date.now();
+  let lastError = 'No Groq model was tried';
+  for (let i = 0; i < models.length; i++) {
+    if (Date.now() - started > 12000) break;                                              // Groq answers in about a second; do not wait around
+    const model = models[i];
+    const body = { model: model, messages: [{ role: 'system', content: system }].concat(turns), temperature: opts.temperature === undefined ? 0.3 : opts.temperature, max_tokens: opts.maxTokens || 800, response_format: { type: 'json_object' } };
+    if (/gpt-oss/.test(model)) body.reasoning_effort = 'low';                             // no long hidden "thinking"
+    const send = function (b) {
+      const t0 = Date.now();
+      const r = UrlFetchApp.fetch(GROQ_BASE + '/chat/completions', { method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + key }, payload: JSON.stringify(b), muteHttpExceptions: true });
+      GEMINI_LOG_.push({ model: model, code: r.getResponseCode(), ms: Date.now() - t0, quick: false }); if (GEMINI_LOG_.length > 40) GEMINI_LOG_.shift();
+      return r;
+    };
+    let res = send(body);
+    if (res.getResponseCode() === 400 && /response_format|json_object|reasoning/i.test(res.getContentText())) { delete body.response_format; delete body.reasoning_effort; res = send(body); }
+    const code = res.getResponseCode(), text = res.getContentText();
+    if (code === 200) {
+      const out = JSON.parse(text), msg = out.choices && out.choices[0] && out.choices[0].message;
+      if (msg && msg.content) return extractJson_(msg.content);
+      lastError = 'Empty answer from Groq (' + model + ')'; markBad(model); continue;
+    }
+    lastError = 'Groq error ' + code + ' (' + model + '): ' + text.slice(0, 250);
+    if (code === 401 || code === 403) break;                                              // the key is wrong: other models will not help
+    markBad(model);                                                                       // 429 slow down / 413 too large / 5xx / retired: try the next model
+  }
+  throw new Error(lastError);
+}
+
+function GroqAi_() {}
+GroqAi_.prototype.chatTurns = function (input) {
+  const turns = [];
+  input.history.forEach(function (m) {
+    const role = m.role === 'assistant' ? 'assistant' : 'user';
+    if (!turns.length && role === 'assistant') return;
+    if (turns.length && turns[turns.length - 1].role === role) turns[turns.length - 1].content += '\n' + m.text; else turns.push({ role: role, content: m.text });
+  });
+  turns.push({ role: 'user', content: input.text });
+  return turns;
+};
+GroqAi_.prototype.assistant = function (input) {
+  return callGroq_(assistantSystem_(input) + '\nReply with the JSON object only, nothing else.', this.chatTurns(input), { temperature: 0.3, maxTokens: 700 });
+};
+GroqAi_.prototype.briefing = function (input) {
+  return callGroq_(briefingSystem_(input) + '\nReply with the JSON object only.', [{ role: 'user', content: 'Write my overview now.' }], { temperature: 0.3, maxTokens: 600 });
+};
+GroqAi_.prototype.summarize = function (input) {
+  const p = summarizePrompt_(input);
+  return callGroq_(p.system + '\nReply with the JSON object only.', [{ role: 'user', content: p.text }], { temperature: 0.2, maxTokens: 700 });
+};
+// Whisper hears speech in any language and writes it in English (names from `hints` help it spell them).
+GroqAi_.prototype.listen = function (b64, mime, hints) {
+  const key = prop_('GROQ_API_KEY');
+  if (!key) throw new Error('GROQ_API_KEY is not set in Script properties');
+  const ext = { 'audio/webm': 'webm', 'audio/wav': 'wav', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/aac': 'aac' }[mime] || 'wav';
+  const blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, 'speech.' + ext);
+  const t0 = Date.now();
+  const res = UrlFetchApp.fetch(GROQ_BASE + '/audio/translations', { method: 'post', headers: { Authorization: 'Bearer ' + key }, payload: { file: blob, model: 'whisper-large-v3', response_format: 'json', temperature: '0', prompt: String(hints || '').slice(0, 400) }, muteHttpExceptions: true });
+  GEMINI_LOG_.push({ model: 'whisper-large-v3', code: res.getResponseCode(), ms: Date.now() - t0, quick: false }); if (GEMINI_LOG_.length > 40) GEMINI_LOG_.shift();
+  if (res.getResponseCode() !== 200) throw new Error('Groq speech error ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 250));
+  return String(JSON.parse(res.getContentText()).text || '').trim();
+};
+
+/* ---- the chain: the providers you have keys for, in this order (Claude, Groq, Gemini), Gemini always last ---- */
+function CompositeAi_(providers, gemini) { this.providers = providers; this.gemini = gemini; }
+CompositeAi_.prototype.run = function (name, input) {
+  let cache = null; try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
+  const wantsFiles = !!(input.files && input.files.length);
+  for (let i = 0; i < this.providers.length; i++) {
+    const p = this.providers[i];
+    if (wantsFiles && !p.canReadFiles) continue;                                          // only Claude and Gemini can look at pictures and PDFs
+    let broken = false; try { broken = !!(cache && cache.get('aibad:' + p.name)); } catch (e) { broken = false; }
+    if (broken) continue;
+    try { return p.ai[name](input); }
+    catch (e) { console.error(p.name + ' ' + name + ' failed, trying the next: ' + e); try { if (cache) cache.put('aibad:' + p.name, '1', 90); } catch (x) { /* ignore */ } }
+  }
+  return this.gemini[name](input);
+};
+['briefing', 'summarize'].forEach(function (name) { CompositeAi_.prototype[name] = function (input) { return this.run(name, input); }; });
+CompositeAi_.prototype.assistant = function (input) {
+  if (input.audio) {
+    const g = this.providers.filter(function (p) { return p.name === 'groq'; })[0];
+    if (g) {                                                                              // speech -> English text (Whisper), then the same fast path as a typed question
+      let heard = '';
+      try { heard = g.ai.listen(input.audio.b64, input.audio.mime, 'People and tasks in this company: ' + String(input.context).slice(0, 300)); } catch (e) { console.error('Whisper failed, Gemini listens instead: ' + e); }
+      if (heard) {
+        const out = this.run('assistant', Object.assign({}, input, { audio: null, text: heard }));
+        out.heard = heard; return out;
+      }
+    }
+    return this.gemini.assistant(input);                                                  // Gemini can listen to the sound itself
+  }
+  return this.run('assistant', input);
+};
+CompositeAi_.prototype.transcribe = function (b64, mime, hints) {
+  const g = this.providers.filter(function (p) { return p.name === 'groq'; })[0];
+  if (g) { try { const text = g.ai.listen(b64, mime, hints); if (text) return { english: text, language: '', key_points: '' }; } catch (e) { console.error('Whisper failed, Gemini transcribes instead: ' + e); } }
+  return this.gemini.transcribe(b64, mime, hints);
+};
+CompositeAi_.prototype.speak = function (text) { return this.gemini.speak(text); };
+function makeAi_() {
+  const providers = [];
+  if (prop_('ANTHROPIC_API_KEY')) providers.push({ name: 'claude', ai: new ClaudeAi_(), canReadFiles: true });
+  if (prop_('GROQ_API_KEY')) providers.push({ name: 'groq', ai: new GroqAi_(), canReadFiles: false });
+  return providers.length ? new CompositeAi_(providers, new GeminiAi_()) : new GeminiAi_();
+}

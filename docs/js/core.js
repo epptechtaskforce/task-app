@@ -759,7 +759,8 @@ function createCore(env) {
   }
 
   // Everything this person is allowed to see, as plain text for the model. perTask = how many recent messages per task.
-  function aiContext(ctx, user, perTask, withPeople) {
+  // focusId: the task the person is looking at gets its whole recent conversation; tight: fewer and shorter lines (the free AI services have small limits)
+  function aiContext(ctx, user, perTask, withPeople, focusId, tight) {
     const users = usersById(ctx), titles = titlesById(ctx), now = aiNow(), my = titles[user.jobTitleId], L = [];
     L.push('TODAY: ' + now.weekday + ' ' + now.date + ', ' + now.time + ' (company time zone)');
     L.push('USER: ' + user.name + ' (id ' + user.id + ')' + (my ? ', ' + my.title + ', layer ' + my.level : '') + (user.isAdmin ? ', system administrator' : ''));
@@ -787,21 +788,21 @@ function createCore(env) {
       }
       L.push('TASK id=' + t.id + ' | "' + clip(t.title, 120) + '" | ' + (t.status === 'pending' ? 'WAITING FOR APPROVAL (100%)' : 'in progress, ' + t.progress + '%') + ' | ' + due + ' | my role: ' + (t.creatorId === user.id ? 'creator (I assigned it)' : 'assignee') +
         ' | from: ' + brief(ctx, t.creatorId).name + ' | to: ' + t.assigneeIds.map(function (id) { return brief(ctx, id).name; }).join(', ') + ' | last activity ' + env.formatDate(t.updatedAt));
-      if (t.description) L.push('  details: ' + clip(t.description, 300));
+      if (t.description) L.push('  details: ' + clip(t.description, t.id === focusId ? 500 : (tight ? 120 : 200)));
       if (filesOf[t.id]) L.push('  files shared: ' + filesOf[t.id].slice(0, 8).join(', '));
-      ids[t.id].sort(function (a, b) { return a.createdAt - b.createdAt; }).slice(-perTask).forEach(function (m) {
-        L.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), 240).replace(/\s+/g, ' '));
+      ids[t.id].sort(function (a, b) { return a.createdAt - b.createdAt; }).slice(-(t.id === focusId ? 25 : perTask)).forEach(function (m) {
+        L.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), t.id === focusId ? 300 : (tight ? 140 : 200)).replace(/\s+/g, ' '));
       });
     });
-    const done = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, 30);
+    const done = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, tight ? 10 : 20);
     L.push('COMPLETED TASKS, newest first (' + done.length + '; use the id to open one):');
     if (!done.length) L.push('(none)');
-    done.forEach(function (x) { L.push('- id=' + x.id + ' "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.summaryText ? ': ' + clip(x.summaryText, 110) : '')); });
+    done.forEach(function (x) { L.push('- id=' + x.id + ' "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.summaryText ? ': ' + clip(x.summaryText, tight ? 70 : 110) : '')); });
     return L.join('\n');
   }
-  function aiContextFit(ctx, user, withPeople, budget) {
+  function aiContextFit(ctx, user, withPeople, budget, focusId) {
     let text = '';
-    [6, 3, 1].some(function (n) { text = aiContext(ctx, user, n, withPeople); return text.length <= budget; });
+    [[3, false], [2, true], [1, true]].some(function (p) { text = aiContext(ctx, user, p[0], withPeople, focusId, p[1]); return text.length <= budget; });
     return text.length > budget ? text.slice(0, budget) + '\n(older information left out)' : text;
   }
 
@@ -908,7 +909,7 @@ function createCore(env) {
       const ft = ctx.rows('Tasks').filter(function (x) { return x.id === String(req.taskId) && isParticipant(x, user.id); })[0];
       if (ft) { focus = { id: ft.id, title: ft.title }; files = focusFiles(ctx, ft.id); }
     }
-    let context = aiContextFit(ctx, user, true, 30000);   // smaller question = faster answer
+    let context = aiContextFit(ctx, user, true, 16000, focus ? focus.id : '');   // a small prompt is faster, and fits the free AI services' limits
     if (!focus && req.archivedId) {
       const ix = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(req.archivedId) && x.participantIds.indexOf(user.id) >= 0; })[0];
       if (ix) { focus = { id: ix.id, title: ix.title }; context += '\n\n' + archivedText(ctx, ix); }
@@ -951,7 +952,7 @@ function createCore(env) {
     const recent = row && row.data && env.now() - row.at < 20 * 60000;
     if (row && row.data && !req.force && (row.sig === sig || recent)) return { briefing: row.data, at: row.at, stale: row.sig !== sig };
     let raw;
-    try { raw = env.ai.briefing({ context: aiContextFit(ctx, user, false, 45000), userName: user.name }) || {}; }
+    try { raw = env.ai.briefing({ context: aiContextFit(ctx, user, false, 18000), userName: user.name }) || {}; }
     catch (e) { env.log('briefing failed: ' + e); throw fail('AI_FAILED', 'The overview is not available right now.'); }
     const tones = ['urgent', 'watch', 'good', 'info'], mineIds = {}; mine.forEach(function (t) { mineIds[t.id] = 1; });
     const data = {
