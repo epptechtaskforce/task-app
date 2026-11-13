@@ -1,11 +1,12 @@
 /* speech.js - the assistant talking back.
- * 1. Natural voice: a Gemini speech model (asked through the backend, same free key) - sounds like a person. The first
- *    sentence starts playing as soon as it is ready while the next one is prepared.
- * 2. If that is not available (no internet, quota used up, demo mode), the voice built into the browser is used instead.
+ * 1. The voice of the device (default): free, instant, no limit. Phones and Microsoft Edge ship very natural voices; the person
+ *    can pick the best one installed on their device (Speech.voices / setVoice).
+ * 2. Optional "studio voice": a Gemini speech model through the backend. Sounds great but the free daily quota is small,
+ *    so it is off by default, and when the quota runs out the device voice takes over by itself.
  * Nothing is stored; the audio is played and thrown away. */
 (function (w) {
   'use strict';
-  const KEY = 'taskapp.speak', KEY_NAT = 'taskapp.voice';
+  const KEY = 'taskapp.speak', KEY_ENGINE = 'taskapp.engine', KEY_VOICE = 'taskapp.voiceuri';
   const syn = w.speechSynthesis || null;
   let voices = [], gen = 0, speaking = false, failUntil = 0, player = null;
 
@@ -13,18 +14,25 @@
   if (syn) { loadVoices(); if (syn.addEventListener) syn.addEventListener('voiceschanged', loadVoices); }
 
   /* ---------- the voice built into the browser (fallback) ---------- */
-  function pickVoice(lang) {
+  function isNatural(v) { return /natural|neural|online|enhanced|premium|siri|google|wavenet/i.test(v.name); }
+  function score(v) {
+    let s = 0;
+    if (/en[-_]GB/i.test(v.lang)) s += 6; else if (/en[-_]IN/i.test(v.lang)) s += 5; else if (/en[-_](US|AU)/i.test(v.lang)) s += 3;
+    if (/natural|neural|online|enhanced|premium|siri|wavenet/i.test(v.name)) s += 10; else if (/google/i.test(v.name)) s += 5;
+    if (/female|sonia|libby|aria|jenny|samantha|karen|veena|heera|neerja|serena|moira/i.test(v.name)) s += 1;
+    return s;
+  }
+  function englishVoices() {
     if (!voices.length) loadVoices();
-    const english = voices.filter(function (v) { return /^en[-_]/i.test(v.lang); });
-    const score = function (v) {
-      let s = 0;
-      if (/en[-_]GB/i.test(v.lang)) s += 6; else if (/en[-_]IN/i.test(v.lang)) s += 5; else if (/en[-_]US/i.test(v.lang)) s += 3;
-      if (/natural|neural|online/i.test(v.name)) s += 8; else if (/google/i.test(v.name)) s += 4;
-      if (/female|sonia|libby|aria|jenny|samantha|karen|veena|heera|neerja/i.test(v.name)) s += 1;
-      return s;
-    };
+    return voices.filter(function (v) { return /^en[-_]/i.test(v.lang); }).sort(function (a, b) { return score(b) - score(a); });
+  }
+  function pickVoice(lang, uri) {
+    const english = englishVoices();
+    if (uri) { const chosen = voices.filter(function (v) { return v.voiceURI === uri; })[0]; if (chosen) return chosen; }
     if (lang === 'si') { const si = voices.filter(function (v) { return /^si/i.test(v.lang); })[0]; if (si) return si; }
-    return english.sort(function (a, b) { return score(b) - score(a); })[0] || null;
+    let saved = ''; try { saved = localStorage.getItem(KEY_VOICE) || ''; } catch (e) { /* storage blocked */ }
+    const mine = saved ? english.filter(function (v) { return v.voiceURI === saved; })[0] : null;
+    return mine || english[0] || null;
   }
   function clean(text) {
     return String(text || '').replace(/\(Note:[^)]*\)/g, '').replace(/[*_#`>~]/g, '').replace(/^\s*[-•]\s+/gm, '').replace(/\s*\n+\s*/g, '. ').replace(/\s+/g, ' ').trim();
@@ -43,7 +51,7 @@
     const next = function () {
       if (my !== gen) return;
       if (i >= parts.length) { speaking = false; if (o.onend) o.onend(); return; }
-      const u = new SpeechSynthesisUtterance(parts[i++]), v = pickVoice(sinhala ? 'si' : 'en');
+      const u = new SpeechSynthesisUtterance(parts[i++]), v = pickVoice(sinhala ? 'si' : 'en', o.voiceUri);
       if (v) { u.voice = v; u.lang = v.lang; } else u.lang = sinhala ? 'si-LK' : 'en-GB';
       u.rate = 0.97; u.pitch = 1; u.onend = next; u.onerror = next;
       try { syn.speak(u); } catch (e) { next(); }
@@ -85,8 +93,14 @@
     supported: !!(syn && w.SpeechSynthesisUtterance) || !!w.Audio,
     enabled: function () { try { return localStorage.getItem(KEY) !== 'off'; } catch (e) { return true; } },
     setEnabled: function (on) { try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) { /* storage blocked */ } if (!on) Speech.stop(); },
-    natural: function () { try { return localStorage.getItem(KEY_NAT) !== 'basic'; } catch (e) { return true; } },
-    setNatural: function (on) { try { localStorage.setItem(KEY_NAT, on ? 'natural' : 'basic'); } catch (e) { /* storage blocked */ } },
+    // 'device' (default) or 'studio' (Gemini, limited free quota)
+    studio: function () { try { return localStorage.getItem(KEY_ENGINE) === 'studio'; } catch (e) { return false; } },
+    setStudio: function (on) { try { localStorage.setItem(KEY_ENGINE, on ? 'studio' : 'device'); } catch (e) { /* storage blocked */ } },
+    // English voices installed on this device, best first: [{ uri, name, lang, natural }]
+    voices: function () { return englishVoices().map(function (v) { return { uri: v.voiceURI, name: v.name, lang: v.lang, natural: isNatural(v) }; }); },
+    voice: function () { const v = pickVoice('en'); return v ? v.voiceURI : ''; },
+    setVoice: function (uri) { try { localStorage.setItem(KEY_VOICE, uri || ''); } catch (e) { /* storage blocked */ } },
+    onVoicesChanged: function (fn) { if (syn && syn.addEventListener) syn.addEventListener('voiceschanged', fn); },
     isSpeaking: function () { return speaking; },
     // Call this from a tap/click: phones only allow sound that was "unlocked" by a touch.
     unlock: function () {
@@ -99,7 +113,7 @@
       const plain = clean(text);
       if (!plain) { if (o.onend) o.onend(); return; }
       const my = ++gen; speaking = true;
-      const useNatural = Speech.natural() && w.Api && w.Api.token && !w.Api.demo && Date.now() > failUntil;
+      const useNatural = Speech.studio() && !o.voiceUri && w.Api && w.Api.token && !w.Api.demo && Date.now() > failUntil;
       if (!useNatural) { if (o.onstart) o.onstart(); return browserSpeak(sentences(plain, 170), my, o); }
       // the first sentence alone (so it starts as soon as possible), then the rest in chunks
       const firstMatch = /^.*?[.!?](?=\s|$)/.exec(plain), first = firstMatch ? firstMatch[0] : plain, parts = [first].concat(sentences(plain.slice(first.length).trim(), 150).filter(Boolean)), jobs = [];

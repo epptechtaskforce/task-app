@@ -431,11 +431,12 @@ GeminiAi_.prototype.speak = function (text) {
   const key = prop_('GEMINI_API_KEY');
   if (!key) throw new Error('GEMINI_API_KEY is not set in Script properties');
   const model = ttsModel_();
+  // The text sent is exactly the words to say: any instruction placed in it would be read aloud.
   const call = function (voice) {
     return UrlFetchApp.fetch(GEMINI_BASE + model + ':generateContent', {
       method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true,
       payload: JSON.stringify({
-        contents: [{ parts: [{ text: 'Say this in a warm, natural, friendly voice, like a helpful colleague talking in a relaxed, conversational way: ' + text }] }],
+        contents: [{ parts: [{ text: text }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
       })
     });

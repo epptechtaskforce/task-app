@@ -691,3 +691,11 @@ h1 { letter-spacing: -.025em; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
 @media print { .sidebar, .mtop, .bottom-nav, .composer, .fab, .dock { display: none !important; } .app { display: block; } body::before { display: none; } }
+
+/* ---------- voice picker ---------- */
+.voice-pick { display: grid; gap: .5rem; max-height: 60vh; overflow-y: auto; }
+.voice-opt { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .7rem 1rem; border: 1.5px solid var(--line); border-radius: 14px; background: var(--solid); font: inherit; font-weight: 700; color: inherit; cursor: pointer; text-align: left; min-height: 48px; }
+.voice-opt small { display: block; font-weight: 500; color: var(--mute); font-size: .78rem; }
+.voice-opt:hover { border-color: var(--accent); }
+.voice-opt.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.voice-opt.studio { border-style: dashed; }

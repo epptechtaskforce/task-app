@@ -55,8 +55,7 @@
         tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (on ? ' on' : ''), 'aria-pressed': on, title: 'Read the answers aloud', onclick: function () { Speech.setEnabled(!Speech.enabled()); if (!Speech.enabled()) A.convo = false; drawHead(); } }, icon(on ? 'volume' : 'volumeOff', 16), 'Voice replies'));
       }
       if (Speech.supported && Speech.enabled()) {
-        const nat = Speech.natural();
-        tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (nat ? ' on' : ''), 'aria-pressed': nat, title: nat ? 'Natural voice (takes a moment longer to start)' : 'Quick voice of this device (starts at once, sounds more robotic)', onclick: function () { Speech.setNatural(!Speech.natural()); drawHead(); } }, icon('sparkles', 16), nat ? 'Natural voice' : 'Quick voice'));
+        tools.appendChild(h('button', { type: 'button', class: 'tool-btn', title: 'Choose the voice that reads the answers', onclick: voicePicker }, icon('sparkles', 16), 'Choose voice'));
       }
       if (Audio2.supported()) {
         tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (A.convo ? ' on' : ''), 'aria-pressed': A.convo, title: 'Keep listening after each answer, like a phone call', onclick: function () {
@@ -68,6 +67,28 @@
       }
       if (A.feed.length) tools.appendChild(h('button', { type: 'button', class: 'tool-btn', title: 'Start a new conversation', onclick: function () { Speech.stop(); A.feed = []; A.pending = []; A.history = []; A.convo = false; save(); redraw(); } }, icon('refresh', 16), 'New chat'));
       head.appendChild(tools);
+    }
+
+    /* ---- choose the voice: the voices installed on this device (free, no limit), or the studio voice (Gemini, small daily quota) ---- */
+    function voicePicker() {
+      const body = h('div', { class: 'voice-pick' });
+      const inDemo = !!(window.Api && window.Api.demo);
+      const draw = function () {
+        UI.clear(body);
+        const list = Speech.voices(), current = Speech.voice(), studio = Speech.studio();
+        body.appendChild(h('p', { class: 'small muted' }, list.length ? 'Tap a voice to hear it. The ones marked Natural sound the most like a person. Phones and Microsoft Edge usually have the best ones.' : 'No English voices were found on this device. Try Microsoft Edge on a computer, or Chrome on a phone.'));
+        list.slice(0, 14).forEach(function (v) {
+          const on = !studio && v.uri === current;
+          body.appendChild(h('button', { type: 'button', class: 'voice-opt' + (on ? ' on' : ''), onclick: function () {
+            Speech.setStudio(false); Speech.setVoice(v.uri); Speech.unlock(); Speech.speak('Hello, this is how I sound. I can read your tasks and updates to you.', { voiceUri: v.uri }); draw();
+          } }, h('span', null, v.name.replace(/^Microsoft |^Google /, ''), h('small', null, v.lang + (v.natural ? ' \u00b7 Natural' : ''))), on ? icon('check', 18) : null));
+        });
+        if (!inDemo) body.appendChild(h('button', { type: 'button', class: 'voice-opt studio' + (studio ? ' on' : ''), onclick: function () { Speech.setStudio(!studio); Speech.unlock(); if (!studio) Speech.speak('Hello, this is the studio voice.'); draw(); } },
+          h('span', null, 'Studio voice (AI-made)', h('small', null, 'Very natural, but the free daily limit runs out quickly. Then your device voice takes over.')), studio ? icon('check', 18) : null));
+      };
+      draw();
+      Speech.onVoicesChanged(function () { if (body.isConnected) draw(); });
+      UI.modal({ title: 'Choose the voice', body: body, onClose: function () { Speech.stop(); drawHead(); }, actions: [{ label: 'Done', kind: 'primary' }] });
     }
 
     /* ---- the conversation ---- */
