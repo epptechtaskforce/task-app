@@ -53,8 +53,11 @@
     const p = getPos(), vw = vwOf(), vh = innerHeight, W = Math.min(vw - 24, 340);
     B.fab.style.left = p.x + 'px'; B.fab.style.top = p.y + 'px';
     const right = p.x + SIZE / 2 > vw / 2, above = p.y + SIZE / 2 > vh / 2;
-    B.stack.style.width = W + 'px';
-    B.stack.style.left = Math.max(12, Math.min(vw - W - 12, right ? p.x + SIZE - W : p.x)) + 'px';
+    // the stack spans the screen: your side (picture + words) sits at the edge opposite the bubble, the AI's words hug its bubble
+    B.stack.style.width = (vw - 24) + 'px'; B.stack.style.left = '12px';
+    B.stack.style.setProperty('--aib-w', W + 'px');
+    B.stack.style.setProperty('--aib-edge', (right ? Math.max(0, vw - 12 - (p.x + SIZE)) : Math.max(0, p.x - 12)) + 'px');
+    B.stack.style.setProperty('--tx', (p.x + SIZE / 2 - 12) + 'px'); B.stack.style.setProperty('--tdx', right ? '-9px' : '9px');
     if (above) { B.stack.style.top = 'auto'; B.stack.style.bottom = (vh - p.y + 26) + 'px'; B.stack.style.maxHeight = Math.max(120, p.y - 40) + 'px'; }
     else { B.stack.style.bottom = 'auto'; B.stack.style.top = (p.y + SIZE + 26) + 'px'; B.stack.style.maxHeight = Math.max(120, vh - p.y - SIZE - 40) + 'px'; }
     B.stack.style.setProperty('--aib-max', Math.max(150, parseInt(B.stack.style.maxHeight, 10) - 84) + 'px');   // room left for the answer (the question takes about 70px)
@@ -87,10 +90,15 @@
   function active() { return !!(B.userEl || B.botEl || B.typing || B.rec); }
   function bubbleEl(kind, content) { return h('div', { class: 'aib-msg ' + kind, onclick: function () { endSession(); } }, content); }
   function dissolve(el) { if (!el || !el.parentNode) return; el.classList.add('out'); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 380); }
+  // Your words come out of your own profile picture, on the side opposite to the AI bubble (like two people chatting).
   function putUser(content) {
-    const old = B.userEl; B.userEl = bubbleEl('user', content);
-    if (old) old.remove();
-    B.stack.insertBefore(B.userEl, B.stack.firstChild); return B.userEl;
+    const me = B.App ? B.App.S.user : { name: '?', id: '' }, msg = bubbleEl('user', content), old = B.userEl;
+    if (old && old.parentNode && !old.classList.contains('out')) {          // same speaker still talking: change the words only
+      msg.classList.add('swap'); const was = old.querySelector('.aib-msg'); old.replaceChild(msg, was); return msg;
+    }
+    const row = h('div', { class: 'aib-urow' }, h('span', { class: 'aib-dp' }, UI.avatar(me.name, '', me.id)), msg);
+    B.userEl = row; if (old) old.remove();
+    B.stack.insertBefore(row, B.stack.firstChild); return msg;
   }
   // The assistant's words: a small name tag, then the text laid out in lines (lines starting with "- " become bullets) with the
   // words fading in one after another, so it feels like it is speaking. Very long answers skip the per-word effect.
