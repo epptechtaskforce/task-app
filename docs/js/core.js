@@ -43,8 +43,10 @@ const REJECT_PROGRESS = 90;
 const MIN_PASSWORD = 8;
 const LIMITS = {
   name: 80, title: 120, description: 2000, text: 4000, transcript: 8000, note: 300,
-  maxAssignees: 20, maxAudioB64: 6000000, maxWavB64: 9000000, maxVoiceSecs: 150, maxLinks: 3000
+  maxAssignees: 20, maxAudioB64: 6000000, maxWavB64: 9000000, maxVoiceSecs: 150, maxLinks: 3000,
+  bio: 300, photo: 20000   // photo = a small square JPEG as a data: URL (the browser shrinks it to about 128 px before sending)
 };
+const PHOTO_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+\/]+={0,2}$/;
 const AUDIO_MIMES = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/x-m4a', 'audio/aac'];
 
 // Column types: s = string, n = number, b = boolean, j = JSON value
@@ -58,6 +60,7 @@ const TABLES = {
   Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n' } },
   Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n' } },
   Reads:        { key: 'id', cols: { id: 's', taskId: 's', userId: 's', lastReadAt: 'n' } },
+  Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
   ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n' } },
   AuditLog:     { key: 'id', cols: { id: 's', at: 'n', userId: 's', action: 's', detail: 's' } }
 };
@@ -288,6 +291,55 @@ function createCore(env) {
       audit(ctx, user, 'changePassword', user.username);
     });
     return { changed: true };
+  } };
+
+  /* ---------------- profiles (picture + short bio) ---------------- */
+
+  // Who may see whose picture and bio: yourself, people you share an open task with, people you can assign tasks to,
+  // the people who can assign tasks to you, and (for administrators) everyone. Same spirit as the rest of the app:
+  // nobody gets a company-wide directory.
+  function visibleUserIds(ctx, user) {
+    const users = usersById(ctx), ok = {};
+    ok[user.id] = 1;
+    if (user.isAdmin) { Object.keys(users).forEach(function (id) { ok[id] = 1; }); return ok; }
+    ctx.rows('Links').forEach(function (l) { if (l.fromId === user.id) ok[l.toId] = 1; if (l.toId === user.id) ok[l.fromId] = 1; });
+    ctx.rows('Tasks').forEach(function (t) {
+      if (t.status === 'closed' || !isParticipant(t, user.id)) return;
+      ok[t.creatorId] = 1; t.assigneeIds.forEach(function (id) { ok[id] = 1; });
+    });
+    return ok;
+  }
+
+  // req.have = { userId: version } of what this browser already holds; photos are only sent when they changed.
+  A.profiles = { run: function (ctx, user, req) {
+    const have = req.have && typeof req.have === 'object' ? req.have : {};
+    const ok = visibleUserIds(ctx, user), users = usersById(ctx);
+    const out = ctx.rows('Profiles').filter(function (p) { return ok[p.userId] && users[p.userId] && users[p.userId].active; }).map(function (p) {
+      const v = { userId: p.userId, bio: p.bio, ver: p.ver || 0, hasPhoto: !!p.photo };
+      if (Number(have[p.userId]) !== (p.ver || 0)) v.photo = p.photo || '';
+      return v;
+    });
+    return { profiles: out };
+  } };
+
+  // req.bio (text) and/or req.photo (a JPEG data: URL, or '' to remove the picture). Fields that are not sent stay as they are.
+  A.saveProfile = { run: function (ctx, user, req) {
+    const patch = {};
+    if (req.bio !== undefined) patch.bio = str(req.bio, 'Bio', LIMITS.bio, { min: 0 });
+    if (req.photo !== undefined) {
+      const photo = String(req.photo || '');
+      if (photo && (photo.length > LIMITS.photo || !PHOTO_RE.test(photo))) throw fail('VALIDATION', 'The picture must be a small JPEG image');
+      patch.photo = photo;
+    }
+    if (!Object.keys(patch).length) throw fail('VALIDATION', 'Nothing to save');
+    return ctx.write(function () {
+      patch.ver = env.now();
+      const row = ctx.rows('Profiles').filter(function (p) { return p.userId === user.id; })[0];
+      if (row) update(ctx, 'Profiles', user.id, patch);
+      else insert(ctx, 'Profiles', Object.assign({ userId: user.id, bio: '', photo: '' }, patch));
+      const p = ctx.rows('Profiles').filter(function (x) { return x.userId === user.id; })[0];
+      return { profile: { userId: user.id, bio: p.bio, ver: p.ver, hasPhoto: !!p.photo, photo: p.photo } };
+    });
   } };
 
   /* ---------------- admin ---------------- */

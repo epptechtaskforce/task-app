@@ -143,6 +143,21 @@ function smokeTest() {
     check(doc.messages.length === 3 + risky.length && doc.task.title === 'Smoke task', 'archived conversation (' + doc.messages.length + ' messages) can be opened from Drive');
     check(must('getAudio', staff1, { archived: true, taskId: task.id, messageId: v.message.id }).b64 === fake, 'voice file still playable after archiving');
     check(call('getArchived', admin, { taskId: task.id }).ok === false, 'admin cannot read other people\'s archived tasks');
+
+    // profiles: picture + bio. First simulate a spreadsheet made before profiles existed (no Profiles sheet).
+    const ssNow = SpreadsheetApp.openById(ss.getId());       // a fresh handle: the one from create() may not list sheets added since
+    const profSheet = ssNow.getSheetByName('Profiles');
+    check(!!profSheet, 'setup created the Profiles sheet');
+    if (profSheet) ssNow.deleteSheet(profSheet);
+    check(must('profiles', boss1, {}).profiles.length === 0, 'a spreadsheet without a Profiles sheet gets one on first use');
+    const jpeg = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=';
+    must('saveProfile', staff1, { bio: '=SUM(1)', photo: jpeg });
+    check(must('profiles', boss1, {}).profiles.filter(function (p) { return p.userId === u2.user.id; })[0].bio === '=SUM(1)', 'bio that looks like a formula is stored as plain text');
+    must('saveProfile', staff1, { bio: 'Ask me about irrigation' });
+    const prof = must('profiles', boss1, {}).profiles.filter(function (p) { return p.userId === u2.user.id; })[0];
+    check(prof && prof.bio === 'Ask me about irrigation' && prof.photo === jpeg, 'picture and bio saved, and the manager can read them');
+    check(must('profiles', boss1, { have: JSON.parse('{"' + u2.user.id + '":' + prof.ver + '}') }).profiles[0].photo === undefined, 'an unchanged picture is not sent again');
+    check(call('saveProfile', staff1, { photo: 'https://example.com/a.jpg' }).code === 'VALIDATION', 'only small JPEG pictures are accepted');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);

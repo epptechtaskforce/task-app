@@ -171,7 +171,14 @@ SheetsStore_.prototype.bump = function (name) {
 
 SheetsStore_.prototype.sheet = function (name) {
   if (!this.sheets[name]) {
-    const sh = this.ss.getSheetByName(name);
+    let sh = this.ss.getSheetByName(name);
+    if (!sh && TABLES[name]) {
+      // A table that a newer version of the app added (for example Profiles): create it on first use, so updating the
+      // code never needs a manual "run setup again" step.
+      const one = {}; one[name] = TABLES[name];
+      try { this.init(one); } catch (e) { /* a parallel request may have created it a moment ago */ }
+      sh = this.ss.getSheetByName(name);
+    }
     if (!sh) throw new Error('Missing sheet "' + name + '". Run setup() first.');
     this.sheets[name] = sh;
   }

@@ -52,6 +52,10 @@
     const L = function (a, b) { return { fromId: U[a], toId: U[b] }; };
     call('adminSaveLinks', A, { note: 'Demo structure', links: [L('nimal.perera', 'kamala.silva'), L('nimal.perera', 'sunil.fernando'), L('kamala.silva', 'sunil.fernando'), L('kamala.silva', 'ruwan.jayasinghe'), L('sunil.fernando', 'ruwan.jayasinghe'), L('sunil.fernando', 'ishara.dias')] });
 
+    // short bios, so the profile cards look alive in the demo
+    [['nimal.perera', 'Chairman. Ask me about strategy and budgets.'], ['kamala.silva', 'General Manager. Keeps the harvest and packing schedules running.'], ['sunil.fernando', 'Supervisor of the field teams. Irrigation and quality checks.'],
+     ['ruwan.jayasinghe', 'Field officer, Blocks A to C.'], ['ishara.dias', 'Field officer. Ask me about drip lines.']].forEach(function (p) { call('saveProfile', tok[p[0]], { bio: p[1] }); });
+
     const wav = silentWavB64();
     const ymd = function (offsetDays) { const d = new Date(Date.now() + offsetDays * DAY); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); };
 

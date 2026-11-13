@@ -1,8 +1,11 @@
-/* ui.js - tiny DOM helpers. Never uses innerHTML, so user text can never become markup. */
+/* ui.js - DOM helpers, icons, charts, drag & drop, illustrations, confetti, photo cropper.
+ * Never uses innerHTML, so user text can never become markup. */
 (function (w) {
   'use strict';
 
   const PROPS = { value: 1, checked: 1, disabled: 1, selected: 1, hidden: 1, readOnly: 1 };
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const reduced = function () { return !!(w.matchMedia && w.matchMedia('(prefers-reduced-motion: reduce)').matches); };
 
   function h(tag, attrs) {
     const el = document.createElement(tag);
@@ -26,13 +29,20 @@
     else el.appendChild(document.createTextNode(String(kid)));
   }
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+  // SVG element builder: svg('rect', {x:1}, children...)
+  function svg(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { if (attrs[k] !== undefined && attrs[k] !== null) el.setAttribute(k, attrs[k]); });
+    for (let i = 2; i < arguments.length; i++) { const c = arguments[i]; if (c) el.appendChild(c); }
+    return el;
+  }
 
   /* ---------- icons (inline SVG built with the DOM API, 24x24 outline style) ---------- */
-  const SVG_NS = 'http://www.w3.org/2000/svg';
   const ICONS = {
     tasks: ['M9 11l3 3L22 4', 'M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'],
     history: ['M21 8v13H3V8', 'M1 3h22v5H1z', 'M10 12h4'],
     users: ['M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2', 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M23 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75'],
+    userPlus: ['M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2', 'M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M20 8v6', 'M23 11h-6'],
     briefcase: ['M20 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z', 'M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16'],
     org: ['M9.5 5a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0-5 0z', 'M2.5 19a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0-5 0z', 'M16.5 19a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0-5 0z', 'M12 7.5V12', 'M5 16.5V12h14v4.5'],
     user: ['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'],
@@ -63,22 +73,22 @@
     trash: ['M3 6h18', 'M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6', 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'],
     lock: ['M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2z', 'M7 11V7a5 5 0 0 1 10 0v4'],
     arrowRight: ['M5 12h14', 'M12 5l7 7-7 7'],
-    thumb: ['M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z', 'M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3'],
-    phone: ['M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z', 'M12 18h.01']
+    phone: ['M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z', 'M12 18h.01'],
+    camera: ['M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z', 'M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'],
+    move: ['M5 9l-3 3 3 3', 'M9 5l3-3 3 3', 'M15 19l-3 3-3-3', 'M19 9l3 3-3 3', 'M2 12h20', 'M12 2v20'],
+    trend: ['M23 6l-9.5 9.5-5-5L1 18', 'M17 6h6v6'],
+    zap: ['M13 2L3 14h9l-1 8 10-12h-9l1-8z'],
+    flag: ['M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z', 'M4 22v-7'],
+    smile: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M8 14s1.5 2 4 2 4-2 4-2', 'M9 9h.01', 'M15 9h.01']
   };
   // opts.fill: solid shape (play/pause). opts.cls: extra class. Decorative by default (aria-hidden).
   function icon(name, size, opts) {
     opts = opts || {};
-    const paths = ICONS[name] || [];
-    const s = document.createElementNS(SVG_NS, 'svg');
-    s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size || 20); s.setAttribute('height', size || 20);
-    s.setAttribute('class', 'icon' + (opts.cls ? ' ' + opts.cls : '')); s.setAttribute('aria-hidden', 'true'); s.setAttribute('focusable', 'false');
-    s.setAttribute('fill', opts.fill ? 'currentColor' : 'none'); s.setAttribute('stroke', 'currentColor');
-    s.setAttribute('stroke-width', opts.fill ? 1.5 : 2); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
-    paths.forEach(function (d) { const p = document.createElementNS(SVG_NS, 'path'); p.setAttribute('d', d); s.appendChild(p); });
+    const s = svg('svg', { viewBox: '0 0 24 24', width: size || 20, height: size || 20, 'class': 'icon' + (opts.cls ? ' ' + opts.cls : ''), 'aria-hidden': 'true', focusable: 'false',
+      fill: opts.fill ? 'currentColor' : 'none', stroke: 'currentColor', 'stroke-width': opts.fill ? 1.5 : 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+    (ICONS[name] || []).forEach(function (d) { s.appendChild(svg('path', { d: d })); });
     return s;
   }
-  // Replace the content of a button/element with an icon (+ optional label).
   function setIcon(el, name, size, opts) { clear(el); el.appendChild(icon(name, size, opts)); return el; }
 
   /* ---------- formatting ---------- */
@@ -150,7 +160,6 @@
     const onKey = function (e) {
       if (e.key === 'Escape' && !opts.sticky) return close();
       if (e.key !== 'Tab') return;
-      // keep keyboard focus inside the dialog
       const items = Array.prototype.filter.call(box.querySelectorAll('a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])'), function (n) { return !n.disabled && n.offsetParent !== null; });
       if (!items.length) return;
       const first = items[0], last = items[items.length - 1];
@@ -166,18 +175,18 @@
       });
       return btn;
     });
-    const box = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
+    const box = h('div', { class: 'modal' + (opts.cls ? ' ' + opts.cls : ''), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
       h('div', { class: 'sheet-handle', 'aria-hidden': 'true' }),
-      h('div', { class: 'modal-head' }, h('h2', { id: titleId }, opts.title),
-        opts.sticky ? null : h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: close }, icon('x', 18))),
-      h('div', { class: 'modal-body' }, opts.body), h('div', { class: 'modal-actions' }, buttons));
+      opts.title ? h('div', { class: 'modal-head' }, h('h2', { id: titleId }, opts.title),
+        opts.sticky ? null : h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: close }, icon('x', 18))) : h('span', { id: titleId, class: 'sr-only' }, opts.label || 'Dialog'),
+      h('div', { class: 'modal-body' }, opts.body), buttons.length ? h('div', { class: 'modal-actions' }, buttons) : null);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', function (e) { if (e.target === overlay && !opts.sticky) close(); });
     document.addEventListener('keydown', onKey);
     document.body.classList.add('modal-open');
     document.body.appendChild(overlay);
     const first = box.querySelector('input,textarea,select');
-    if (first) setTimeout(function () { first.focus(); }, 30);
+    if (first && !opts.noFocus) setTimeout(function () { first.focus(); }, 30);
     return { close: close, box: box };
   }
   function confirmBox(title, message, okLabel, kind) {
@@ -194,6 +203,35 @@
     });
   }
 
+  /* ---------- people ---------- */
+  function initials(name) { return String(name || '?').split(/\s+/).slice(0, 2).map(function (p) { return p.charAt(0); }).join('').toUpperCase(); }
+  function paintAvatar(el) {
+    const photo = w.Profiles ? w.Profiles.photo(el.getAttribute('data-uid')) : '';
+    let img = el.querySelector('img');
+    if (photo) {
+      if (!img) { img = document.createElement('img'); img.alt = ''; img.decoding = 'async'; el.appendChild(img); }
+      if (img.getAttribute('src') !== photo) img.setAttribute('src', photo);
+      el.classList.add('has-photo');
+    } else if (img) { img.remove(); el.classList.remove('has-photo'); }
+  }
+  // Round avatar: the person's picture when they have one, otherwise initials on a colour taken from the name.
+  function avatar(name, size, uid) {
+    let hash = 0; const s = String(name || '?');
+    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+    const hue = [330, 280, 215, 190, 150, 25, 355, 250][hash % 8];
+    const el = h('span', { class: 'avatar' + (size ? ' ' + size : ''), style: '--h:' + hue, 'aria-hidden': 'true' }, h('b', null, initials(name)));
+    if (uid) { el.setAttribute('data-uid', uid); paintAvatar(el); }
+    return el;
+  }
+  // Called when new pictures arrive: upgrades every avatar already on the screen.
+  function hydrateAvatars(rootEl) { (rootEl || document).querySelectorAll('.avatar[data-uid]').forEach(paintAvatar); }
+  // people: array of names or {id, name}
+  function avatarStack(people, max) {
+    max = max || 3;
+    const shown = people.slice(0, max);
+    return h('span', { class: 'avatar-stack' }, shown.map(function (p) { return typeof p === 'string' ? avatar(p, 'xs') : avatar(p.name, 'xs', p.id); }), people.length > max ? h('span', { class: 'avatar xs more' }, '+' + (people.length - max)) : null);
+  }
+
   /* ---------- small widgets ---------- */
   function progressBar(pct, status) {
     return h('div', { class: 'bar ' + (status || ''), role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': pct },
@@ -203,37 +241,20 @@
   function ring(pct, status, size) {
     size = size || 84;
     const R = 38, C = 2 * Math.PI * R;
-    const s = document.createElementNS(SVG_NS, 'svg');
-    s.setAttribute('viewBox', '0 0 88 88'); s.setAttribute('width', size); s.setAttribute('height', size);
-    const mk = function (cls) { const c = document.createElementNS(SVG_NS, 'circle'); c.setAttribute('cx', 44); c.setAttribute('cy', 44); c.setAttribute('r', R); c.setAttribute('class', cls); return c; };
-    const track = mk('ring-track'), fill = mk('ring-fill');
-    fill.setAttribute('stroke-dasharray', C); fill.setAttribute('transform', 'rotate(-90 44 44)');
-    const label = document.createElementNS(SVG_NS, 'text');
-    label.setAttribute('x', 44); label.setAttribute('y', 44); label.setAttribute('class', 'ring-text'); label.setAttribute('text-anchor', 'middle'); label.setAttribute('dominant-baseline', 'central');
-    s.appendChild(track); s.appendChild(fill); s.appendChild(label);
-    s.setAttribute('class', 'ring ' + (status || '')); s.setAttribute('role', 'img');
+    const track = svg('circle', { cx: 44, cy: 44, r: R, 'class': 'ring-track' }), fill = svg('circle', { cx: 44, cy: 44, r: R, 'class': 'ring-fill', 'stroke-dasharray': C, transform: 'rotate(-90 44 44)' });
+    const label = svg('text', { x: 44, y: 44, 'class': 'ring-text', 'text-anchor': 'middle', 'dominant-baseline': 'central' });
+    const s = svg('svg', { viewBox: '0 0 88 88', width: size, height: size, 'class': 'ring ' + (status || ''), role: 'img' }, track, fill, label);
     s.setPct = function (n) {
       n = Math.max(0, Math.min(100, Number(n) || 0));
       fill.setAttribute('stroke-dashoffset', C * (1 - n / 100)); label.textContent = Math.round(n) + '%';
       s.setAttribute('aria-label', Math.round(n) + ' percent complete'); s.classList.toggle('full', n >= 100);
     };
-    s.setPct(pct);
+    fill.setAttribute('stroke-dashoffset', C);
+    s.setPct(0);
+    if (reduced()) s.setPct(pct); else requestAnimationFrame(function () { requestAnimationFrame(function () { s.setPct(pct); }); });
     return s;
   }
   function chip(text, cls, iconName) { return h('span', { class: 'chip ' + (cls || '') }, iconName ? icon(iconName, 13) : null, text); }
-  function initials(name) { return String(name || '?').split(/\s+/).slice(0, 2).map(function (p) { return p.charAt(0); }).join('').toUpperCase(); }
-  // Round avatar with initials; the colour comes from the name, so the same person always looks the same.
-  function avatar(name, size) {
-    let hash = 0; const s = String(name || '?');
-    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
-    const hue = [330, 280, 215, 190, 150, 25, 355, 250][hash % 8];
-    return h('span', { class: 'avatar' + (size ? ' ' + size : ''), style: '--h:' + hue, 'aria-hidden': 'true' }, initials(name));
-  }
-  function avatarStack(names, max) {
-    max = max || 3;
-    const shown = names.slice(0, max);
-    return h('span', { class: 'avatar-stack' }, shown.map(function (n) { return avatar(n, 'xs'); }), names.length > max ? h('span', { class: 'avatar xs more' }, '+' + (names.length - max)) : null);
-  }
   function skeleton(kind, count) {
     const one = function () {
       if (kind === 'line') return h('div', { class: 'skel line' });
@@ -243,8 +264,8 @@
     for (let i = 0; i < (count || 3); i++) box.appendChild(one());
     return box;
   }
-  function emptyState(iconName, title, text, action) {
-    return h('div', { class: 'card empty' }, h('div', { class: 'empty-ico' }, icon(iconName, 28)), h('h3', null, title), text ? h('p', { class: 'muted' }, text) : null, action || null);
+  function emptyState(art, title, text, action) {
+    return h('div', { class: 'card empty' }, h('div', { class: 'empty-art' }, illustration(art)), h('h3', null, title), text ? h('p', { class: 'muted' }, text) : null, action || null);
   }
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
@@ -263,6 +284,246 @@
     return { input: input, el: h('div', { class: 'field' }, input, btn) };
   }
 
+  /* ---------- motion & charts ---------- */
+  // Counts a number up from 0 (or sets it at once for people who prefer less motion / when animate is false).
+  function countUp(el, to, animate, ms) {
+    to = Math.round(Number(to) || 0);
+    if (animate === false || reduced() || to === 0) { el.textContent = to; return; }
+    const t0 = performance.now(); ms = ms || 800; el.textContent = 0;
+    (function step(now) {
+      const p = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(to * e);
+      if (p < 1) requestAnimationFrame(step);
+    })(t0);
+  }
+  // Donut chart. segs: [{key, value, color (css colour), label}], o: {size, thickness, animate, center:{num,label}, active:key, onPick(key)}
+  function donut(segs, o) {
+    o = o || {};
+    const size = o.size || 150, t = o.thickness || 13, r = 50 - t / 2, C = 2 * Math.PI * r;
+    const total = segs.reduce(function (a, s) { return a + s.value; }, 0);
+    const s = svg('svg', { viewBox: '0 0 100 100', width: size, height: size, 'class': 'donut', role: 'img', 'aria-label': (o.center ? o.center.num + ' ' + o.center.label + '. ' : '') + segs.map(function (x) { return x.value + ' ' + x.label; }).join(', ') });
+    s.appendChild(svg('circle', { cx: 50, cy: 50, r: r, 'class': 'donut-track', 'stroke-width': t }));
+    let offset = 0; const arcs = [];
+    if (total > 0) segs.forEach(function (sg) {
+      if (sg.value <= 0) return;
+      const len = sg.value / total * C, gap = segs.filter(function (x) { return x.value > 0; }).length > 1 ? Math.min(2.2, len * 0.3) : 0;
+      const arc = svg('circle', { cx: 50, cy: 50, r: r, 'class': 'donut-arc' + (o.active === sg.key ? ' on' : '') + (o.active && o.active !== sg.key ? ' dim' : ''), 'stroke-width': t, stroke: sg.color,
+        'stroke-dasharray': (o.animate === false || reduced() ? Math.max(len - gap, 0.01) : 0.01) + ' ' + C, 'stroke-dashoffset': -offset, transform: 'rotate(-90 50 50)', 'data-key': sg.key });
+      if (o.onPick) { arc.style.cursor = 'pointer'; arc.addEventListener('click', function () { o.onPick(sg.key); }); }
+      arc.appendChild(svg('title', null)).textContent = sg.label + ': ' + sg.value;
+      arcs.push([arc, Math.max(len - gap, 0.01)]);
+      s.appendChild(arc); offset += len;
+    });
+    if (o.center) {
+      const num = svg('text', { x: 50, y: 49, 'class': 'donut-num', 'text-anchor': 'middle', 'dominant-baseline': 'central' }), lab = svg('text', { x: 50, y: 63, 'class': 'donut-lab', 'text-anchor': 'middle' });
+      lab.textContent = o.center.label; s.appendChild(num); s.appendChild(lab);
+      countUp({ set textContent(v) { num.textContent = v; } }, o.center.num, o.animate);
+    }
+    if (o.animate !== false && !reduced()) requestAnimationFrame(function () { requestAnimationFrame(function () { arcs.forEach(function (a, i) { a[0].style.transitionDelay = (i * 90) + 'ms'; a[0].setAttribute('stroke-dasharray', a[1] + ' ' + C); }); }); });
+    return s;
+  }
+
+  /* ---------- confetti ---------- */
+  function confetti(opts) {
+    if (reduced()) return;
+    opts = opts || {};
+    const cv = h('canvas', { class: 'confetti', 'aria-hidden': 'true' }), dpr = Math.min(2, w.devicePixelRatio || 1);
+    const W = w.innerWidth, H = w.innerHeight; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    document.body.appendChild(cv);
+    const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+    const colors = ['#c0397f', '#8a2b66', '#f6b73c', '#3fb6a8', '#5b8def', '#ff7a7a', '#7ed957'];
+    const ox = opts.x === undefined ? W / 2 : opts.x, oy = opts.y === undefined ? H * 0.35 : opts.y;
+    const parts = [];
+    for (let i = 0; i < (opts.count || 110); i++) {
+      const a = Math.random() * Math.PI * 2, sp = 4 + Math.random() * 9;
+      parts.push({ x: ox, y: oy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 6, g: 0.22 + Math.random() * 0.12, s: 5 + Math.random() * 6, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, c: colors[i % colors.length], shape: i % 3 });
+    }
+    const t0 = performance.now();
+    (function frame(now) {
+      const p = (now - t0) / 1900;
+      ctx.clearRect(0, 0, W, H);
+      parts.forEach(function (q) {
+        q.vx *= 0.99; q.vy += q.g; q.x += q.vx; q.y += q.vy; q.r += q.vr;
+        ctx.save(); ctx.globalAlpha = Math.max(0, 1 - p * p); ctx.translate(q.x, q.y); ctx.rotate(q.r); ctx.fillStyle = q.c;
+        if (q.shape === 0) ctx.fillRect(-q.s / 2, -q.s / 4, q.s, q.s / 2); else if (q.shape === 1) { ctx.beginPath(); ctx.arc(0, 0, q.s / 3, 0, 7); ctx.fill(); } else ctx.fillRect(-q.s / 3, -q.s / 3, q.s / 1.5, q.s / 1.5);
+        ctx.restore();
+      });
+      if (p < 1) requestAnimationFrame(frame); else cv.remove();
+    })(t0);
+  }
+
+  /* ---------- drag & drop (pointer events: works with finger, mouse and pen) ---------- */
+  // o: { data, zones: () => [elements], ghost: () => node, onDrop(zoneEl, data), onTap(), onStart(), onEnd() }
+  // A drag starts after a small movement (sideways movement on touch scrolls the row instead). A tap/click is left alone.
+  function draggable(el, o) {
+    let st = null, suppress = false;
+    const cleanup = function () {
+      if (!st) return;
+      if (st.raf) cancelAnimationFrame(st.raf);
+      if (st.zones) st.zones.forEach(function (z) { z.classList.remove('drop-over', 'drop-ready'); });
+      el.classList.remove('drag-src'); document.body.classList.remove('dragging');
+      st = null;
+    };
+    el.addEventListener('click', function (e) { if (suppress) { e.stopImmediatePropagation(); e.preventDefault(); suppress = false; } }, true);
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      st = { id: e.pointerId, x: e.clientX, y: e.clientY, touch: e.pointerType !== 'mouse', drag: false, ghost: null, over: null, raf: 0, cx: e.clientX, cy: e.clientY };
+      // keep receiving this pointer's moves even when it leaves the element (a fast flick would otherwise be lost)
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!st || e.pointerId !== st.id) return;
+      st.cx = e.clientX; st.cy = e.clientY;
+      if (!st.drag) {
+        const dx = e.clientX - st.x, dy = e.clientY - st.y, dist = Math.sqrt(dx * dx + dy * dy);
+        if (!(st.touch ? (Math.abs(dy) > 7 && Math.abs(dy) >= Math.abs(dx) * 0.8) : dist > 5)) return;
+        st.drag = true; st.zones = (o.zones ? o.zones() : []).filter(Boolean);
+        st.ghost = o.ghost ? o.ghost() : el.cloneNode(true); st.ghost.classList.add('drag-ghost'); document.body.appendChild(st.ghost);
+        st.gw = st.ghost.offsetWidth; st.gh = st.ghost.offsetHeight;
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        el.classList.add('drag-src'); document.body.classList.add('dragging');
+        st.zones.forEach(function (z) { z.classList.add('drop-ready'); });
+        if (navigator.vibrate) { try { navigator.vibrate(10); } catch (err) { /* ignore */ } }
+        if (o.onStart) o.onStart();
+        const loop = function () { if (!st || !st.drag) return; if (st.cy < 90) w.scrollBy(0, -Math.ceil((90 - st.cy) / 5)); st.raf = requestAnimationFrame(loop); };
+        st.raf = requestAnimationFrame(loop);
+      }
+      e.preventDefault();
+      st.ghost.style.transform = 'translate(' + (e.clientX - st.gw / 2) + 'px,' + (e.clientY - st.gh / 2) + 'px) scale(1.12) rotate(3deg)';
+      let over = null;
+      st.zones.forEach(function (z) {
+        const r = z.getBoundingClientRect(), hit = e.clientX >= r.left - 6 && e.clientX <= r.right + 6 && e.clientY >= r.top - 6 && e.clientY <= r.bottom + 6;
+        z.classList.toggle('drop-over', hit); if (hit) over = z;
+      });
+      st.over = over; st.ghost.classList.toggle('can-drop', !!over);
+    });
+    const finish = function (e, cancelled) {
+      if (!st || (e && e.pointerId !== st.id)) return;
+      const s = st;
+      if (!s.drag) { cleanup(); return; }
+      suppress = true; setTimeout(function () { suppress = false; }, 60);
+      const ghost = s.ghost, zone = cancelled ? null : s.over, data = o.data;
+      try { el.releasePointerCapture(s.id); } catch (err) { /* ignore */ }
+      const target = zone ? zone.getBoundingClientRect() : el.getBoundingClientRect();
+      ghost.classList.add('landing');
+      ghost.style.transform = 'translate(' + (target.left + target.width / 2 - s.gw / 2) + 'px,' + (target.top + target.height / 2 - s.gh / 2) + 'px) scale(' + (zone ? 0.3 : 1) + ')';
+      ghost.style.opacity = zone ? '0' : '0.2';
+      setTimeout(function () { ghost.remove(); }, 260);
+      cleanup();
+      if (zone) { if (navigator.vibrate) { try { navigator.vibrate(18); } catch (err) { /* ignore */ } } if (o.onDrop) o.onDrop(zone, data); }
+      if (o.onEnd) o.onEnd(!!zone);
+    };
+    el.addEventListener('pointerup', function (e) { finish(e, false); });
+    el.addEventListener('pointercancel', function (e) { finish(e, true); });
+    el.addEventListener('dragstart', function (e) { e.preventDefault(); });
+  }
+
+  /* ---------- illustrations (small animated SVG scenes) ---------- */
+  function sparkle(x, y, s, d) { return svg('path', { d: 'M' + x + ',' + (y - s) + ' L' + (x + s * 0.28) + ',' + (y - s * 0.28) + ' L' + (x + s) + ',' + y + ' L' + (x + s * 0.28) + ',' + (y + s * 0.28) + ' L' + x + ',' + (y + s) + ' L' + (x - s * 0.28) + ',' + (y + s * 0.28) + ' L' + (x - s) + ',' + y + ' L' + (x - s * 0.28) + ',' + (y - s * 0.28) + ' Z', 'class': 'tw', style: '--d:' + d + 's' }); }
+  function illustration(kind) {
+    const g = function (cls, delay) { const el = svg('g', { 'class': cls }); if (delay !== undefined) el.style.setProperty('--d', delay + 's'); for (let i = 2; i < arguments.length; i++) el.appendChild(arguments[i]); return el; };
+    const R = function (x, y, wd, ht, rx, cls, extra) { return svg('rect', Object.assign({ x: x, y: y, width: wd, height: ht, rx: rx, 'class': cls }, extra || {})); };
+    const C = function (cx, cy, r, cls) { return svg('circle', { cx: cx, cy: cy, r: r, 'class': cls }); };
+    const P = function (d, cls) { return svg('path', { d: d, 'class': cls, fill: 'none' }); };
+    const s = svg('svg', { viewBox: '0 0 360 210', 'class': 'ill ill-' + kind, 'aria-hidden': 'true', focusable: 'false' });
+    if (kind === 'hero') {
+      s.appendChild(C(180, 105, 96, 'ill-glow'));
+      s.appendChild(g('fl', 0, R(34, 56, 182, 88, 18, 'ill-card'), R(54, 76, 86, 9, 4.5, 'ill-line'), R(54, 102, 142, 8, 4, 'ill-track'), R(54, 102, 100, 8, 4, 'ill-fill ill-grow'), C(192, 80, 12, 'ill-ok'), P('M186 80l4.5 4.5L199 75', 'ill-tick'), R(54, 120, 56, 14, 7, 'ill-tag')));
+      s.appendChild(g('fl', -2.2, R(148, 112, 180, 80, 18, 'ill-card'), C(176, 140, 14, 'ill-av1'), R(198, 128, 80, 8, 4, 'ill-line'), R(198, 144, 108, 7, 3.5, 'ill-track'), C(300, 132, 6, 'ill-warn')));
+      s.appendChild(g('fl', -1, R(250, 20, 76, 40, 18, 'ill-card'), svg('circle', { cx: 272, cy: 40, r: 4, 'class': 'ill-dot', style: '--d:0s' }), svg('circle', { cx: 288, cy: 40, r: 4, 'class': 'ill-dot', style: '--d:.15s' }), svg('circle', { cx: 304, cy: 40, r: 4, 'class': 'ill-dot', style: '--d:.3s' })));
+      s.appendChild(sparkle(30, 34, 9, 0)); s.appendChild(sparkle(330, 112, 7, 0.7)); s.appendChild(sparkle(120, 28, 6, 1.3)); s.appendChild(sparkle(60, 176, 6, 0.4));
+    } else if (kind === 'inbox') {
+      s.appendChild(C(180, 112, 74, 'ill-soft'));
+      s.appendChild(g('fl', 0, R(116, 42, 128, 70, 14, 'ill-card2'), R(134, 60, 60, 8, 4, 'ill-line2'), R(134, 80, 92, 7, 3.5, 'ill-track2'), C(222, 64, 9, 'ill-ok'), P('M217 64l3.5 3.5L227 60', 'ill-tick')));
+      s.appendChild(P('M96 118h54l10 20h40l10-20h54v48a14 14 0 0 1-14 14H110a14 14 0 0 1-14-14z', 'ill-tray'));
+      s.appendChild(sparkle(84, 54, 8, 0.2)); s.appendChild(sparkle(280, 74, 6, 0.9)); s.appendChild(sparkle(262, 30, 5, 1.4));
+    } else if (kind === 'team') {
+      s.appendChild(C(180, 104, 78, 'ill-soft'));
+      s.appendChild(P('M180 70L120 140M180 70L240 140M120 140L240 140', 'ill-wire'));
+      s.appendChild(g('fl', 0, C(180, 66, 26, 'ill-av1'), C(180, 60, 8, 'ill-face'), P('M166 80a14 12 0 0 1 28 0', 'ill-face-s')));
+      s.appendChild(g('fl', -1.4, C(118, 140, 22, 'ill-av2'), C(118, 135, 7, 'ill-face'), P('M106 152a12 10 0 0 1 24 0', 'ill-face-s')));
+      s.appendChild(g('fl', -2.6, C(242, 140, 22, 'ill-av3'), C(242, 135, 7, 'ill-face'), P('M230 152a12 10 0 0 1 24 0', 'ill-face-s')));
+      s.appendChild(sparkle(70, 70, 7, 0.3)); s.appendChild(sparkle(296, 60, 8, 1));
+    } else if (kind === 'done') {
+      s.appendChild(C(180, 104, 70, 'ill-pulse')); s.appendChild(C(180, 104, 52, 'ill-ok-big'));
+      s.appendChild(P('M156 106l17 17 32-36', 'ill-tick-big'));
+      s.appendChild(sparkle(96, 64, 9, 0)); s.appendChild(sparkle(268, 80, 7, 0.8)); s.appendChild(sparkle(250, 156, 6, 1.4)); s.appendChild(sparkle(110, 154, 6, 0.5));
+    } else { // search
+      s.appendChild(C(180, 104, 76, 'ill-soft'));
+      s.appendChild(g('fl', 0, C(168, 98, 36, 'ill-lens'), P('M194 124l34 34', 'ill-handle')));
+      s.appendChild(C(120, 60, 6, 'ill-bub')); s.appendChild(C(250, 70, 8, 'ill-bub')); s.appendChild(C(238, 150, 5, 'ill-bub'));
+    }
+    return s;
+  }
+
+  /* ---------- profile picture: choose, crop, shrink ---------- */
+  let photoInput = null, photoResolve = null;
+  function loadImage(file) {
+    return new Promise(function (res, rej) {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); res(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('Could not read that image')); };
+      img.src = url;
+    });
+  }
+  // Resolves with a small JPEG data URL (about 144 px square), or null if cancelled.
+  function pickPhoto() {
+    return new Promise(function (resolve) {
+      photoResolve = resolve;
+      if (!photoInput) {
+        photoInput = h('input', { type: 'file', accept: 'image/*', class: 'hidden', 'aria-hidden': 'true', tabindex: '-1' });
+        photoInput.addEventListener('change', async function () {
+          const f = photoInput.files && photoInput.files[0]; photoInput.value = '';
+          const done = photoResolve; if (!f) return;
+          try { cropModal(await loadImage(f), done); } catch (e) { toast(e.message || 'Could not read that image', 'bad'); done(null); }
+        });
+        document.body.appendChild(photoInput);
+      }
+      photoInput.click();
+    });
+  }
+  function cropModal(img, resolve) {
+    const V = 260, OUT = 144;
+    const base = V / Math.min(img.naturalWidth, img.naturalHeight);
+    let zoom = 1, ox = 0, oy = 0, answered = false;
+    const cv = h('canvas', { width: V * 2, height: V * 2, class: 'crop-canvas', 'aria-label': 'Drag to move the picture' });
+    const ctx = cv.getContext('2d');
+    const clamp = function () { const mx = Math.max(0, (img.naturalWidth * base * zoom - V) / 2), my = Math.max(0, (img.naturalHeight * base * zoom - V) / 2); ox = Math.max(-mx, Math.min(mx, ox)); oy = Math.max(-my, Math.min(my, oy)); };
+    const paint = function (c, size) {
+      const k = size / V, sw = img.naturalWidth * base * zoom * k, sh = img.naturalHeight * base * zoom * k;
+      c.fillStyle = '#fff'; c.fillRect(0, 0, size, size);
+      c.drawImage(img, size / 2 + ox * k - sw / 2, size / 2 + oy * k - sh / 2, sw, sh);
+    };
+    const draw = function () { clamp(); paint(ctx, V * 2); };
+    let drag = null;
+    cv.addEventListener('pointerdown', function (e) { drag = { x: e.clientX, y: e.clientY }; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', function (e) { if (!drag) return; ox += e.clientX - drag.x; oy += e.clientY - drag.y; drag = { x: e.clientX, y: e.clientY }; draw(); });
+    cv.addEventListener('pointerup', function () { drag = null; }); cv.addEventListener('pointercancel', function () { drag = null; });
+    cv.addEventListener('wheel', function (e) { e.preventDefault(); zoom = Math.max(1, Math.min(4, zoom - e.deltaY / 400)); slider.value = zoom; draw(); }, { passive: false });
+    const slider = h('input', { type: 'range', min: 1, max: 4, step: 0.02, value: 1, 'aria-label': 'Zoom' });
+    slider.addEventListener('input', function () { zoom = Number(slider.value); draw(); });
+    const answer = function (v) { if (!answered) { answered = true; resolve(v); } };
+    const m = modal({ title: 'Adjust your photo', noFocus: true, onClose: function () { answer(null); },
+      body: h('div', { class: 'cropper' }, h('div', { class: 'crop-frame' }, cv), h('div', { class: 'row', style: 'gap:.6rem;flex-wrap:nowrap' }, icon('search', 16), slider), h('p', { class: 'hint', style: 'text-align:center' }, 'Drag to move, use the slider to zoom.')),
+      actions: [{ label: 'Cancel' }, { label: 'Use this photo', kind: 'primary', onClick: function () {
+        const out = h('canvas', { width: OUT, height: OUT }), oc = out.getContext('2d'); paint(oc, OUT);
+        let q = 0.85, data = out.toDataURL('image/jpeg', q);
+        while (data.length > 18000 && q > 0.4) { q -= 0.1; data = out.toDataURL('image/jpeg', q); }
+        answer(data);
+      } }] });
+    draw();
+    return m;
+  }
+
+  /* ---------- button ripple ---------- */
+  document.addEventListener('pointerdown', function (e) {
+    const b = e.target.closest && e.target.closest('.btn, .send, .mic, .fab');
+    if (!b || b.disabled || reduced()) return;
+    const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 1.6;
+    const rip = h('span', { class: 'ripple', style: 'width:' + d + 'px;height:' + d + 'px;left:' + (e.clientX - r.left - d / 2) + 'px;top:' + (e.clientY - r.top - d / 2) + 'px' });
+    b.appendChild(rip); setTimeout(function () { rip.remove(); }, 650);
+  }, { passive: true });
+
   /* ---------- theme (automatic / light / dark) ---------- */
   const THEME_KEY = 'taskapp.theme';
   function themeGet() { try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { return 'auto'; } }
@@ -273,7 +534,8 @@
   function themeSet(v) { try { if (v === 'auto') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage blocked */ } themeApply(); }
 
   w.h = h;
-  w.UI = { h: h, clear: clear, icon: icon, setIcon: setIcon, date: date, time: time, dateTime: dateTime, dayLabel: dayLabel, ago: ago, duration: duration, dueInfo: dueInfo, greeting: greeting, ymd: ymd,
-    toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, chip: chip, initials: initials, avatar: avatar, avatarStack: avatarStack,
+  w.UI = { h: h, svg: svg, clear: clear, icon: icon, setIcon: setIcon, date: date, time: time, dateTime: dateTime, dayLabel: dayLabel, ago: ago, duration: duration, dueInfo: dueInfo, greeting: greeting, ymd: ymd,
+    toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
+    chip: chip, initials: initials, avatar: avatar, avatarStack: avatarStack, hydrateAvatars: hydrateAvatars, pickPhoto: pickPhoto, reduced: reduced,
     skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply } };
 })(window);

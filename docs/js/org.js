@@ -7,7 +7,7 @@
 (function (w) {
   'use strict';
   const NS = 'http://www.w3.org/2000/svg';
-  const NODE_W = 150, NODE_H = 54, ROW_GAP = 130, TOP = 40, MIN_SLOT = 170;
+  const NODE_W = 178, NODE_H = 58, ROW_GAP = 134, TOP = 40, MIN_SLOT = 200;
 
   function svg(tag, attrs) {
     const el = document.createElementNS(NS, tag);
@@ -64,9 +64,10 @@
     function draw() {
       scroller.textContent = '';
       const s = svg('svg', { width: totalW, height: totalH, viewBox: '0 0 ' + totalW + ' ' + totalH, class: 'org-svg', role: 'group', 'aria-label': 'Organisation chart' });
-      s.appendChild(svg('defs', {},
+      const defs = svg('defs', {},
         svg('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, svg('path', { d: 'M0,0 L10,5 L0,10 z', class: 'arrow-head' })),
-        svg('marker', { id: 'arr-hi', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, svg('path', { d: 'M0,0 L10,5 L0,10 z', class: 'arrow-head hi' }))));
+        svg('marker', { id: 'arr-hi', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, svg('path', { d: 'M0,0 L10,5 L0,10 z', class: 'arrow-head hi' })));
+      s.appendChild(defs);
 
       // pyramid layers
       rows.forEach(function (row, i) {
@@ -100,8 +101,16 @@
         const canTarget = selNode && selNode !== u.id && valid(selNode, u.id);
         const g = svg('g', { class: 'node' + (selNode === u.id ? ' sel' : '') + (u.active === false ? ' off' : '') + (canTarget ? ' target' : '') + (has(selNode, u.id) ? ' linked' : ''), 'data-id': u.id, tabindex: 0, role: 'button', 'aria-label': u.name + ', ' + u.jobTitle });
         g.appendChild(svg('rect', { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2, width: NODE_W, height: NODE_H, rx: 12 }));
-        g.appendChild(svg('text', { x: p.x, y: p.y - 4, class: 'n-name', 'text-anchor': 'middle' }, clip(u.name, 20)));
-        g.appendChild(svg('text', { x: p.x, y: p.y + 14, class: 'n-title', 'text-anchor': 'middle' }, clip(u.jobTitle, 24)));
+        // picture (or initials) on the left of the card
+        const ax = p.x - NODE_W / 2 + 30, ay = p.y, photo = w.Profiles ? w.Profiles.photo(u.id) : '';
+        g.appendChild(svg('circle', { cx: ax, cy: ay, r: 18, class: 'n-av n-av-bg' }));
+        if (photo) {
+          const cid = 'clip-' + u.id;
+          defs.appendChild(svg('clipPath', { id: cid }, svg('circle', { cx: ax, cy: ay, r: 18 })));
+          g.appendChild(svg('image', { href: photo, x: ax - 18, y: ay - 18, width: 36, height: 36, 'clip-path': 'url(#' + cid + ')', preserveAspectRatio: 'xMidYMid slice', class: 'n-av' }));
+        } else g.appendChild(svg('text', { x: ax, y: ay + 4, class: 'n-av n-av-t', 'text-anchor': 'middle' }, String(u.name || '?').split(/\s+/).slice(0, 2).map(function (x) { return x.charAt(0); }).join('').toUpperCase()));
+        g.appendChild(svg('text', { x: p.x - NODE_W / 2 + 56, y: p.y - 3, class: 'n-name' }, clip(u.name, 16)));
+        g.appendChild(svg('text', { x: p.x - NODE_W / 2 + 56, y: p.y + 14, class: 'n-title' }, clip(u.jobTitle, 20)));
         const handle = svg('circle', { cx: p.x, cy: p.y + NODE_H / 2, r: 9, class: 'handle', 'data-handle': u.id });
         handle.addEventListener('pointerdown', function (e) { startDrag(e, u.id, s); });
         g.appendChild(handle);

@@ -8,7 +8,7 @@ const path = require('path');
 const vm = require('vm');
 
 function makeWorld() {
-  const stats = { sheetReads: 0, opens: 0 };
+  const stats = { sheetReads: 0, opens: 0, created: [] };
   const cacheData = new Map();
   const cacheService = {
     getScriptCache: function () {
@@ -24,12 +24,16 @@ function makeWorld() {
   function FakeSheet() { this.rows = [[]]; this.maxRows = 100; }   // rows[0] = header
   FakeSheet.prototype.getLastRow = function () { return this.rows.length; };
   FakeSheet.prototype.getMaxRows = function () { return Math.max(this.maxRows, this.rows.length); };
+  FakeSheet.prototype.getMaxColumns = function () { return 30; };
+  FakeSheet.prototype.insertColumnsAfter = function () {};
+  FakeSheet.prototype.setFrozenRows = function () {};
   FakeSheet.prototype.insertRowsAfter = function (r, n) { this.maxRows = r + n; };
   FakeSheet.prototype.getRange = function (r, c, nr, nc) {
     const sh = this;
     return {
       getValues: function () { stats.sheetReads++; const out = []; for (let i = 0; i < nr; i++) { const row = sh.rows[r - 1 + i] || []; const o = []; for (let j = 0; j < nc; j++) o.push(row[c - 1 + j] === undefined ? '' : row[c - 1 + j]); out.push(o); } return out; },
-      setValues: function (vals) { vals.forEach(function (v, i) { const row = sh.rows[r - 1 + i] || (sh.rows[r - 1 + i] = []); v.forEach(function (x, j) { row[c - 1 + j] = x; }); }); },
+      setValues: function (vals) { vals.forEach(function (v, i) { const row = sh.rows[r - 1 + i] || (sh.rows[r - 1 + i] = []); v.forEach(function (x, j) { row[c - 1 + j] = x; }); }); return this; },
+      setFontWeight: function () { return this; },
       clearContent: function () { for (let i = 0; i < nr; i++) { const idx = r - 1 + i; if (idx < sh.rows.length) sh.rows[idx] = []; } while (sh.rows.length > 1 && !sh.rows[sh.rows.length - 1].some(function (x) { return x !== '' && x !== undefined; })) sh.rows.pop(); },
       setNumberFormat: function () { return this; }
     };
@@ -39,14 +43,18 @@ function makeWorld() {
     console, Date, JSON, Math, Object, String, Number, Array, Error,
     CacheService: cacheService,
     Utilities: { getUuid: function () { return require('crypto').randomUUID(); } },
-    SpreadsheetApp: { openById: function () { stats.opens++; return { getSheetByName: function (n) { return sheets[n] || null; } }; } },
+    SpreadsheetApp: { openById: function () { stats.opens++; return {
+      getSheetByName: function (n) { return sheets[n] || null; },
+      insertSheet: function (n) { stats.created.push(n); return (sheets[n] = new FakeSheet()); },
+      getSheets: function () { return Object.keys(sheets).map(function (k) { return sheets[k]; }); },
+      deleteSheet: function () {} }; } },
     PropertiesService: { getScriptProperties: function () { return { getProperty: function () { return null; } }; } }
   });
   const root = path.join(__dirname, '..', 'backend');
   vm.runInContext(fs.readFileSync(path.join(root, 'Core.gs'), 'utf8'), ctx);
   vm.runInContext(fs.readFileSync(path.join(root, 'Adapters.gs'), 'utf8'), ctx);
   const mk = function () { return vm.runInContext('new SheetsStore_("spreadsheet-id-1234567890")', ctx); };
-  return { stats: stats, cacheData: cacheData, mk: mk, run: function (code) { return vm.runInContext(code, ctx); } };
+  return { stats: stats, sheets: sheets, cacheData: cacheData, mk: mk, run: function (code) { return vm.runInContext(code, ctx); } };
 }
 
 test('pure-JS SHA-256 gives exactly the same hashes as Node crypto (so existing passwords keep working)', () => {
@@ -132,4 +140,17 @@ test('keys include the spreadsheet id (smokeTest uses a temporary sheet)', () =>
   a.insert('Users', user(1)); a.all('Users');
   assert.ok(w.cacheData.size > 0);
   assert.ok(Array.from(w.cacheData.keys()).every(function (k) { return k.startsWith('ts:1234567890:'); }));
+});
+
+test('a table added by a newer version is created on first use (no manual setup step)', () => {
+  const w = makeWorld(), a = w.mk();
+  assert.equal(w.sheets.Profiles, undefined);
+  assert.equal(a.all('Profiles').length, 0);                       // a read creates the sheet and finds it empty
+  assert.deepEqual(w.stats.created, ['Profiles']);
+  a.insert('Profiles', { userId: 'U1', bio: 'hello', photo: '', ver: 5 });
+  assert.equal(a.all('Profiles').length, 1);
+  assert.equal(a.all('Profiles')[0].bio, 'hello');
+  assert.equal(w.sheets.Profiles.rows[0].join('|'), 'userId|bio|photo|ver');   // header row written
+  assert.deepEqual(w.stats.created, ['Profiles']);                 // created once, not again
+  assert.throws(() => w.mk().all('NoSuchTable'));                  // unknown names still fail loudly
 });

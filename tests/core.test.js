@@ -289,3 +289,55 @@ test('maintenance removes expired sessions', () => {
   const r = app.core.maintenance();
   assert.equal(r.expiredSessions, before);
 });
+
+/* ------------------------------ profiles ------------------------------ */
+
+const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=';
+
+test('profiles: save a bio and picture, update only what is sent, remove the picture', () => {
+  const app = makeApp(); const s = seed(app);
+  const r = app.ok('saveProfile', s.tok.wk1, { bio: 'Field officer, Block C. Ask me about irrigation.', photo: TINY_JPEG }).profile;
+  assert.equal(r.hasPhoto, true); assert.ok(r.ver > 0);
+  app.tick(1000);
+  const r2 = app.ok('saveProfile', s.tok.wk1, { bio: 'New bio' }).profile;      // bio only: the picture stays
+  assert.equal(r2.hasPhoto, true); assert.equal(r2.bio, 'New bio'); assert.ok(r2.ver > r.ver);
+  app.tick(1000);
+  assert.equal(app.ok('saveProfile', s.tok.wk1, { photo: '' }).profile.hasPhoto, false);
+  assert.equal(app.env.store.all('Profiles').length, 1);                          // one row per person, updated in place
+  app.err('saveProfile', s.tok.wk1, {}, 'VALIDATION');
+  app.err('saveProfile', s.tok.wk1, { bio: 'x'.repeat(301) }, 'VALIDATION');
+});
+
+test('profiles: only small JPEG data URLs are accepted as a picture (no SVG, no scripts, no huge files)', () => {
+  const app = makeApp(); const s = seed(app);
+  const bad = ['data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', 'javascript:alert(1)', 'https://example.com/a.jpg', 'data:image/jpeg;base64,AAAA"onerror="x',
+    'data:text/html;base64,PGI+', 'data:image/jpeg;base64,' + 'A'.repeat(20000)];
+  bad.forEach((p) => app.err('saveProfile', s.tok.wk1, { photo: p }, 'VALIDATION'));
+  app.err('saveProfile', null, { bio: 'x' }, 'AUTH');
+});
+
+test('profiles: you only receive the profiles of people you work with; photos are sent only when changed', () => {
+  const app = makeApp(); const s = seed(app);
+  ['ceo', 'mgr', 'wk1', 'wk2', 'wk3'].forEach((u) => app.ok('saveProfile', s.tok[u], { bio: 'I am ' + u, photo: TINY_JPEG }));
+  const ids = (tok, have) => app.ok('profiles', tok, { have: have || {} }).profiles.map((p) => p.userId).sort();
+  const want = (...us) => us.map((u) => s.users[u].id).sort();
+  assert.deepEqual(ids(s.tok.wk1), want('wk1', 'mgr', 'ceo'));                  // yourself + the people who can assign to you
+  assert.deepEqual(ids(s.tok.wk3), want('wk3'));                                // no arrows, no tasks: only yourself
+  assert.deepEqual(ids(s.tok.mgr), want('mgr', 'ceo', 'wk1', 'wk2'));
+  assert.equal(ids(s.A).length, 5);                                             // administrators see everyone
+  // a shared open task makes the two people visible to each other
+  app.ok('createTask', s.tok.mgr, { title: 'T', assigneeIds: [s.users.wk2.id] });
+  assert.ok(ids(s.tok.wk2).includes(s.users.mgr.id));
+  // differential: the picture is only included when the browser's version differs
+  const first = app.ok('profiles', s.tok.mgr, {}).profiles.find((p) => p.userId === s.users.wk1.id);
+  assert.ok(first.photo.startsWith('data:image/jpeg'));
+  const again = app.ok('profiles', s.tok.mgr, { have: { [s.users.wk1.id]: first.ver } }).profiles.find((p) => p.userId === s.users.wk1.id);
+  assert.equal(again.photo, undefined); assert.equal(again.bio, 'I am wk1'); assert.equal(again.hasPhoto, true);
+});
+
+test('profiles: a deactivated user disappears from the list', () => {
+  const app = makeApp(); const s = seed(app);
+  app.ok('saveProfile', s.tok.wk1, { bio: 'hi' });
+  app.ok('adminSaveUser', s.A, { id: s.users.wk1.id, name: 'WK1', username: 'wk1', jobTitleId: s.titles.Worker, active: false });
+  assert.ok(!app.ok('profiles', s.tok.mgr, {}).profiles.some((p) => p.userId === s.users.wk1.id));
+});

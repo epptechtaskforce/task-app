@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const root = document.getElementById('app');
-  const S = { user: null, company: '', canAssign: false, timers: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {}, sumOpen: true };
+  const S = { user: null, company: '', canAssign: false, timers: [], filter: 'all', sort: 'recent', q: '', dueDay: '', person: '', unread: 0, playing: null, taskMem: {}, sumOpen: true };
 
   /* ============================== helpers ============================== */
 
@@ -15,6 +15,7 @@
   function isPureAdmin() { return !!(S.user && S.user.isAdmin && !S.user.jobTitleId); }
   function firstName() { return String((S.user && S.user.name) || '').split(/\s+/)[0] || ''; }
   const icon = UI.icon;
+  const prefersReduced = UI.reduced;
 
   function errBox(e) { return h('div', { class: 'err', role: 'alert' }, e.message || String(e)); }
 
@@ -36,6 +37,33 @@
     return t.role === 'creator' ? 'To: ' + t.assignees.map(function (a) { return a.name; }).join(', ') : 'From: ' + t.creator.name + (t.assignees.length > 1 ? ' · with ' + (t.assignees.length - 1) + ' other' + (t.assignees.length > 2 ? 's' : '') : '');
   }
   function names(list) { return list.map(function (a) { return a.name; }); }
+
+  // The four states a task can be in, for the donut chart and its filters (a task is in exactly one).
+  const BUCKETS = [['late', 'Overdue', '#ef5b6c'], ['wait', 'Awaiting approval', '#f6b73c'], ['active', 'In progress', '#5b8def'], ['new', 'Not started', '#a99bc8']];
+  function bucket(t) {
+    const due = UI.dueInfo(t.dueDate, t.status);
+    if (due && due.cls === 'bad') return 'late';
+    if (t.status === 'pending') return 'wait';
+    return t.progress > 0 ? 'active' : 'new';
+  }
+
+  /* ---------- people: tap a face to see who they are ---------- */
+
+  function personBtn(p, size) {
+    return h('button', { type: 'button', class: 'who-btn', onclick: function () { showPerson(p); } }, UI.avatar(p.name, size || 'xs', p.id), h('span', null, p.name));
+  }
+  function showPerson(p) {
+    const bio = Profiles.bio(p.id), mine = S.user && p.id === S.user.id;
+    const known = (Api.cacheGet('assignable') || []).some(function (x) { return x.id === p.id; });
+    const actions = [{ label: 'Close' }];
+    if (!mine && S.canAssign && known) actions.push({ label: 'Assign a task', kind: 'primary', onClick: function (close) { close(); go('#/new/' + p.id); return false; } });
+    if (mine) actions.push({ label: 'Edit my profile', kind: 'primary', onClick: function (close) { close(); go('#/account'); return false; } });
+    UI.modal({ label: p.name, noFocus: true, cls: 'person-modal', actions: actions,
+      body: h('div', { class: 'person-sheet' }, UI.avatar(p.name, 'xl', p.id), h('h2', null, p.name),
+        p.jobTitle ? UI.chip(p.jobTitle, 'brand') : null,
+        bio ? h('p', { class: 'bio-text' }, bio) : h('p', { class: 'bio-text bio-empty' }, mine ? 'You have not written a bio yet.' : 'No bio yet.')) });
+    Profiles.refresh();
+  }
 
   /* ============================== shell (sidebar on wide screens, bottom tabs on phones) ============================== */
 
@@ -61,14 +89,14 @@
         m.work.length ? [h('div', { class: 'side-label' }, 'Work'), m.work.map(sideLink)] : null,
         m.admin.length ? [h('div', { class: 'side-label' }, 'Administration'), m.admin.map(sideLink)] : null,
         h('div', { class: 'side-label' }, 'Me'), sideLink(m.account)),
-      h('div', { class: 'side-user' }, UI.avatar(u.name), h('div', { class: 'who' }, h('strong', null, u.name), h('span', null, [u.jobTitle, u.isAdmin ? 'Administrator' : ''].filter(Boolean).join(' · ') || 'Team member')),
+      h('div', { class: 'side-user' }, h('a', { class: 'me', href: '#/account', 'aria-label': 'My profile' }, UI.avatar(u.name, '', u.id), h('div', { class: 'who' }, h('strong', null, u.name), h('span', null, [u.jobTitle, u.isAdmin ? 'Administrator' : ''].filter(Boolean).join(' · ') || 'Team member'))),
         h('button', { type: 'button', class: 'icon-btn', title: 'Sign out', 'aria-label': 'Sign out', onclick: signOut }, icon('logout', 20))));
 
     const titleEl = h('div', { class: 'brand' }, opts.title || S.company || 'Task Manager');
     const mtop = h('header', { class: 'mtop' }, h('div', { class: 'mtop-in' },
       opts.back ? h('a', { class: 'icon-btn', href: opts.back, 'aria-label': 'Back' }, icon('back', 24)) : h('span', { class: 'logo' }, icon('checkCircle', 20)),
       titleEl,
-      opts.back ? null : h('a', { class: 'icon-btn', href: '#/account', 'aria-label': 'Account' }, UI.avatar(u.name))));
+      opts.back ? null : h('a', { class: 'icon-btn', href: '#/account', 'aria-label': 'My profile' }, UI.avatar(u.name, 'sm', u.id))));
 
     // bottom tabs: admins who also have tasks get one "Admin" tab (its pages have a switcher at the top)
     const tabs = isPureAdmin() ? m.admin.concat([m.account]) : m.work.concat(u.isAdmin ? [{ k: 'admin', href: '#/admin/users', label: 'Admin', ic: 'shield' }] : [], [m.account]);
@@ -98,14 +126,15 @@
 
   /* ============================== login / password ============================== */
 
-  function authPage(heading, sub, body) {
+  // art: an illustration for the top of the page (the sign-in page); other pages get a plain logo
+  function authPage(heading, sub, body, art) {
     mount(h('div', { class: 'auth' },
-      h('div', { class: 'auth-hero' }, h('div', { class: 'logo' }, icon('checkCircle', 32)), heading, h('p', null, sub)),
+      h('div', { class: 'auth-hero' }, art ? UI.illustration('hero') : h('div', { class: 'logo', style: 'width:60px;height:60px;border-radius:18px;margin:0 auto .8rem' }, icon('checkCircle', 32)), heading, h('p', null, sub)),
       h('div', { class: 'auth-card' }, body)));
   }
 
   function showLogin(message) {
-    stopTimers(); S.user = null; S.taskMem = {};
+    stopTimers(); S.user = null; S.taskMem = {}; Profiles.reset();
     // Paint the sign-in page at once with the last known company name; the server (which may need a few seconds to
     // wake up) is asked in the background. Asking first made people stare at "Loading…".
     const company = S.company || Api.savedCompany();
@@ -122,6 +151,7 @@
         Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign;
         if (r.user.mustChange) return viewMustChange();
         if (r.canAssign === undefined) await loadMe(); else rememberMe();   // the sign-in answer already holds the profile
+        Profiles.load(); Profiles.refresh(true);
         go(landing());
       } catch (e) { err.appendChild(errBox(e)); pass.value = ''; }
       finally { btn.disabled = false; btn.textContent = 'Sign in'; }
@@ -131,8 +161,8 @@
       h('button', { class: 'btn small', type: 'button', style: 'margin-top:.5rem', onclick: function () { Demo.reset(); } }, 'Reset demo data')) : null;
     authPage(title, 'Tasks, progress and conversations in one place.', [
       message ? h('div', { class: 'note', style: 'margin-top:0;margin-bottom:.8rem' }, message) : null,
-      h('div', { class: 'card' }, h('h2', null, 'Sign in'), h('p', { class: 'muted small' }, 'Use the username and password your administrator gave you.'), form),
-      demo, h('p', { class: 'auth-foot' }, 'Forgot your password? Ask your administrator to reset it.')]);
+      h('div', { class: 'card' }, h('h2', null, 'Welcome back'), h('p', { class: 'muted small' }, 'Use the username and password your administrator gave you.'), form),
+      demo, h('p', { class: 'auth-foot' }, 'Forgot your password? Ask your administrator to reset it.')], true);
     user.focus();
   }
 
@@ -145,7 +175,7 @@
       if (n.input.value !== r.input.value) return err.appendChild(errBox(new Error('The two new passwords do not match.')));
       try {
         await Api.call('changePassword', { oldPassword: o.input.value, newPassword: n.input.value });
-        S.user.mustChange = false; UI.toast('Password changed'); await loadMe(); go(landing());
+        S.user.mustChange = false; UI.toast('Password changed'); await loadMe(); Profiles.load(); Profiles.refresh(true); go(landing());
       } catch (e) { err.appendChild(errBox(e)); }
     } }, h('label', null, 'Temporary password you were given', o.el), h('label', null, 'New password (at least 8 characters)', n.el), h('label', null, 'Repeat new password', r.el),
       h('button', { class: 'btn primary block', type: 'submit', style: 'margin-top:1.2rem' }, 'Save new password'), err);
@@ -168,18 +198,18 @@
     Api.saveCompany(S.company);
   }
 
-  /* ============================== tasks list ============================== */
+  /* ============================== tasks: dashboard + list ============================== */
 
   function taskFlags(t) {
     const due = UI.dueInfo(t.dueDate, t.status);
     return { overdue: !!(due && due.cls === 'bad'), approve: t.role === 'creator' && t.status === 'pending', unread: !!t.unread, due: due };
   }
 
-  function taskCard(t) {
-    const f = taskFlags(t);
-    const state = f.overdue ? 'bad' : t.status === 'pending' ? 'warn' : t.progress > 0 ? 'info' : '';
-    const others = t.role === 'creator' ? names(t.assignees) : [t.creator.name];
-    return h('a', { class: 'card task' + (state ? ' st-' + state : ''), href: '#/task/' + t.id },
+  function taskCard(t, i) {
+    const f = taskFlags(t), b = bucket(t);
+    const state = { late: 'bad', wait: 'warn', active: 'info', 'new': '' }[b];
+    const others = t.role === 'creator' ? t.assignees : [t.creator];
+    return h('a', { class: 'card task' + (state ? ' st-' + state : ''), href: '#/task/' + t.id, style: '--i:' + Math.min(i || 0, 12) },
       h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'new' }, 'NEW') : null),
       h('div', { class: 'people' }, UI.avatarStack(others), h('span', { class: 't' }, peopleLine(t))),
       h('div', { class: 'prog' }, UI.progressBar(t.progress, t.status), h('strong', null, t.progress + '%')),
@@ -187,29 +217,33 @@
       t.lastMessage ? h('div', { class: 'last' }, t.lastMessage.senderName + ': ' + (t.lastMessage.type === 'voice' ? '🎤 ' : '') + t.lastMessage.text) : null);
   }
 
+  function dayKey(ms) { const d = new Date(ms); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+
   function viewTasks() {
-    const list = h('div', null, UI.skeleton('card', 3));
-    const stats = h('div', { class: 'stats' }), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Filter tasks' });
-    const sub = h('p', { class: 'sub' });
+    const heroBox = h('div'), insBox = h('div');
+    const list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Filter tasks' }), activeBox = h('div');
     const q = h('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search tasks or people', value: S.q });
     const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
-    const head = h('div', { class: 'page-head' }, h('div', null, h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), sub),
-      S.canAssign ? h('a', { class: 'btn primary new-task', href: '#/new' }, icon('plus', 18), 'New task') : null);
-    shell(h('div', null, head, stats, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, list,
+    shell(h('div', null, heroBox, insBox, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), activeBox, filters, list,
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks');
-    let tasks = [];
+    let tasks = [], hist = (Api.cacheGet('hist:' + S.user.id) || {}).items || [], animated = false, heroSig = '', insSig = '';
     const cacheKey = 'tasks:' + S.user.id;
-    q.addEventListener('input', function () { S.q = q.value; draw(); });
-    sort.addEventListener('change', function () { S.sort = sort.value; draw(); });
+    q.addEventListener('input', function () { S.q = q.value; drawList(); });
+    sort.addEventListener('change', function () { S.sort = sort.value; drawList(); });
+
+    function setFilter(key) { S.filter = S.filter === key ? 'all' : key; S.dueDay = ''; S.person = ''; redraw(); }
+    function resetFilters() { S.filter = 'all'; S.dueDay = ''; S.person = ''; redraw(); }
 
     function matches(t) {
-      const f = taskFlags(t);
-      const okFilter = S.filter === 'all' || (S.filter === 'mine' && t.role === 'assignee') || (S.filter === 'byme' && t.role === 'creator') || (S.filter === 'approve' && f.approve) || (S.filter === 'overdue' && f.overdue) || (S.filter === 'unread' && f.unread);
-      if (!okFilter) return false;
+      const f = S.filter;
+      if (f === 'mine' && t.role !== 'assignee') return false;
+      if (f === 'byme' && t.role !== 'creator') return false;
+      if (['late', 'wait', 'active', 'new'].indexOf(f) >= 0 && bucket(t) !== f) return false;
+      if (S.dueDay && t.dueDate !== S.dueDay) return false;
+      if (S.person && !(t.role === 'creator' && t.assignees.some(function (a) { return a.id === S.person; }))) return false;
       const needle = S.q.trim().toLowerCase();
       if (!needle) return true;
-      const hay = [t.title, t.creator.name].concat(names(t.assignees), t.lastMessage ? [t.lastMessage.text] : []).join(' ').toLowerCase();
-      return hay.indexOf(needle) >= 0;
+      return [t.title, t.creator.name].concat(names(t.assignees), t.lastMessage ? [t.lastMessage.text] : []).join(' ').toLowerCase().indexOf(needle) >= 0;
     }
     function ordered(items) {
       const copy = items.slice();
@@ -218,119 +252,270 @@
       return copy;
     }
 
-    function draw() {
-      const counts = { all: tasks.length, mine: 0, byme: 0, approve: 0, overdue: 0, unread: 0 };
-      tasks.forEach(function (t) { const f = taskFlags(t); if (t.role === 'assignee') counts.mine++; else counts.byme++; if (f.approve) counts.approve++; if (f.overdue) counts.overdue++; if (f.unread) counts.unread++; });
+    /* ---- the hero: greeting, donut chart and clickable legend ---- */
+    function buildHero(anim) {
+      const counts = { late: 0, wait: 0, active: 0, 'new': 0 };
+      tasks.forEach(function (t) { counts[bucket(t)]++; });
       const attention = tasks.filter(function (t) { const f = taskFlags(t); return f.approve || f.overdue || f.unread; }).length;
-      sub.textContent = tasks.length ? tasks.length + ' open task' + (tasks.length === 1 ? '' : 's') + (attention ? ' · ' + attention + ' need' + (attention === 1 ? 's' : '') + ' your attention' : ' · all up to date') : 'Here is what is happening today.';
+      const sub = !tasks.length ? 'Nothing open right now. Enjoy the calm!' : attention ? attention + ' thing' + (attention === 1 ? '' : 's') + ' need' + (attention === 1 ? 's' : '') + ' your attention' : 'Everything is on track';
+      const donut = UI.donut(BUCKETS.map(function (b) { return { key: b[0], value: counts[b[0]], color: b[2], label: b[1] }; }),
+        { size: 128, thickness: 13, animate: anim, center: { num: tasks.length, label: tasks.length === 1 ? 'open task' : 'open tasks' }, active: counts[S.filter] !== undefined ? S.filter : null, onPick: setFilter });
+      return h('section', { class: 'hero' },
+        h('div', { class: 'hero-main' },
+          h('div', null, h('div', { class: 'date' }, new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })),
+            h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), h('p', { class: 'hero-sub' }, sub),
+            S.canAssign ? h('a', { class: 'btn primary new-task', href: '#/new' }, icon('plus', 18), 'New task') : null),
+          h('div', { class: 'hero-chart' }, donut)),
+        h('div', { class: 'legend', role: 'group', 'aria-label': 'Filter by state' }, BUCKETS.map(function (b) {
+          return h('button', { type: 'button', class: S.filter === b[0] ? 'on' : '', 'aria-pressed': S.filter === b[0], style: '--dot:' + b[2], onclick: function () { setFilter(b[0]); } }, h('i'), b[1], h('b', null, counts[b[0]]));
+        })));
+    }
 
-      UI.clear(stats);
-      [['overdue', 'Overdue', 'bad', 'alert'], ['approve', 'To approve', 'warn', 'clock'], ['unread', 'Unread', 'info', 'inbox']].forEach(function (s) {
-        if (!counts[s[0]] && S.filter !== s[0]) return;
-        stats.appendChild(h('button', { type: 'button', class: 'stat ' + s[2] + (S.filter === s[0] ? ' on' : ''), 'aria-pressed': S.filter === s[0], onclick: function () { S.filter = S.filter === s[0] ? 'all' : s[0]; draw(); } },
-          h('span', { class: 'num' }, counts[s[0]]), h('span', { class: 'lbl' }, icon(s[3], 13), s[1])));
+    /* ---- insight cards: needs attention, this week, momentum, team workload ---- */
+    function growTo(el, prop, value, anim) {
+      if (anim && !prefersReduced()) requestAnimationFrame(function () { requestAnimationFrame(function () { el.style[prop] = value; }); });
+      else el.style[prop] = value;
+    }
+    function buildInsights(anim) {
+      const cards = [];
+      // 1. needs your attention
+      const items = [];
+      tasks.forEach(function (t) {
+        const f = taskFlags(t);
+        let tag = '', cls = '', rank = 9;
+        if (f.approve) { tag = 'Approve'; rank = 0; } else if (f.overdue) { tag = 'Overdue'; cls = 'late'; rank = 1; } else if (f.unread) { tag = 'New message'; rank = 2; }
+        else if (f.due && f.due.days === 0 && t.status !== 'pending') { tag = 'Today'; rank = 3; } else if (f.due && f.due.days > 0 && f.due.days <= 3 && t.status !== 'pending') { tag = 'In ' + f.due.days + 'd'; cls = 'far'; rank = 4; }
+        if (rank < 9) items.push({ t: t, tag: tag, cls: cls, rank: rank });
       });
-      stats.classList.toggle('hidden', !stats.children.length);
+      items.sort(function (a, b) { return a.rank - b.rank || (a.t.dueDate || '9').localeCompare(b.t.dueDate || '9'); });
+      cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('zap', 17), 'Needs your attention'),
+        items.length ? h('div', { class: 'next' }, items.slice(0, 3).map(function (it) {
+          const other = it.t.role === 'creator' ? it.t.assignees[0] : it.t.creator;
+          return h('a', { href: '#/task/' + it.t.id }, h('span', { class: 'when ' + it.cls }, it.tag), h('span', { class: 'nt' }, it.t.title), UI.avatar(other.name, 'sm', other.id));
+        })) : h('div', { class: 'mini-empty' }, icon('smile', 30), h('div', null, tasks.length ? 'All caught up!' : 'Nothing waiting for you.'))));
 
+      // 2. this week (tap a day to filter)
+      const days = []; for (let i = 0; i < 7; i++) days.push(UI.ymd(i));
+      const per = {}; tasks.forEach(function (t) { if (t.dueDate) per[t.dueDate] = (per[t.dueDate] || 0) + 1; });
+      const overdue = tasks.filter(function (t) { return taskFlags(t).overdue; }).length;
+      const week = h('div', { class: 'week' }, days.map(function (k, i) {
+        const d = new Date(k + 'T12:00:00');
+        return h('button', { type: 'button', class: 'wday' + (per[k] ? ' has' : '') + (i === 0 ? ' today' : '') + (S.dueDay === k ? ' on' : ''), style: '--i:' + i, 'aria-pressed': S.dueDay === k, 'aria-label': d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) + ': ' + (per[k] || 0) + ' due',
+          onclick: function () { const was = S.dueDay === k; S.filter = 'all'; S.person = ''; S.dueDay = was ? '' : k; redraw(); } },
+          h('span', { class: 'dow' }, d.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 3)), h('span', { class: 'dnum' }, d.getDate()), h('span', { class: 'dcount' }, per[k] || ''));
+      }));
+      const dueWeek = days.reduce(function (a, k) { return a + (per[k] || 0); }, 0);
+      cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('calendar', 17), 'This week'),
+        h('div', { style: 'margin-bottom:.6rem' }, h('span', { class: 'big' }, dueWeek), h('span', { class: 'muted small' }, ' due in the next 7 days' + (overdue ? ' · ' + overdue + ' overdue' : ''))), week));
+
+      // 3. momentum: tasks completed per day over the last 7 days
+      const last7 = []; for (let i = 6; i >= 0; i--) last7.push(UI.ymd(-i));
+      const done = {}; hist.forEach(function (it) { if (it.closedAt) { const k = dayKey(it.closedAt); done[k] = (done[k] || 0) + 1; } });
+      const doneTotal = last7.reduce(function (a, k) { return a + (done[k] || 0); }, 0), maxDone = Math.max.apply(null, last7.map(function (k) { return done[k] || 0; }).concat([1]));
+      const bars = h('div', { class: 'bars7' }, last7.map(function (k, i) {
+        const n = done[k] || 0, d = new Date(k + 'T12:00:00'), bv = h('div', { class: 'bv' + (n ? '' : ' zero'), style: '--i:' + i });
+        growTo(bv, 'height', (n ? 8 + n / maxDone * 56 : 4) + 'px', anim);
+        return h('div', { class: 'bcol' + (i === 6 ? ' today' : '') }, h('span', { class: 'bn' }, n || ''), bv, h('span', { class: 'bl' }, d.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 2)));
+      }));
+      const bigNum = h('span', { class: 'big' }); UI.countUp(bigNum, doneTotal, anim);
+      cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('trend', 17), 'Momentum'),
+        h('div', { style: 'margin-bottom:.6rem' }, bigNum, h('span', { class: 'muted small' }, ' completed in the last 7 days')), bars));
+
+      // 4. team workload (people who assign tasks)
+      const load = {}; tasks.forEach(function (t) { if (t.role === 'creator') t.assignees.forEach(function (a) { (load[a.id] = load[a.id] || { p: a, n: 0 }).n++; }); });
+      const rows = Object.keys(load).map(function (k) { return load[k]; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 5);
+      if (rows.length) {
+        const mx = rows[0].n;
+        cards.push(h('div', { class: 'card insight' }, h('h3', null, icon('users', 17), 'Team workload'),
+          h('div', { class: 'work' }, rows.map(function (r, i) {
+            const fill = h('i', { style: '--i:' + i });
+            growTo(fill, 'width', (r.n / mx * 100) + '%', anim);
+            return h('button', { type: 'button', class: 'wrow', 'aria-label': r.p.name + ': ' + r.n + ' open', onclick: function () { const was = S.person === r.p.id; S.filter = 'all'; S.dueDay = ''; S.person = was ? '' : r.p.id; redraw(); } },
+              UI.avatar(r.p.name, 'sm', r.p.id), h('span', { class: 'wmid' }, h('span', { class: 'wname' }, r.p.name), h('span', { class: 'wtrack' }, fill)), h('span', { class: 'wcount' }, r.n));
+          }))));
+      }
+      return h('div', { class: 'insights', role: 'list' }, cards);
+    }
+
+    function drawDash() {
+      const counts = BUCKETS.map(function (b) { return tasks.filter(function (t) { return bucket(t) === b[0]; }).length; }).join(',');
+      const hs = counts + '|' + S.filter + '|' + tasks.length + '|' + tasks.map(function (t) { return t.unread ? t.id : ''; }).join('');
+      const is = tasks.map(function (t) { return t.id + t.dueDate + bucket(t) + (t.unread ? 'u' : '') + t.assignees.length; }).join(',') + '|' + hist.length + '|' + S.dueDay + '|' + S.person;
+      const anim = !animated; animated = true;
+      if (hs !== heroSig) { heroSig = hs; UI.clear(heroBox); heroBox.appendChild(buildHero(anim)); }
+      if (is !== insSig) {
+        insSig = is;
+        const old = insBox.firstChild, left = old ? old.scrollLeft : 0;
+        UI.clear(insBox); const el = buildInsights(anim); insBox.appendChild(el); el.scrollLeft = left;
+      }
+    }
+
+    function filterLabel() {
+      const b = BUCKETS.filter(function (x) { return x[0] === S.filter; })[0];
+      if (b) return b[1];
+      if (S.dueDay) return 'Due ' + new Date(S.dueDay + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      if (S.person) {
+        const all = []; tasks.forEach(function (t) { t.assignees.forEach(function (a) { all.push(a); }); });
+        const who = all.filter(function (a) { return a.id === S.person; })[0];
+        return 'Assigned to ' + (who ? who.name : 'one person');
+      }
+      return '';
+    }
+
+    function drawList() {
+      const counts = { all: tasks.length, mine: 0, byme: 0 };
+      tasks.forEach(function (t) { if (t.role === 'assignee') counts.mine++; else counts.byme++; });
       UI.clear(filters);
       [['all', 'All'], ['mine', 'Assigned to me'], ['byme', 'Assigned by me']].forEach(function (f) {
-        filters.appendChild(h('button', { type: 'button', class: S.filter === f[0] ? 'on' : '', 'aria-pressed': S.filter === f[0], onclick: function () { S.filter = f[0]; draw(); } }, f[1], h('span', { class: 'n' }, counts[f[0]])));
+        filters.appendChild(h('button', { type: 'button', class: S.filter === f[0] ? 'on' : '', 'aria-pressed': S.filter === f[0], onclick: function () { S.filter = f[0]; S.dueDay = ''; S.person = ''; redraw(); } }, f[1], h('span', { class: 'n' }, counts[f[0]])));
       });
-
+      // what is being filtered by the chart / week strip / team card, with a way back
+      UI.clear(activeBox);
+      const label = filterLabel();
+      if (label) activeBox.appendChild(h('div', { class: 'active-filter' }, UI.chip('Showing: ' + label, 'brand', 'search'), h('button', { class: 'btn ghost small', type: 'button', onclick: resetFilters }, 'Clear')));
       const shown = ordered(tasks.filter(matches));
       UI.clear(list);
       if (!shown.length) {
         list.appendChild(tasks.length
-          ? UI.emptyState('search', 'Nothing matches', 'Try a different filter or search.', h('button', { class: 'btn small', type: 'button', onclick: function () { S.filter = 'all'; S.q = ''; q.value = ''; draw(); } }, 'Clear filters'))
-          : UI.emptyState('inbox', 'No open tasks', S.canAssign ? 'Create a task and assign it to your team.' : 'New tasks assigned to you will appear here.', S.canAssign ? h('a', { class: 'btn primary', href: '#/new' }, icon('plus', 18), 'New task') : null));
+          ? UI.emptyState('search', 'Nothing matches', 'Try a different filter or search.', h('button', { class: 'btn small', type: 'button', onclick: function () { S.q = ''; q.value = ''; resetFilters(); } }, 'Clear filters'))
+          : UI.emptyState('inbox', 'No open tasks', S.canAssign ? 'Create a task and drag the right people onto it.' : 'New tasks assigned to you will appear here.', S.canAssign ? h('a', { class: 'btn primary', href: '#/new' }, icon('plus', 18), 'New task') : null));
         return;
       }
-      shown.forEach(function (t) { list.appendChild(taskCard(t)); });
+      shown.forEach(function (t, i) { list.appendChild(taskCard(t, i)); });
     }
+    function redraw() { drawDash(); drawList(); }
+
     async function load() {
       try {
-        tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); draw();
+        tasks = (await Api.call('listTasks')).tasks; setUnread(tasks); redraw();
         Api.cacheSet(cacheKey, { tasks: tasks });
         // Warm the "people I can assign to" list so the New task screen opens at once.
         if (S.canAssign && !Api.cacheGet('assignable')) Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
       }
       catch (e) { if (e.code === 'MUSTCHANGE') return viewMustChange(); if (e.code !== 'AUTH' && !tasks.length) { UI.clear(list); list.appendChild(errBox(e)); } }
     }
+    async function loadHist() {
+      try {
+        const r = await Api.call('listHistory', { limit: 50 });
+        hist = r.items.map(function (i) { return { closedAt: i.closedAt }; });
+        Api.cacheSet('hist:' + S.user.id, { items: hist }); drawDash();
+      } catch (e) { /* the momentum chart simply stays as it was */ }
+    }
     // Show the last known list immediately (it is refreshed within a moment), instead of an empty "Loading…" screen.
     const known = Api.cacheGet(cacheKey);
-    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); draw(); }
-    load(); poll(load, 20000);
+    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; setUnread(tasks); redraw(); } else { drawDash(); }
+    load().then(loadHist); poll(load, 20000); poll(loadHist, 300000);
   }
 
-  /* ============================== new task ============================== */
+  /* ============================== new task: type a title, drag people onto it ============================== */
 
-  async function viewNewTask() {
+  async function viewNewTask(preId) {
+    const bar = { focus: true, back: '#/tasks', title: 'New task' };
     let people = Api.cacheGet('assignable');
     if (people && people.length) {   // an empty list is not trusted: the admin may have added arrows since
       // Open at once with the last known list; refresh it quietly for next time (the server re-checks every assignment anyway).
       Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
     } else {
-      shell(UI.skeleton('card', 2), 'tasks', { back: '#/tasks', title: 'New task' });
-      try { people = await Api.call('assignable'); Api.cacheSet('assignable', people); } catch (e) { return shell(errBox(e), 'tasks', { back: '#/tasks', title: 'New task' }); }
+      shell(UI.skeleton('card', 2), 'tasks', bar);
+      try { people = await Api.call('assignable'); Api.cacheSet('assignable', people); } catch (e) { return shell(errBox(e), 'tasks', bar); }
     }
-    if (!people.length) return shell(UI.emptyState('users', 'No one to assign to yet', 'Ask your administrator to connect you to the people you manage in the Org chart.', h('a', { class: 'btn', href: '#/tasks' }, 'Back to tasks')), 'tasks', { back: '#/tasks', title: 'New task' });
+    if (!people.length) return shell(UI.emptyState('team', 'No one to assign to yet', 'Ask your administrator to connect you to the people you manage in the Org chart.', h('a', { class: 'btn', href: '#/tasks' }, 'Back to tasks')), 'tasks', bar);
 
-    const title = h('input', { type: 'text', maxlength: 120, required: true, placeholder: 'e.g. Prepare the harvest report' });
-    const desc = h('textarea', { maxlength: 2000, placeholder: 'Details, what "done" looks like, anything they should know…' });
-    const due = h('input', { type: 'date' });
-    const quick = h('div', { class: 'quick' }, [['Today', 0], ['Tomorrow', 1], ['In 3 days', 3], ['Next week', 7]].map(function (d) {
-      return h('button', { type: 'button', onclick: function () { due.value = UI.ymd(d[1]); } }, d[0]);
-    }), h('button', { type: 'button', onclick: function () { due.value = ''; } }, 'No date'));
+    const chosen = {}, bubbles = {};
+    const title = h('input', { class: 'draft-title', type: 'text', maxlength: 120, placeholder: 'What needs to be done?', 'aria-label': 'Task title', autocomplete: 'off' });
+    const zone = h('div', { class: 'dropzone', role: 'group', 'aria-label': 'People this task is assigned to', 'aria-live': 'polite' });
+    const desc = h('textarea', { maxlength: 2000, placeholder: 'Details, what "done" looks like, anything they should know…', 'aria-label': 'Description' });
+    const dock = h('section', { class: 'dock', 'aria-label': 'People you can assign tasks to' });
+    const createLabel = h('span', null, 'Create task');
+    const createBtn = h('button', { class: 'btn primary', type: 'button' }, icon('send', 18), createLabel);
+    let dueVal = '';
 
-    // people picker: grouped by layer, searchable, with "select all" per layer and a summary of who is chosen
-    const chosen = {}, groups = [], pick = h('div', { class: 'pick' }), chips = h('div', { class: 'chips-sel' });
-    const find = h('input', { type: 'search', placeholder: 'Search people…', 'aria-label': 'Search people' });
-    const submit = h('button', { class: 'btn primary', type: 'submit' }, 'Assign task');
-    const byLevel = {};
-    people.forEach(function (p) { (byLevel[p.level] = byLevel[p.level] || []).push(p); });
-    Object.keys(byLevel).sort(function (a, b) { return a - b; }).forEach(function (lv) {
-      const items = byLevel[lv], group = { rows: [], head: null };
-      const setAll = function () { const all = items.every(function (p) { return chosen[p.id]; }); items.forEach(function (p) { if (all) delete chosen[p.id]; else chosen[p.id] = p; }); sync(); };
-      group.head = h('div', { class: 'lvl' }, h('span', null, 'Layer ' + lv + ' · ' + items[0].jobTitle), items.length > 1 ? h('button', { type: 'button', onclick: setAll }, 'Select all') : null);
-      pick.appendChild(group.head);
-      items.forEach(function (p) {
-        const cb = h('input', { type: 'checkbox', value: p.id });
-        cb.addEventListener('change', function () { if (cb.checked) chosen[p.id] = p; else delete chosen[p.id]; sync(); });
-        const label = h('label', null, cb, UI.avatar(p.name), h('span', { class: 'nm' }, p.name, h('span', null, p.jobTitle)));
-        group.rows.push({ p: p, cb: cb, label: label }); pick.appendChild(label);
+    // ---- due date ----
+    const dueInput = h('input', { type: 'date', 'aria-label': 'Pick a due date' });
+    const quickDefs = [['Today', 0], ['Tomorrow', 1], ['In 3 days', 3], ['Next week', 7]];
+    const dueRow = h('div', { class: 'due-row' });
+    function drawDue() {
+      UI.clear(dueRow);
+      quickDefs.forEach(function (d) {
+        const k = UI.ymd(d[1]);
+        dueRow.appendChild(h('button', { type: 'button', class: dueVal === k ? 'on' : '', 'aria-pressed': dueVal === k, onclick: function () { dueVal = dueVal === k ? '' : k; dueInput.value = dueVal; drawDue(); } }, d[0]));
       });
-      groups.push(group);
-    });
-    function sync() {
-      const ids = Object.keys(chosen);
-      groups.forEach(function (g) { g.rows.forEach(function (r) { r.cb.checked = !!chosen[r.p.id]; r.label.classList.toggle('sel', !!chosen[r.p.id]); }); });
-      UI.clear(chips);
-      ids.forEach(function (id) { chips.appendChild(h('span', { class: 'chip brand' }, chosen[id].name, h('button', { type: 'button', class: 'icon-btn', style: 'width:20px;height:20px;margin-right:-4px', 'aria-label': 'Remove ' + chosen[id].name, onclick: function () { delete chosen[id]; sync(); } }, icon('x', 12)))); });
-      submit.textContent = ids.length ? 'Assign to ' + ids.length + (ids.length === 1 ? ' person' : ' people') : 'Assign task';
+      dueRow.appendChild(dueInput);
     }
+    dueInput.addEventListener('change', function () { dueVal = dueInput.value; drawDue(); });
+
+    // ---- the drop zone on the task card ----
+    function ghostFor(p) { return h('div', { class: 'bubble' }, UI.avatar(p.name, 'lg', p.id)); }
+    function renderZone() {
+      UI.clear(zone);
+      const ids = Object.keys(chosen);
+      zone.classList.toggle('filled', ids.length > 0);
+      if (!ids.length) zone.appendChild(h('div', { class: 'dz-hint' }, icon('move', 26), h('span', null, 'Drag people here'), h('span', { class: 'small' }, 'or just tap them below')));
+      ids.forEach(function (id) {
+        const p = chosen[id];
+        const chip = h('span', { class: 'pchip' }, UI.avatar(p.name, 'sm', p.id), h('span', null, p.name), h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + p.name, onclick: function () { toggle(p, false); } }, icon('x', 13)));
+        UI.draggable(chip, { zones: function () { return [dock]; }, ghost: function () { return ghostFor(p); }, onDrop: function () { toggle(p, false); } });   // drag a face back down to remove it
+        zone.appendChild(chip);
+      });
+      createLabel.textContent = ids.length ? 'Assign to ' + ids.length + (ids.length === 1 ? ' person' : ' people') : 'Create task';
+    }
+    function toggle(p, on) {
+      if (on === undefined) on = !chosen[p.id];
+      if (on) chosen[p.id] = p; else delete chosen[p.id];
+      renderZone();
+      const b = bubbles[p.id]; if (b) { b.classList.toggle('sel', !!chosen[p.id]); b.setAttribute('aria-pressed', !!chosen[p.id]); }
+    }
+
+    // ---- the dock: everyone you can assign to, grouped by layer ----
+    const find = h('input', { type: 'search', placeholder: 'Search people…', 'aria-label': 'Search people' });
+    const body = h('div', { class: 'dock-body' }), groups = [];
+    const byLevel = {}; people.forEach(function (p) { (byLevel[p.level] = byLevel[p.level] || []).push(p); });
+    Object.keys(byLevel).sort(function (a, b) { return a - b; }).forEach(function (lv) {
+      const items = byLevel[lv], row = h('div', { class: 'bubbles' }), g = { nodes: [], head: null, el: null };
+      const all = function () { const every = items.every(function (p) { return chosen[p.id]; }); items.forEach(function (p) { toggle(p, !every); }); };
+      g.head = h('div', { class: 'dock-label' }, h('span', null, 'Layer ' + lv + ' · ' + items[0].jobTitle), items.length > 1 ? h('button', { type: 'button', onclick: all }, 'Select all') : null);
+      items.forEach(function (p) {
+        const b = h('button', { type: 'button', class: 'bubble', 'aria-pressed': 'false', 'aria-label': p.name + ', ' + p.jobTitle, onclick: function () { toggle(p); } },
+          UI.avatar(p.name, '', p.id), h('span', { class: 'bn' }, p.name.split(/\s+/)[0]), h('span', { class: 'bt' }, p.jobTitle), h('span', { class: 'tick' }, icon('check', 13)));
+        UI.draggable(b, { zones: function () { return [zone]; }, ghost: function () { return ghostFor(p); }, onDrop: function () { toggle(p, true); } });
+        bubbles[p.id] = b; g.nodes.push({ p: p, el: b }); row.appendChild(b);
+      });
+      g.el = h('div', { class: 'dock-group' }, g.head, row);
+      groups.push(g); body.appendChild(g.el);
+    });
     find.addEventListener('input', function () {
       const needle = find.value.trim().toLowerCase();
       groups.forEach(function (g) {
         let any = false;
-        g.rows.forEach(function (r) { const show = !needle || (r.p.name + ' ' + r.p.jobTitle).toLowerCase().indexOf(needle) >= 0; r.label.classList.toggle('hidden', !show); if (show) any = true; });
-        g.head.classList.toggle('hidden', !any);
+        g.nodes.forEach(function (n) { const show = !needle || (n.p.name + ' ' + n.p.jobTitle).toLowerCase().indexOf(needle) >= 0; n.el.classList.toggle('hidden', !show); if (show) any = true; });
+        g.el.classList.toggle('hidden', !any);
       });
     });
+    dock.appendChild(h('div', { class: 'dock-head' }, h('h2', null, icon('move', 18), 'People'), people.length > 8 ? h('div', { class: 'search' }, icon('search', 16), find) : null, createBtn));
+    dock.appendChild(body);
 
-    const err = h('div');
-    const form = h('form', { onsubmit: async function (ev) {
-      ev.preventDefault(); UI.clear(err);
+    // ---- create ----
+    const shake = function (el) { el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); };
+    createBtn.addEventListener('click', async function () {
+      if (!title.value.trim()) { shake(title); title.focus(); return UI.toast('Give the task a title first.', 'bad'); }
       const ids = Object.keys(chosen);
-      if (!ids.length) return err.appendChild(errBox(new Error('Choose at least one person.')));
-      submit.disabled = true;
-      try { const r = await Api.call('createTask', { title: title.value, description: desc.value, dueDate: due.value, assigneeIds: ids }); UI.toast('Task assigned'); go('#/task/' + r.task.id); }
-      catch (e) { err.appendChild(errBox(e)); submit.disabled = false; }
-    } }, h('label', null, 'Task title', title), h('label', null, 'Description (optional)', desc), h('label', null, 'Due date (optional)', due), quick,
-      h('label', null, 'Assign to'), h('div', { class: 'hint', style: 'margin:-.2rem 0 .4rem' }, 'You can choose several people - they will share one conversation.'),
-      people.length > 6 ? h('div', { class: 'search', style: 'margin-bottom:.4rem' }, icon('search', 18), find) : null, chips, pick, err,
-      h('div', { class: 'form-actions' }, submit, h('a', { class: 'btn', href: '#/tasks' }, 'Cancel')));
-    shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), h('div', { class: 'page-head' }, h('h1', null, 'New task')), h('div', { class: 'card' }, form)), 'tasks', { back: '#/tasks', title: 'New task' });
-    sync(); title.focus();
+      if (!ids.length) { shake(zone); return UI.toast('Drag at least one person onto the task.', 'bad'); }
+      createBtn.disabled = true;
+      try {
+        const r = await Api.call('createTask', { title: title.value, description: desc.value, dueDate: dueVal, assigneeIds: ids });
+        UI.confetti(); UI.toast('Task assigned'); go('#/task/' + r.task.id);
+      } catch (e) { UI.toast(e.message, 'bad'); createBtn.disabled = false; }
+    });
+
+    const draft = h('div', { class: 'card draft' }, h('div', { class: 'detail-banner' }), h('div', { class: 'draft-in' },
+      title,
+      h('div', { class: 'draft-label' }, icon('users', 14), 'Assigned to'), zone,
+      h('div', { class: 'draft-label' }, icon('calendar', 14), 'Due'), dueRow,
+      h('details', { class: 'more' }, h('summary', null, icon('plus', 15), 'Add details'), desc)));
+    shell(h('div', { class: 'builder' }, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), draft, dock), 'tasks', bar);
+    renderZone(); drawDue();
+    if (preId && people.some(function (p) { return p.id === preId; })) toggle(people.filter(function (p) { return p.id === preId; })[0], true);
+    title.focus();
   }
 
   /* ============================== conversation pieces ============================== */
@@ -385,7 +570,7 @@
   }
 
   function messageNode(m, o) {
-    if (m.type === 'system') return h('div', { class: 'msg system' }, m.text);
+    if (m.type === 'system') return h('div', { class: 'msg-sys' }, m.text);
     const mine = m.senderId === S.user.id;
     let body;
     if (m.type === 'voice') {
@@ -398,7 +583,13 @@
         h('div', { class: 'txt' + (transcribing ? ' transcribing' : '') }, text),
         m.translation && m.translation !== m.transcript ? h('div', { class: 'tr' }, 'English: ' + m.translation) : null);
     } else body = h('div', { class: 'txt' }, m.text);
-    return h('div', { class: 'msg' + (mine ? ' me' : '') + (o.cont ? ' cont' : '') }, mine || o.cont ? null : h('div', { class: 'who' }, m.senderName, m.senderTitle ? h('span', null, ' · ' + m.senderTitle) : null), body, h('div', { class: 'time' }, UI.time(m.createdAt)));
+    const bubble = h('div', { class: 'msg' + (mine ? ' me' : '') }, mine || o.cont ? null : h('div', { class: 'who' }, m.senderName, m.senderTitle ? h('span', null, ' · ' + m.senderTitle) : null), body, h('div', { class: 'time' }, UI.time(m.createdAt)));
+    let lead = null;
+    if (!mine) {
+      if (o.cont) lead = h('span', { class: 'avatar-spacer' });
+      else { lead = UI.avatar(m.senderName, 'sm', m.senderId); lead.setAttribute('role', 'button'); lead.setAttribute('tabindex', '0'); lead.setAttribute('aria-label', 'About ' + m.senderName); lead.addEventListener('click', function () { showPerson({ id: m.senderId, name: m.senderName, jobTitle: m.senderTitle }); }); }
+    }
+    return h('div', { class: 'msg-row' + (mine ? ' me' : '') + (o.cont ? ' cont' : '') }, lead, bubble);
   }
 
   function renderChat(box, messages, o) {
@@ -411,7 +602,7 @@
       box.appendChild(messageNode(m, Object.assign({ cont: cont }, o)));
       prev = m;
     });
-    if (!messages.length) box.appendChild(h('div', { class: 'msg system' }, 'No messages yet. Post the first update below.'));
+    if (!messages.length) box.appendChild(h('div', { class: 'msg-sys' }, 'No messages yet. Post the first update below.'));
   }
   function nearBottom() { return window.innerHeight + window.scrollY >= document.body.scrollHeight - 180; }
 
@@ -443,12 +634,11 @@
       const due = UI.dueInfo(task.dueDate, task.status);
       const ring = UI.ring(task.progress, task.status === 'pending' ? 'pending' : '', 88);
       const ringBox = h('div', { class: 'head-side' }, ring, task.progressBy ? h('div', { class: 'muted small' }, 'Set by ' + task.progressBy) : null);
-      const toNames = names(task.assignees);
       const parts = [
         h('div', { class: 'head-top' }, h('div', { class: 'grow', style: 'min-width:0' }, h('h1', null, task.title), h('div', { class: 'row' }, statusChip(task), due ? UI.chip(due.text, due.cls, 'calendar') : null, UI.chip('Started ' + UI.date(task.createdAt)))), ringBox),
         h('div', { style: 'margin-top:.8rem' },
-          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'From'), UI.avatar(task.creator.name, 'xs'), h('span', { class: 'names' }, task.creator.name + (task.creator.jobTitle ? ' · ' + task.creator.jobTitle : ''))),
-          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), UI.avatarStack(toNames, 4), h('span', { class: 'names' }, toNames.join(', ')))),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'From'), h('span', { class: 'names' }, personBtn(task.creator), task.creator.jobTitle ? h('span', { class: 'muted small' }, task.creator.jobTitle) : null)),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, task.assignees.map(function (a) { return personBtn(a); })))),
         task.description ? h('div', { class: 'desc' }, task.description) : null];
 
       if (isAssignee() && task.status !== 'closed') {
@@ -459,7 +649,7 @@
           dragging = false;
           if (v === task.progress) return;
           if (v === 100 && !(await UI.confirm('Mark as 100% done?', 'Your manager will be asked to confirm that the work is complete.', 'Yes, it is done'))) { slider.value = task.progress; show(task.progress); return; }
-          await guarded(async function () { task = (await Api.call('setProgress', { taskId: id, progress: v })).task; await refresh(true); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated'); });
+          await guarded(async function () { task = (await Api.call('setProgress', { taskId: id, progress: v })).task; await refresh(true); if (v === 100) UI.confetti(); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated'); });
           drawHead();
         }
         slider.addEventListener('input', function () { dragging = true; show(slider.value); });
@@ -476,12 +666,12 @@
           h('div', { class: 'row', style: 'margin-top:.7rem' },
             h('button', { class: 'btn ok', type: 'button', onclick: approve }, icon('check', 18), 'Agree & close task'), h('button', { class: 'btn', type: 'button', onclick: sendBack }, 'Send back for more work'))));
       }
-      UI.clear(headBox); headBox.appendChild(h('div', { class: 'card' }, parts));
+      UI.clear(headBox); headBox.appendChild(h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, parts)));
     }
 
     async function approve() {
       if (!(await UI.confirm('Close this task?', 'It will move to History with its full conversation. This cannot be undone.', 'Agree & close', 'ok'))) return;
-      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 90000 }); UI.toast('Task closed and saved to History'); go('#/tasks'); });
+      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 90000 }); UI.confetti(); UI.toast('Task closed and saved to History'); go('#/tasks'); });
     }
     function sendBack() {
       const note = h('textarea', { maxlength: 300, placeholder: 'What still needs to be done? (optional)' });
@@ -531,6 +721,7 @@
     /* ---- composer ---- */
     function showPending(node) { pendingEls.push(node); chatBox.appendChild(node); window.scrollTo(0, document.body.scrollHeight); }
     function dropPending(node) { const i = pendingEls.indexOf(node); if (i >= 0) pendingEls.splice(i, 1); if (node.parentNode) node.parentNode.removeChild(node); }
+    const pendingRow = function (inner, extra) { return h('div', { class: 'msg-row me' }, h('div', { class: 'msg me sending' }, inner, extra)); };
 
     function drawComposer() {
       UI.clear(compBox);
@@ -538,7 +729,7 @@
       const send = h('button', { class: 'send hidden', type: 'button', 'aria-label': 'Send message', onclick: sendText }, icon('send', 20));
       const mic = h('button', { class: 'mic', type: 'button', 'aria-label': 'Record a voice message', title: 'Record a voice message', onclick: startRecording }, icon('mic', 22));
       const toggle = function () { const has = !!text.value.trim(); send.classList.toggle('hidden', !has); mic.classList.toggle('hidden', has); };
-      const resize = function () { text.style.height = '44px'; text.style.height = Math.min(text.scrollHeight, 140) + 'px'; text.style.overflowY = text.scrollHeight > 140 ? 'auto' : 'hidden'; };
+      const resize = function () { text.style.height = '46px'; text.style.height = Math.min(text.scrollHeight, 140) + 'px'; text.style.overflowY = text.scrollHeight > 140 ? 'auto' : 'hidden'; };
       text.addEventListener('input', function () { resize(); toggle(); });
       // Ctrl/Cmd+Enter always sends; on a computer plain Enter sends too (Shift+Enter = new line). Phones keep Enter = new line.
       text.addEventListener('keydown', function (e) {
@@ -548,7 +739,7 @@
       async function sendText() {
         const v = text.value.trim(); if (!v) return;
         // show the message straight away (the server takes a second or two), and put the text back if sending fails
-        const temp = h('div', { class: 'msg me sending' }, h('div', { class: 'txt' }, v), h('div', { class: 'time' }, icon('clock', 11), 'Sending…'));
+        const temp = pendingRow(h('div', { class: 'txt' }, v), h('div', { class: 'time' }, icon('clock', 11), 'Sending…'));
         showPending(temp); text.value = ''; resize(); toggle();
         try { await Api.call('postMessage', { taskId: id, text: v }); }
         catch (e) { dropPending(temp); if (!text.value) { text.value = v; resize(); toggle(); } if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); return; }
@@ -579,7 +770,7 @@
     }
 
     async function sendVoice(r) {
-      const temp = h('div', { class: 'msg me sending' }, h('div', { class: 'txt' }, '🎤 Sending voice message (' + UI.duration(r.secs) + ')… the transcript can take up to a minute.'));
+      const temp = pendingRow(h('div', { class: 'txt' }, '🎤 Sending voice message (' + UI.duration(r.secs) + ')… the transcript can take up to a minute.'));
       showPending(temp);
       try {
         const payload = await Audio2.prepare(r.blob, r.secs);
@@ -613,9 +804,9 @@
       try {
         const r = await Api.call('listHistory', { q: q.value, limit: 50 });
         UI.clear(list);
-        if (!r.items.length) return list.appendChild(q.value ? UI.emptyState('search', 'No matches', 'No closed tasks match your search.') : UI.emptyState('history', 'Nothing here yet', 'Tasks appear here after the manager approves them.'));
-        r.items.forEach(function (t) {
-          list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
+        if (!r.items.length) return list.appendChild(q.value ? UI.emptyState('search', 'No matches', 'No closed tasks match your search.') : UI.emptyState('done', 'Nothing here yet', 'Finished tasks land here once the manager approves them.'));
+        r.items.forEach(function (t, i) {
+          list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id, style: '--i:' + Math.min(i, 12) }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
             h('div', { class: 'people' }, UI.avatarStack([t.creatorName]), h('span', { class: 't' }, t.creatorName + ' → ' + t.assigneeNames)),
             h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's'))),
             t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
@@ -637,14 +828,13 @@
     const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt }; });
     const chat = h('div', { class: 'chat' });
     renderChat(chat, msgs, { archived: true, taskId: id });
-    const toNames = names(t.assignees);
     shell(h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
-      h('div', { class: 'card' }, h('h1', null, t.title), h('div', { class: 'row' }, UI.chip('Closed', 'ok', 'check'), UI.chip('Started ' + UI.dateTime(t.createdAt)), UI.chip('Completed ' + UI.dateTime(t.closedAt), 'ok')),
+      h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, h('h1', null, t.title), h('div', { class: 'row' }, UI.chip('Closed', 'ok', 'check'), UI.chip('Started ' + UI.dateTime(t.createdAt)), UI.chip('Completed ' + UI.dateTime(t.closedAt), 'ok')),
         h('div', { style: 'margin-top:.8rem' },
-          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'From'), UI.avatar(t.creator.name, 'xs'), h('span', { class: 'names' }, t.creator.name)),
-          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), UI.avatarStack(toNames, 4), h('span', { class: 'names' }, toNames.join(', '))),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'From'), h('span', { class: 'names' }, personBtn(t.creator))),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, t.assignees.map(function (a) { return personBtn(a); }))),
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'Approved'), h('span', { class: 'names' }, t.approvedBy))),
-        t.description ? h('div', { class: 'desc' }, t.description) : null),
+        t.description ? h('div', { class: 'desc' }, t.description) : null)),
       t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chat), 'history', barOpts);
   }
 
@@ -660,17 +850,36 @@
       if (!shown.length) return holder.appendChild(UI.emptyState('search', 'No one matches', 'Try a different search.'));
       const card = h('div', { class: 'card' });
       shown.forEach(function (u) {
-        card.appendChild(h('div', { class: 'list-row user' }, UI.avatar(u.name),
+        card.appendChild(h('div', { class: 'list-row user' }, UI.avatar(u.name, '', u.id),
           h('div', { class: 'info' }, h('strong', null, u.name), h('span', { class: 'muted small' }, '@' + u.username + (u.lastLogin ? ' · last sign-in ' + UI.ago(u.lastLogin) : ' · never signed in'))),
           h('div', { class: 'tags' }, u.jobTitle ? UI.chip(u.jobTitle + ' · L' + u.level) : null, u.isAdmin ? UI.chip('Admin', 'info', 'shield') : null, !u.active ? UI.chip('Inactive', 'bad') : null, u.mustChange ? UI.chip('Temp password', 'warn') : null),
           h('button', { class: 'btn small', type: 'button', onclick: function () { editUser(u); } }, icon('edit', 15), 'Edit')));
       });
       holder.appendChild(card);
     }
+    // the organisation at a glance: numbers and a pyramid that grows to its size
+    function overview() {
+      const never = ov.users.filter(function (u) { return !u.lastLogin; }).length;
+      const kpi = function (n, label) { const num = h('div', { class: 'num' }); UI.countUp(num, n); return h('div', { class: 'kpi' }, num, h('div', { class: 'lbl' }, label)); };
+      const wrap = h('div', null, h('div', { class: 'kpis' }, kpi(ov.users.length, 'People'), kpi(ov.jobTitles.length, 'Job titles'), kpi(ov.links.length, 'Arrows'), kpi(never, 'Never signed in')));
+      if (ov.jobTitles.length) {
+        const pyr = h('div', { class: 'pyramid' });
+        const lv = ov.jobTitles.slice().sort(function (a, b) { return a.level - b.level; });
+        lv.forEach(function (t, i) {
+          const n = ov.users.filter(function (u) { return u.jobTitleId === t.id; }).length, el = h('div', { class: 'pyr', style: '--i:' + i }, t.title, h('b', null, n));
+          pyr.appendChild(el);
+          const w = Math.round(34 + (lv.length > 1 ? i / (lv.length - 1) : 1) * 66) + '%';
+          if (prefersReduced()) el.style.width = w; else requestAnimationFrame(function () { requestAnimationFrame(function () { el.style.width = w; }); });
+        });
+        wrap.appendChild(h('div', { class: 'card' }, h('h3', null, 'Your pyramid'), pyr));
+      }
+      return wrap;
+    }
     async function load() {
       try { ov = await Api.call('adminOverview'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
       UI.clear(box);
       if (ov.jobTitles.length === 0) box.appendChild(h('div', { class: 'note' }, 'Start with ', h('a', { href: '#/admin/titles' }, 'Job titles'), ' (for example Chairman, Manager, Worker), then add users, then connect them in the ', h('a', { href: '#/admin/org' }, 'Org chart'), '.'));
+      box.appendChild(overview());
       const rows = h('div');
       if (ov.users.length > 5) {
         const s = h('input', { type: 'search', placeholder: 'Search ' + ov.users.length + ' users…', 'aria-label': 'Search users' });
@@ -678,6 +887,7 @@
         box.appendChild(h('div', { class: 'search', style: 'margin-bottom:.8rem' }, icon('search', 18), s));
       }
       box.appendChild(rows); drawRows(rows);
+      Profiles.refresh();
     }
     function showTemp(title, u, temp) {
       const pw = h('div', { class: 'pw' }, temp);
@@ -718,7 +928,7 @@
     async function load() {
       try { ov = await Api.call('adminOverview'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
       UI.clear(box);
-      if (!ov.jobTitles.length) return box.appendChild(UI.emptyState('briefcase', 'No job titles yet', 'Add the first one, for example "Chairman" at layer 1.'));
+      if (!ov.jobTitles.length) return box.appendChild(UI.emptyState('team', 'No job titles yet', 'Add the first one, for example "Chairman" at layer 1.'));
       const card = h('div', { class: 'card' });
       ov.jobTitles.forEach(function (t) {
         const n = ov.users.filter(function (u) { return u.jobTitleId === t.id; }).length;
@@ -753,19 +963,21 @@
       try { ov = await Api.call('adminOverview'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
       UI.clear(box);
       const hasTitled = ov.users.some(function (u) { return u.level !== null; });
-      if (!hasTitled) return box.appendChild(UI.emptyState('org', 'Nothing to connect yet', 'Add job titles and users first, then come back to connect them.'));
+      if (!hasTitled) return box.appendChild(UI.emptyState('team', 'Nothing to connect yet', 'Add job titles and users first, then come back to connect them.'));
       box.appendChild(OrgCanvas.create({ users: ov.users, links: ov.links, onSave: async function (links, note) { await Api.call('adminSaveLinks', { links: links, note: note }); await load(); } }));
       if (ov.versions.length) {
         box.appendChild(h('div', { class: 'card', style: 'margin-top:1rem' }, h('h3', null, 'Saved versions'),
           ov.versions.map(function (v) { return h('div', { class: 'list-row' }, UI.chip('v' + v.version, 'brand'), h('div', { class: 'info' }, h('strong', null, v.createdBy + ' · ' + v.linkCount + ' arrows'), h('span', { class: 'muted small' }, UI.dateTime(v.createdAt) + (v.note ? ' · ' + v.note : '')))); })));
       }
+      Profiles.refresh();
     }
     load();
   }
 
-  /* ============================== account ============================== */
+  /* ============================== account & profile ============================== */
 
   function viewAccount() {
+    const me = S.user;
     const o = UI.passwordField({ autocomplete: 'current-password' }), n = UI.passwordField({ autocomplete: 'new-password' }), r = UI.passwordField({ autocomplete: 'new-password' });
     const err = h('div');
     const form = h('form', { onsubmit: async function (ev) {
@@ -775,6 +987,27 @@
       catch (e) { err.appendChild(errBox(e)); }
     } }, h('label', null, 'Current password', o.el), h('label', null, 'New password (at least 8 characters)', n.el), h('label', null, 'Repeat new password', r.el), h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:1.2rem' }, 'Change password'), err);
 
+    // ---- picture + bio ----
+    const bio = h('textarea', { maxlength: 300, rows: 3, placeholder: 'Say a few words about yourself - what you do, what people can ask you about…', 'aria-label': 'About me' });
+    bio.value = Profiles.bio(me.id);
+    const counter = h('div', { class: 'counter' }), saveBio = h('button', { class: 'btn primary small', type: 'button' }, 'Save');
+    const count = function () { counter.textContent = bio.value.length + ' / 300'; };
+    bio.addEventListener('input', count); count();
+    saveBio.addEventListener('click', async function () {
+      saveBio.disabled = true;
+      try { await Profiles.saveMine({ bio: bio.value }); UI.toast('Profile saved'); } catch (e) { UI.toast(e.message, 'bad'); } finally { saveBio.disabled = false; }
+    });
+    const removeBtn = h('button', { class: 'btn ghost small', type: 'button', onclick: async function () {
+      try { await Profiles.saveMine({ photo: '' }); UI.toast('Picture removed'); } catch (e) { UI.toast(e.message, 'bad'); }
+    } }, 'Remove picture');
+    const syncRemove = function () { removeBtn.classList.toggle('hidden', !Profiles.photo(me.id)); };
+    async function changePhoto() {
+      const data = await UI.pickPhoto(); if (!data) return;
+      try { await Profiles.saveMine({ photo: data }); UI.toast('Profile picture updated'); } catch (e) { UI.toast(e.message, 'bad'); }
+    }
+    Profiles.onChange(function () { syncRemove(); if (document.activeElement !== bio && !bio.value) { bio.value = Profiles.bio(me.id); count(); } });
+    syncRemove();
+
     const themes = [['auto', 'Auto', 'phone'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']];
     const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Appearance', style: 'margin:0' }, themes.map(function (t) {
       return h('button', { type: 'button', 'data-v': t[0], class: UI.theme.get() === t[0] ? 'on' : '', 'aria-pressed': UI.theme.get() === t[0], onclick: function () {
@@ -782,12 +1015,19 @@
       } }, icon(t[2], 16), t[1]);
     }));
 
-    shell(h('div', null, h('div', { class: 'page-head' }, h('h1', null, 'My account')),
-      h('div', { class: 'card' }, h('div', { class: 'profile' }, UI.avatar(S.user.name, 'lg'), h('div', null, h('h2', null, S.user.name), h('div', { class: 'muted small' }, '@' + S.user.username), h('div', { class: 'row', style: 'margin-top:.4rem;gap:.35rem' }, S.user.jobTitle ? UI.chip(S.user.jobTitle, 'brand') : null, S.user.isAdmin ? UI.chip('Administrator', 'info', 'shield') : null))),
-        h('div', { class: 'row', style: 'margin-top:1rem' }, h('button', { class: 'btn', type: 'button', onclick: signOut }, icon('logout', 18), 'Sign out'), Api.demo ? h('button', { class: 'btn', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data') : null)),
+    shell(h('div', null,
+      h('div', { class: 'card profile-card' }, h('div', { class: 'cover' }),
+        h('div', { class: 'profile-in' },
+          h('div', { class: 'photo-edit' }, UI.avatar(me.name, 'xl', me.id), h('button', { class: 'cam', type: 'button', 'aria-label': 'Change profile picture', title: 'Change picture', onclick: changePhoto }, icon('camera', 18))),
+          h('h2', null, me.name), h('div', { class: 'muted small' }, '@' + me.username),
+          h('div', { class: 'row', style: 'margin-top:.5rem;gap:.35rem' }, me.jobTitle ? UI.chip(me.jobTitle, 'brand') : null, me.isAdmin ? UI.chip('Administrator', 'info', 'shield') : null, removeBtn),
+          h('label', { style: 'margin-top:1.1rem' }, 'About me'), bio, h('div', { class: 'row between' }, counter, saveBio),
+          h('div', { class: 'hint' }, 'Your picture and bio are visible to the people you work with: your managers, your team and anyone you share a task with.'))),
       h('div', { class: 'card' }, h('h2', null, 'Appearance'), h('p', { class: 'muted small' }, 'Auto follows your phone or computer setting.'), seg),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
-      h('div', { class: 'card tip' }, icon('phone', 22), h('div', null, h('h3', null, 'Add to your home screen'), h('p', { class: 'muted small', style: 'margin:0' }, 'Open this page on your phone, then in Chrome use the ⋮ menu → "Add to Home screen". On iPhone (Safari) use Share → "Add to Home Screen". It then opens like an app.')))), 'account');
+      h('div', { class: 'card tip' }, icon('phone', 22), h('div', null, h('h3', null, 'Add to your home screen'), h('p', { class: 'muted small', style: 'margin:0' }, 'Open this page on your phone, then in Chrome use the ⋮ menu → "Add to Home screen". On iPhone (Safari) use Share → "Add to Home Screen". It then opens like an app.'))),
+      h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: signOut }, icon('logout', 18), 'Sign out'), Api.demo ? h('button', { class: 'btn', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data') : null)), 'account');
+    Profiles.refresh(true);
   }
 
   /* ============================== router / boot ============================== */
@@ -796,11 +1036,12 @@
     stopAudio(); stopTimers();
     if (!S.user) return showLogin();
     if (S.user.mustChange) return viewMustChange();
+    Profiles.refresh();
     const p = (location.hash || '#/tasks').slice(2).split('/');
     const adminOnly = function (fn) { return S.user.isAdmin ? fn() : go('#/tasks'); };
     switch (p[0]) {
       case 'tasks': return viewTasks();
-      case 'new': return viewNewTask();
+      case 'new': return viewNewTask(p[1] ? decodeURIComponent(p[1]) : '');
       case 'task': return p[1] ? viewTask(decodeURIComponent(p[1])) : go('#/tasks');
       case 'history': return p[1] ? viewArchived(decodeURIComponent(p[1])) : viewHistory();
       case 'admin':
@@ -820,6 +1061,7 @@
 
   async function boot() {
     UI.theme.apply();
+    Profiles.load(); Profiles.onChange(function () { UI.hydrateAvatars(document); });
     if (!Api.configured) return notConfigured();
     try {
       if (Api.demo) await Demo.init();
