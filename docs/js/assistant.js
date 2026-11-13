@@ -226,7 +226,7 @@
     let r;
     try {
       const payload = Object.assign({ history: B.history.slice(-10), pending: B.pending.map(function (p) { return p.label; }), taskId: B.where.task || undefined, archivedId: B.where.archived || undefined, text: o.text || undefined }, o.audio || {});
-      r = await Api.call('assistant', payload, { timeout: 120000 });
+      r = await Api.call('assistant', payload, { timeout: o.audio ? 50000 : 40000 });   // a firm limit: never wait forever
     } catch (e) {
       if (my !== B.token) return;
       B.busy = false; B.fab.classList.remove('busy');
@@ -420,7 +420,7 @@
       if (busy) return;
       busy = true; failed = ''; draw();
       try {
-        const r = await Api.call('briefing', { force: !!force }, { timeout: 120000 });
+        const r = await Api.call('briefing', { force: !!force }, { timeout: 45000 });
         data = { briefing: r.briefing, at: r.at, stale: r.stale }; Api.cacheSet(key, data);
       } catch (e) { if (e.code !== 'AUTH' && !data) failed = e.message || 'The overview is not available right now.'; else if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); }
       busy = false; draw();
