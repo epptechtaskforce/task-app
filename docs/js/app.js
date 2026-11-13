@@ -74,7 +74,7 @@
 
   function navModel() {
     const u = S.user, pure = isPureAdmin();
-    const work = pure ? [] : [{ k: 'tasks', href: '#/tasks', label: 'Tasks', ic: 'tasks' }, { k: 'assistant', href: '#/assistant', label: 'Assistant', ic: 'sparkles' }, { k: 'history', href: '#/history', label: 'History', ic: 'history' }];
+    const work = pure ? [] : [{ k: 'tasks', href: '#/tasks', label: 'Tasks', ic: 'tasks' }, { k: 'history', href: '#/history', label: 'History', ic: 'history' }];
     const admin = u.isAdmin ? [{ k: 'users', href: '#/admin/users', label: 'Users', ic: 'users' }, { k: 'titles', href: '#/admin/titles', label: 'Job titles', ic: 'briefcase' }, { k: 'org', href: '#/admin/org', label: 'Org chart', ic: 'org' }] : [];
     const account = { k: 'account', href: '#/account', label: 'Account', ic: 'user' };
     return { work: work, admin: admin, account: account };
@@ -216,7 +216,7 @@
     const state = { late: 'bad', wait: 'warn', active: 'info', 'new': '' }[b];
     const others = t.role === 'creator' ? t.assignees : [t.creator];
     const ic = { late: 'alert', wait: 'clock', active: 'trend', 'new': 'flag' }[b];
-    return h('a', { class: 'card task' + (state ? ' st-' + state : ''), href: '#/task/' + t.id, style: '--i:' + Math.min(i || 0, 10) },
+    return h('a', { class: 'card task' + (state ? ' st-' + state : '') + (S.spot === t.id ? ' ai-spot' : ''), href: '#/task/' + t.id, 'data-id': t.id, style: '--i:' + Math.min(i || 0, 10) },
       h('div', { class: 't-row' }, h('span', { class: 't-ico', 'aria-hidden': 'true' }, icon(ic, 22)),
         h('div', { class: 't-main' }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'new' }, 'NEW') : null),
           h('div', { class: 'people' }, UI.avatarStack(others), h('span', { class: 't' }, peopleLine(t)))),
@@ -566,8 +566,8 @@
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
     const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
-    const aiBubble = Assistant.taskBubble(App, id, function () { return task ? task.title : 'this task'; }, function () { refresh(true).catch(function () {}); });   // the AI listening to this conversation
-    aiBubble.update(messages);
+    const onChanged = function () { refresh(true).catch(function () {}); };   // the AI bubble just posted or changed something here
+    window.addEventListener('taskapp:changed', onChanged); onLeave(function () { window.removeEventListener('taskapp:changed', onChanged); });
     const isAssignee = function () { return task.role === 'assignee'; };
 
     function drawHead() {
@@ -582,7 +582,7 @@
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, task.assignees.map(function (a) { return personBtn(a); })))),
         task.description ? h('div', { class: 'desc' }, task.description) : null];
 
-      parts.push(h('div', { class: 'head-actions' }, h('a', { class: 'btn small', href: '#/assistant/' + id }, icon('sparkles', 16), 'Ask AI about this task'),
+      parts.push(h('div', { class: 'head-actions' },
         task.role === 'creator' && task.status !== 'closed' ? h('button', { class: 'btn small', type: 'button', onclick: editTask }, icon('edit', 15), 'Edit task') : null));
       if (isAssignee() && task.status !== 'closed') {
         const label = h('strong', null, task.progress + '%');
@@ -669,7 +669,7 @@
       const newSig = d.messages.map(function (m) { return m.id + m.status; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
-      sig = newSig; task = d.task; messages = d.messages; aiBubble.update(messages);
+      sig = newSig; task = d.task; messages = d.messages;
       if (!dragging) drawHead();
       drawSummary(); drawFiles();
       renderChat(chatBox, messages, { taskId: id });
@@ -1022,6 +1022,7 @@
           });
           return box;
         })()),
+      isPureAdmin() ? null : Assistant.settingsCard(),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
       h('div', { class: 'card tip' }, icon('phone', 22), h('div', null, h('h3', null, 'Add to your home screen'), h('p', { class: 'muted small', style: 'margin:0' }, 'Open this page on your phone, then in Chrome use the ⋮ menu → "Add to Home screen". On iPhone (Safari) use Share → "Add to Home Screen". It then opens like an app.'))),
       h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: signOut }, icon('logout', 18), 'Sign out'), Api.demo ? h('button', { class: 'btn', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data') : null)), 'account');
@@ -1033,13 +1034,18 @@
   function route() {
     stopAudio(); stopTimers(); runLeave();
     if (!S.user) return showLogin();
-    if (S.user.mustChange) return viewMustChange();
+    if (S.user.mustChange) { Assistant.hide(); return viewMustChange(); }
     Profiles.refresh();
     const p = (location.hash || '#/tasks').slice(2).split('/');
+    // the AI bubble floats over every screen (not over the administrator-only pages); it knows which task or completed task is open
+    if (isPureAdmin()) Assistant.hide(); else {
+      Assistant.ensure(App);
+      Assistant.where({ task: p[0] === 'task' && p[1] ? decodeURIComponent(p[1]) : '', archived: p[0] === 'history' && p[1] ? decodeURIComponent(p[1]) : '' });
+    }
     const adminOnly = function (fn) { return S.user.isAdmin ? fn() : go('#/tasks'); };
     switch (p[0]) {
       case 'tasks': return viewTasks();
-      case 'assistant': return isPureAdmin() ? go(landing()) : Assistant.view(App, p[1] ? decodeURIComponent(p[1]) : '');
+      case 'assistant': return go('#/tasks');   // the AI is now the floating bubble
       case 'new': return viewNewTask(p[1] ? decodeURIComponent(p[1]) : '');
       case 'task': return p[1] ? viewTask(decodeURIComponent(p[1])) : go('#/tasks');
       case 'history': return p[1] ? viewArchived(decodeURIComponent(p[1])) : viewHistory();
@@ -1058,7 +1064,25 @@
       h('p', { class: 'muted' }, 'The administrator needs to put the backend address into js/config.js. You can look around with fake data in the demo:'), h('a', { class: 'btn primary', href: '?demo=1' }, 'Open the demo')));
   }
 
-  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate };
+  /* ---- the AI points a task out: the list scrolls to it and it glows until the next touch ---- */
+  function clearSpot() {
+    if (!S.spot) return;
+    S.spot = '';
+    document.querySelectorAll('.task.ai-spot').forEach(function (el) { el.classList.remove('ai-spot'); });
+  }
+  function showTask(id) {
+    S.filter = 'all'; S.q = '';
+    S.spot = id;
+    if ((location.hash || '#/tasks').indexOf('#/tasks') === 0) route(); else go('#/tasks');
+    let tries = 0;
+    const timer = setInterval(function () {
+      const el = document.querySelector('.task[data-id="' + id + '"]');
+      if (el) { clearInterval(timer); el.classList.add('ai-spot'); el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      else if (++tries > 40) clearInterval(timer);
+    }, 150);
+  }
+
+  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate, showTask: showTask, clearSpot: clearSpot };
 
   async function boot() {
     UI.theme.apply(); UI.accent.apply();

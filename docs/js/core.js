@@ -793,10 +793,10 @@ function createCore(env) {
         L.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), 240).replace(/\s+/g, ' '));
       });
     });
-    const done = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, 12);
-    L.push('RECENTLY COMPLETED TASKS (' + done.length + ' latest):');
+    const done = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, 30);
+    L.push('COMPLETED TASKS, newest first (' + done.length + '; use the id to open one):');
     if (!done.length) L.push('(none)');
-    done.forEach(function (x) { L.push('- "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.summaryText ? ': ' + clip(x.summaryText, 200) : '')); });
+    done.forEach(function (x) { L.push('- id=' + x.id + ' "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.summaryText ? ': ' + clip(x.summaryText, 110) : '')); });
     return L.join('\n');
   }
   function aiContextFit(ctx, user, withPeople, budget) {
@@ -836,6 +836,10 @@ function createCore(env) {
     }
     const task = mineById[String(a.task_id || '')];
     if (['set_progress', 'post_message', 'approve_task', 'send_back', 'update_task', 'open_task'].indexOf(type) < 0) return { err: 'one of the actions was not understood' };
+    if (!task && type === 'open_task') {   // a completed task (History)
+      const ix = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(a.task_id || '') && x.participantIds.indexOf(user.id) >= 0; })[0];
+      if (ix) return { ok: { type: 'open_task', taskId: ix.id, archived: true, mode: 'enter', needsConfirm: false, label: 'Open ' + q(ix.title) + ' (completed)' } };
+    }
     if (!task) return { err: 'I could not find that task among your open tasks' };
     if (type === 'set_progress') {
       const p = Math.round(Number(a.progress));
@@ -867,7 +871,22 @@ function createCore(env) {
       if (!bits.length) return { err: 'there was nothing to change' };
       return { ok: { type: type, taskId: task.id, patch: patch, needsConfirm: true, label: 'For ' + q(task.title) + ': ' + bits.join(' and ') } };
     }
-    return { ok: { type: 'open_task', taskId: task.id, needsConfirm: false, label: 'Open ' + q(task.title) } };
+    // "show" = highlight the task in the list; "enter" = go into it
+    return { ok: { type: 'open_task', taskId: task.id, mode: a.mode === 'enter' ? 'enter' : 'show', needsConfirm: false, label: 'Open ' + q(task.title) } };
+  }
+
+  // The conversation of a completed task, as text for the assistant (the person is looking at it in History).
+  function archivedText(ctx, ix) {
+    let doc;
+    try { doc = JSON.parse(env.archive.read(ix)); } catch (e) { env.log('archive read failed: ' + e); return ''; }
+    const L = ['THE PERSON IS LOOKING AT THIS COMPLETED TASK: "' + clip(ix.title, 120) + '" (id=' + ix.id + ') from ' + ix.creatorName + ' to ' + ix.assigneeNames + ', started ' + env.formatDate(ix.createdAt).slice(0, 10) + ', completed ' + env.formatDate(ix.closedAt).slice(0, 10) + '.'];
+    if (doc.task && doc.task.description) L.push('details: ' + clip(doc.task.description, 300));
+    if (ix.summaryText) L.push('summary: ' + clip(ix.summaryText, 400));
+    (doc.messages || []).slice(-60).forEach(function (m) {
+      const what = m.type === 'voice' ? '(voice) ' + (m.transcript || 'not understood') : m.type === 'file' ? '(shared a file: ' + (m.file ? m.file.name : 'file') + ') ' + (m.text || '') : m.type === 'system' ? '(system) ' + m.text : m.text;
+      L.push('  [' + (m.time || '').slice(5) + '] ' + (m.senderName || 'System') + ': ' + clip(what, 240).replace(/\s+/g, ' '));
+    });
+    return L.join('\n');
   }
 
   A.assistant = { run: function (ctx, user, req) {
@@ -889,7 +908,11 @@ function createCore(env) {
       const ft = ctx.rows('Tasks').filter(function (x) { return x.id === String(req.taskId) && isParticipant(x, user.id); })[0];
       if (ft) { focus = { id: ft.id, title: ft.title }; files = focusFiles(ctx, ft.id); }
     }
-    const context = aiContextFit(ctx, user, true, 30000);   // smaller question = faster answer
+    let context = aiContextFit(ctx, user, true, 30000);   // smaller question = faster answer
+    if (!focus && req.archivedId) {
+      const ix = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(req.archivedId) && x.participantIds.indexOf(user.id) >= 0; })[0];
+      if (ix) { focus = { id: ix.id, title: ix.title }; context += '\n\n' + archivedText(ctx, ix); }
+    }
     let raw;
     try { raw = env.ai.assistant({ context: context, history: history, text: text, audio: audio, pending: pending, focus: focus, files: files, userName: user.name }); }
     catch (e) { env.log('assistant failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.'); }

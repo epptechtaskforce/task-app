@@ -254,3 +254,26 @@ test('voice messages: shown as audio only, but the AI remembers them in English 
   assert.equal(app.ok('assistant', s.tok.wk2, { text: 'anything?' }).reply, 'ok');
   assert.equal(ai.calls[ai.calls.length - 1].context.includes('pump'), false);                 // and only people in the task
 });
+
+test('bubble: show or enter a task, completed tasks can be opened and read, and old tasks are known', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  const live = app.ok('createTask', s.tok.mgr, { title: 'Pump house roof', assigneeIds: [s.users.wk1.id] }).task;
+  const old = app.ok('createTask', s.tok.mgr, { title: 'September harvest report', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('postMessage', s.tok.wk1, { taskId: old.id, text: 'Totals are 4820 kg for block A' });
+  app.ok('setProgress', s.tok.wk1, { taskId: old.id, progress: 100 }); app.ok('approveTask', s.tok.mgr, { taskId: old.id });
+  ai.reply = () => ({ reply: 'ok', actions: [{ type: 'open_task', task_id: live.id, mode: 'show' }, { type: 'open_task', task_id: old.id }, { type: 'open_task', task_id: 'T-nope' }] });
+  const r = app.ok('assistant', s.tok.mgr, { text: 'show me the roof and the september report' });
+  assert.equal(r.actions.length, 2);                                                           // the unknown id is dropped
+  assert.deepEqual([r.actions[0].mode, r.actions[0].archived], ['show', undefined]);
+  assert.deepEqual([r.actions[1].taskId, r.actions[1].archived, r.actions[1].mode], [old.id, true, 'enter']);
+  ai.reply = () => ({ reply: 'ok', actions: [{ type: 'open_task', task_id: live.id, mode: 'enter' }] });
+  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'open it' }).actions[0].mode, 'enter');
+  // the context lists completed tasks with their ids, and looking at one adds its conversation
+  assert.ok(ai.calls[ai.calls.length - 1].context.includes('id=' + old.id + ' "September harvest report"'));
+  app.ok('assistant', s.tok.mgr, { text: 'what was the total?', archivedId: old.id });
+  const withArchive = ai.calls[ai.calls.length - 1];
+  assert.ok(withArchive.context.includes('LOOKING AT THIS COMPLETED TASK') && withArchive.context.includes('4820 kg'));
+  assert.equal(withArchive.focus.id, old.id);
+  app.ok('assistant', s.tok.wk2, { text: 'what was the total?', archivedId: old.id });          // someone who was not part of it gets nothing
+  assert.equal(ai.calls[ai.calls.length - 1].context.includes('4820'), false);
+});

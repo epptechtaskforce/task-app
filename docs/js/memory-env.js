@@ -111,6 +111,22 @@
         const said = String(input.text || '').toLowerCase();
         if (/^(yes|yeah|ok|okay|go ahead|confirm|do it)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Done.', confirm: 'yes', actions: [] };
         if (/^(no|cancel|stop)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Okay, I will not do that.', confirm: 'no', actions: [] };
+        const ctxLines = String(input.context).split(/\r?\n/);
+        const tidy = function (t) { t = t.trim().replace(/\s+/g, ' '); return t ? t.charAt(0).toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.') : ''; };
+        // dictating a message: "send this message ..." / "tell them ..." (or, while a draft waits, "change it to ...")
+        const dict = /^(?:send|post|write|tell them|tell)(?: this)?(?: a)?(?: message)?(?: in the chat)?(?: that)?[:,]?\s+(.+)$/i.exec(String(input.text || '').trim()), change = /^(?:change it to|make it|say)[:,]?\s+(.+)$/i.exec(String(input.text || '').trim());
+        if ((dict || (change && input.pending.length)) && input.focus) return { heard: '', confirm: '', reply: 'Here is your message. Send it, edit it or delete it?', actions: [{ type: 'post_message', task_id: input.focus.id, text: tidy((dict || change)[1]) }] };
+        // "show me / open / find <task>": match the words against the open and completed tasks, and ask when it is not clear
+        const find = /^(open|show me|show|go to|take me to|find|where is)\b[\s:,]*(?:the |my )?(.+?)(?: task)?\??$/i.exec(String(input.text || '').trim());
+        if (find) {
+          const words = find[2].toLowerCase().split(/[^a-z0-9]+/).filter(function (w) { return w.length > 2 && ['the', 'task', 'for', 'one'].indexOf(w) < 0; });
+          const cands = ctxLines.map(function (l) { const m = /^(?:TASK id=|- id=)(\S+)(?: \|)? "([^"]*)"/.exec(l); return m ? { id: m[1], title: m[2], done: l.indexOf('- id=') === 0 } : null; }).filter(Boolean)
+            .map(function (c) { return { c: c, n: words.filter(function (w) { return c.title.toLowerCase().indexOf(w) >= 0; }).length }; }).filter(function (x) { return x.n > 0; }).sort(function (x, y) { return y.n - x.n; });
+          if (!words.length || !cands.length) return { heard: '', confirm: '', actions: [], reply: '(Demo) I could not find a task like that. Tell me a few words from its title.' };
+          if (cands.length > 1 && cands[0].n === cands[1].n) return { heard: '', confirm: '', actions: [], reply: '(Demo) Which one do you mean: ' + cands.slice(0, 3).map(function (x) { return x.c.title; }).join(', or ') + '?' };
+          const pick = cands[0].c;
+          return { heard: '', confirm: '', reply: '(Demo) ' + (/^(open|go to|take me)/i.test(find[1]) ? 'Opening ' + pick.title + '.' : 'Here it is: ' + pick.title + '.'), actions: [{ type: 'open_task', task_id: pick.id, mode: /^(open|go to|take me)/i.test(find[1]) ? 'enter' : 'show' }] };
+        }
         if (input.focus) {   // a question about one conversation: answer from what was said there
           const all = String(input.context).split(/\r?\n/), at = all.findIndex(function (l) { return l.indexOf('TASK id=' + input.focus.id) === 0; });
           if (at >= 0) {

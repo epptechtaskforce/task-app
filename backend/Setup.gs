@@ -200,6 +200,8 @@ function assistantTest() {
   const ask = function (text) { return ai.assistant({ context: context, history: [], text: text, audio: null, pending: [], focus: null, files: [], userName: 'Kamala Silva' }); };
   Logger.log(JSON.stringify(ask('What is overdue and why?')));
   Logger.log(JSON.stringify(ask('Give Ishara a task to count the crates in the packing shed by next Tuesday.')));
+  Logger.log('SHOW A TASK: ' + JSON.stringify(ask('Show me the irrigation one.')));
+  Logger.log('DICTATE: ' + JSON.stringify(ai.assistant({ context: context, history: [], text: 'Send this message, the roof repair is done and I will check the valves tomorrow', audio: null, pending: [], focus: { id: 'T1', title: 'Check irrigation in Block A' }, files: [], userName: 'Kamala Silva' })));
   Logger.log(JSON.stringify(ai.briefing({ context: context, userName: 'Kamala Silva' })));
   const t0 = Date.now(); const v = ai.speak('You have one task that is overdue. Ruwan says the third pump needs a new valve.');
   Logger.log('Natural voice: ' + v.mime + ', ' + v.b64.length + ' chars of audio, ' + (Date.now() - t0) + ' ms');

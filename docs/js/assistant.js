@@ -1,345 +1,323 @@
-/* assistant.js - the private secretary (chat + voice) and the "Today at a glance" card on the home page.
- * The assistant only PROPOSES actions. They are shown in plain words and run (through the normal, permission-checked
- * calls) only after the person says or taps "yes". All text is inserted with textContent (via h()), never as HTML. */
+/* assistant.js - the AI bubble.
+ * One round bubble floats over every screen. Tap it and talk: your question and the answer float next to it (only the last two),
+ * the app stays visible behind. Touch anywhere else and they fade away. Drag the bubble anywhere you like.
+ * The assistant only PROPOSES actions (post a message, set progress, create a task...). They are shown in a small card
+ * (Send / Edit / Delete for a message) and run, through the normal permission-checked calls, only after the person agrees.
+ * All text is inserted with textContent (via h()), never as HTML.
+ * Also here: the "Today at a glance" card on the home page and the voice settings. */
 (function (w) {
   'use strict';
   const h = UI.h, icon = UI.icon;
+  const SIZE = 58, POS_KEY = 'aibub.pos';
+  const YES = /^(yes|yeah|yep|yup|ok|okay|sure|go ahead|do it|send it|send|confirm|please do|that's right|correct)\b[\s.!]*$/i;
+  const NO = /^(no|nope|cancel|stop|delete|delete it|don't|do not|never mind|leave it)\b[\s.!]*$/i;
 
-  /* ============================== conversations with the assistant (kept for this browser tab, wiped at sign-out) ============================== */
-  // One conversation for the Assistant page, and one per task (the AI bubble inside a task). Each has its own history.
-  let SESS = {};
-  const keyOf = function (A) { return 'assist:' + A.uid + (A.fixed ? ':' + A.fixed : ''); };
-  function save(A) { try { sessionStorage.setItem(keyOf(A), JSON.stringify({ feed: A.feed.filter(function (f) { return f.k !== 'typing'; }).slice(-40), pending: A.pending, history: A.history.slice(-12) })); } catch (e) { /* storage blocked */ } }
-  function sess(uid, fixed) {
-    const k = uid + '|' + (fixed || '');
-    if (!SESS[k]) {
-      const A = { uid: uid, fixed: fixed || '', feed: [], pending: [], history: [], focusId: fixed || '', focusTitle: '', busy: false, rec: null, convo: false, active: false, voiceOn: false, lastVoice: false };
-      try { const v = JSON.parse(sessionStorage.getItem(keyOf(A)) || 'null'); if (v) { A.feed = v.feed || []; A.pending = v.pending || []; A.history = v.history || []; } } catch (e) { /* ignore */ }
-      SESS[k] = A;
+  /* ============================== state (kept for this browser tab, wiped at sign-out) ============================== */
+  const B = { App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, bars: [],
+    history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
+  const store = {
+    load: function () { try { const v = JSON.parse(sessionStorage.getItem('aib:' + B.uid) || 'null'); if (v) { B.history = v.history || []; B.pending = v.pending || []; } } catch (e) { /* ignore */ } },
+    save: function () { try { sessionStorage.setItem('aib:' + B.uid, JSON.stringify({ history: B.history.slice(-12), pending: B.pending })); } catch (e) { /* storage blocked */ } }
+  };
+
+  /* ============================== building the bubble ============================== */
+  function build() {
+    B.fab = h('button', { class: 'aib-fab', type: 'button', 'aria-label': 'AI assistant. Tap and speak. Drag to move.', title: 'Tap and ask me. Drag to move me.' },
+      h('span', { class: 'aib-orb' }, icon('sparkles', 26)), h('i', { class: 'aib-dot' }));
+    B.stack = h('div', { class: 'aib-stack', 'aria-live': 'polite' });
+    B.input = h('input', { type: 'text', maxlength: 1500, placeholder: 'Type to the assistant…', 'aria-label': 'Message to the assistant', autocomplete: 'off' });
+    B.typer = h('form', { class: 'aib-typer hidden', onsubmit: function (e) { e.preventDefault(); const v = B.input.value.trim(); if (!v) return; B.input.value = ''; closeTyper(); ask({ text: v }); } },
+      B.input, h('button', { type: 'submit', class: 'aib-send', 'aria-label': 'Send' }, icon('send', 20)));
+    document.body.appendChild(B.stack); document.body.appendChild(B.typer); document.body.appendChild(B.fab);
+    wireDrag(); layout();
+    window.addEventListener('resize', layout);
+    if (window.ResizeObserver) new ResizeObserver(function () { layout(); }).observe(document.documentElement);   // a scrollbar appearing changes the width too
+    document.addEventListener('pointerdown', onAnyTouch, true);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && active() && !document.querySelector('.overlay')) endSession(); });
+    B.built = true;
+  }
+
+  /* ---- position: drag it anywhere; it remembers where you left it ---- */
+  const vwOf = function () { return document.documentElement.clientWidth || innerWidth; };   // without the scrollbar
+  function clampPos(p) { return { x: Math.max(6, Math.min(vwOf() - SIZE - 6, p.x)), y: Math.max(6, Math.min(innerHeight - SIZE - 6, p.y)) }; }
+  function getPos() {
+    if (!B.pos) {
+      let saved = null; try { saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch (e) { /* ignore */ }
+      B.pos = saved && typeof saved.fx === 'number' ? { x: saved.fx * (vwOf() - SIZE), y: saved.fy * (innerHeight - SIZE) } : { x: vwOf() - SIZE - 14, y: innerHeight - SIZE - 190 };
     }
-    return SESS[k];
+    return (B.pos = clampPos(B.pos));
   }
-  let openPanelNow = null;
-  function reset() {
-    if (openPanelNow) openPanelNow.close();
-    Object.keys(SESS).forEach(function (k) { const A = SESS[k]; if (A.rec) { try { A.rec.cancel(); } catch (e) { /* ignore */ } } });
-    Speech.stop(); SESS = {};
-    try { Object.keys(sessionStorage).filter(function (k) { return k.indexOf('assist:') === 0; }).forEach(function (k) { sessionStorage.removeItem(k); }); } catch (e) { /* ignore */ }
+  function savePos() { try { const p = getPos(); localStorage.setItem(POS_KEY, JSON.stringify({ fx: p.x / Math.max(1, vwOf() - SIZE), fy: p.y / Math.max(1, innerHeight - SIZE) })); } catch (e) { /* storage blocked */ } }
+  function layout() {
+    if (!B.built) return;
+    const p = getPos(), vw = vwOf(), vh = innerHeight, W = Math.min(vw - 24, 340);
+    B.fab.style.left = p.x + 'px'; B.fab.style.top = p.y + 'px';
+    const right = p.x + SIZE / 2 > vw / 2, above = p.y + SIZE / 2 > vh / 2;
+    B.stack.style.width = W + 'px';
+    B.stack.style.left = Math.max(12, Math.min(vw - W - 12, right ? p.x + SIZE - W : p.x)) + 'px';
+    if (above) { B.stack.style.top = 'auto'; B.stack.style.bottom = (vh - p.y + 10) + 'px'; B.stack.style.maxHeight = Math.max(120, p.y - 24) + 'px'; }
+    else { B.stack.style.bottom = 'auto'; B.stack.style.top = (p.y + SIZE + 10) + 'px'; B.stack.style.maxHeight = Math.max(120, vh - p.y - SIZE - 24) + 'px'; }
+    B.stack.classList.toggle('above', above); B.stack.classList.toggle('below', !above); B.stack.classList.toggle('right', right); B.stack.classList.toggle('left', !right);
+  }
+  function wireDrag() {
+    let d = null;
+    B.fab.addEventListener('pointerdown', function (e) {
+      if (e.button) return;
+      const p = getPos(); d = { sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+      try { B.fab.setPointerCapture(e.pointerId); } catch (x) { /* ignore */ }
+    });
+    B.fab.addEventListener('pointermove', function (e) {
+      if (!d) return;
+      const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+      if (!d.moved && Math.hypot(dx, dy) > 7) { d.moved = true; B.fab.classList.add('drag'); }
+      if (d.moved) { B.pos = clampPos({ x: d.ox + dx, y: d.oy + dy }); layout(); }
+    });
+    B.fab.addEventListener('pointerup', function (e) {
+      if (!d) return;
+      const moved = d.moved; d = null; B.fab.classList.remove('drag');
+      try { B.fab.releasePointerCapture(e.pointerId); } catch (x) { /* ignore */ }
+      if (moved) savePos(); else tap();
+    });
+    B.fab.addEventListener('pointercancel', function () { d = null; B.fab.classList.remove('drag'); });
+    B.fab.addEventListener('click', function (e) { if (e.detail === 0) tap(); });   // keyboard: Enter / Space
   }
 
-  const YES = /^(yes|yeah|yep|yup|ok|okay|sure|go ahead|do it|confirm|please do|that's right|correct)\b[\s.!]*$/i;
-  const NO = /^(no|nope|cancel|stop|don't|do not|never mind|leave it)\b[\s.!]*$/i;
-
-  /* ============================== the assistant page ============================== */
-
-  function view(App, focusId) {
-    const me = App.S.user, A = sess(me.id, '');
-    if (focusId) {
-      A.focusId = focusId;
-      const known = (Api.cacheGet('tasks:' + me.id) || {}).tasks || [];
-      const t = known.filter(function (x) { return x.id === focusId; })[0];
-      A.focusTitle = t ? t.title : 'this task';
-    } else { A.focusId = ''; A.focusTitle = ''; }
-    mount(App, A, { page: true });
+  /* ============================== the two floating messages ============================== */
+  function active() { return !!(B.userEl || B.botEl || B.typing || B.rec); }
+  function bubbleEl(kind, content) { return h('div', { class: 'aib-msg ' + kind, onclick: function () { endSession(); } }, content); }
+  function dissolve(el) { if (!el || !el.parentNode) return; el.classList.add('out'); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 380); }
+  function putUser(content) {
+    const old = B.userEl; B.userEl = bubbleEl('user', content);
+    if (old) old.remove();
+    B.stack.insertBefore(B.userEl, B.stack.firstChild); return B.userEl;
+  }
+  function putBot(content, typing) {
+    const old = B.botEl; B.botEl = bubbleEl('bot' + (typing ? ' typing' : ''), content);
+    if (old) old.remove();
+    B.stack.insertBefore(B.botEl, B.userEl ? B.userEl.nextSibling : B.stack.firstChild); return B.botEl;
+  }
+  function dots() { return [h('i'), h('i'), h('i')]; }
+  function clearMessages() { dissolve(B.userEl); dissolve(B.botEl); B.userEl = null; B.botEl = null; }
+  function endSession() {
+    B.token++;                                              // anything still on its way is ignored
+    if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
+    B.busy = false; B.fab.classList.remove('listening', 'busy'); Speech.stop(); closeTyper(true);
+    clearMessages();
+    if (B.App && B.App.clearSpot) B.App.clearSpot();
+  }
+  function onAnyTouch(e) {
+    if (!B.built || !active()) return;
+    const t = e.target;
+    if (t && t.closest && t.closest('.aib-fab, .aib-stack, .aib-typer, .overlay')) return;
+    endSession();                                           // the touch itself carries on (scrolling, tapping) as normal
   }
 
-  // o: { page: true } = the Assistant page; { root, onClose(fn), onActed } = the panel inside a task
-  function mount(App, A, o) {
-    const S = App.S, me = S.user, embedded = !o.page;
-    A.active = true;
-    const cleanup = function () { A.active = false; A.convo = false; Speech.stop(); if (A.rec) { try { A.rec.cancel(); } catch (e) { /* ignore */ } A.rec = null; } };
-    if (embedded) o.onClose(cleanup); else App.onLeave(cleanup);
+  /* ============================== talking ============================== */
+  function setLevel(v) {
+    B.fab.style.setProperty('--lv', v.toFixed(2));
+    B.bars.forEach(function (b, i) { b.style.height = Math.max(14, Math.min(100, v * 100 * (0.45 + 0.55 * Math.abs(Math.sin(i * 1.7 + Date.now() / 140))) + 10)) + '%'; });
+  }
+  function listeningPill() {
+    B.bars = []; const lvl = h('div', { class: 'lvl', 'aria-hidden': 'true' });
+    for (let i = 0; i < 14; i++) { const b = h('i'); B.bars.push(b); lvl.appendChild(b); }
+    return [h('span', { class: 'lbl' }, 'Listening…'), lvl, h('button', { type: 'button', class: 'aib-kbd', 'aria-label': 'Type instead', title: 'Type instead', onclick: function (e) { e.stopPropagation(); switchToTyping(); } }, icon('edit', 16))];
+  }
+  function tap() {
+    Speech.unlock();
+    if (B.App && B.App.clearSpot) B.App.clearSpot();
+    clearMessages(); Speech.stop(); closeTyper(true);
+    if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
+    listen();
+  }
+  // keep: leave the assistant's last message on screen while listening for the answer to its question
+  async function listen(keep) {
+    if (!Audio2.supported()) return openTyper();
+    const my = ++B.token; B.busy = false;
+    putUser(listeningPill()).classList.add('listening');
+    let rec;
+    try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: 1700, onLevel: setLevel }); }
+    catch (e) { if (my !== B.token) return; dissolve(B.userEl); B.userEl = null; putBot(e.message || 'I could not use the microphone.'); return; }
+    if (my !== B.token) { try { rec.cancel(); } catch (e) { /* ignore */ } return; }
+    B.rec = rec; B.fab.classList.add('listening');
+    const r = await rec.done;
+    B.rec = null; B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
+    if (my !== B.token) return;
+    if (!r) { dissolve(B.userEl); B.userEl = null; return; }                       // cancelled
+    if (!r.heard || r.secs < 0.7) { dissolve(B.userEl); B.userEl = null; putBot("I didn't hear anything. Tap me and try again."); return; }
+    ask({ audio: await Audio2.prepareLite(r.blob, r.secs) }, my);
+  }
+  function openTyper() { B.typing = true; B.typer.classList.remove('hidden'); setTimeout(function () { B.input.focus(); }, 30); }
+  function closeTyper(quiet) { B.typing = false; B.typer.classList.add('hidden'); if (!quiet) B.input.blur(); }
+  function switchToTyping() { B.token++; if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; } B.fab.classList.remove('listening'); dissolve(B.userEl); B.userEl = null; openTyper(); }
 
-    const head = h('div', { class: 'assist-head' }), feedBox = h('div', { class: 'a-feed', 'aria-live': 'polite' }), actBox = h('div'), compBox = h('div', { class: 'a-composer' });
-    if (embedded) { o.root.appendChild(head); o.root.appendChild(feedBox); o.root.appendChild(actBox); o.root.appendChild(compBox); }
-    else App.shell(h('div', { class: 'assist' }, head, feedBox, actBox, compBox), 'assistant', { focus: true, back: '#/tasks', title: 'Assistant' });
-    const scrollDown = function () { setTimeout(function () { if (embedded) feedBox.scrollTop = A.feed.length ? feedBox.scrollHeight : 0; else window.scrollTo(0, document.body.scrollHeight); }, 30); };
-    let text = null, levelBars = [], micBtn = null;
+  async function ask(o, mine) {
+    const my = mine || ++B.token;
+    Speech.unlock(); Speech.stop();
+    // "yes" / "no" typed while something waits for an OK: no need to ask the server
+    if (o.text && B.pending.length) {
+      if (YES.test(o.text)) { putUser(o.text); return confirmPending(); }
+      if (NO.test(o.text)) { putUser(o.text); return cancelPending(); }
+    }
+    B.busy = true; B.lastVoice = !!o.audio; B.fab.classList.add('busy');
+    if (o.text) putUser(o.text); else putUser(dots()).classList.add('typing');
+    putBot(dots(), true);
+    let r;
+    try {
+      const payload = Object.assign({ history: B.history.slice(-10), pending: B.pending.map(function (p) { return p.label; }), taskId: B.where.task || undefined, archivedId: B.where.archived || undefined, text: o.text || undefined }, o.audio || {});
+      r = await Api.call('assistant', payload, { timeout: 120000 });
+    } catch (e) {
+      if (my !== B.token) return;
+      B.busy = false; B.fab.classList.remove('busy');
+      if (e.code === 'AUTH') return;
+      return putBot(e.message || 'Something went wrong. Please try again.');
+    }
+    if (my !== B.token) return;                                                     // the person moved on
+    B.busy = false; B.fab.classList.remove('busy');
+    const heard = r.heard || o.text || '';
+    if (o.audio) putUser(heard || '(I could not make out what you said)');
+    B.history.push({ role: 'user', text: heard }, { role: 'assistant', text: r.reply });
+    const acts = r.actions || [], free = acts.filter(function (a) { return !a.needsConfirm; }), needs = acts.filter(function (a) { return a.needsConfirm; });
+    if (needs.length) { B.pending = needs; B.editing = false; drawCard(); } else if (r.confirm === 'no') { B.pending = []; drawCard(); }
+    store.save();
+    if (r.confirm === 'yes' && B.pending.length) return confirmPending();           // it says "Done" itself
+    putBot(r.reply);
+    free.forEach(openTask);
+    say(r.spoken || r.reply, my, r.reply);
+  }
+  function say(text, my, shown) {
+    const again = function () {                                                      // it asked something: listen for the answer
+      if (my === B.token && B.lastVoice && !B.busy && !B.rec && B.botEl && (/\?\s*$/.test(shown || '') || B.pending.length)) setTimeout(function () { if (my === B.token) listen(true); }, 300);
+    };
+    if (B.lastVoice && Speech.enabled() && Speech.supported) Speech.speak(text, { onend: again }); else again();
+  }
+  function openTask(a) {
+    if (!B.App) return;
+    if (a.archived || a.mode === 'enter') B.App.go((a.archived ? '#/history/' : '#/task/') + a.taskId);
+    else B.App.showTask(a.taskId);
+  }
 
-    /* ---- top bar: what it is about, voice replies, hands-free, new chat ---- */
-    function drawHead() {
-      UI.clear(head);
-      if (embedded) {
-        const bar = h('div', { class: 'assist-tools' });
-        if (Speech.supported) bar.appendChild(h('button', { type: 'button', class: 'tool-btn' + (A.voiceOn ? ' on' : ''), 'aria-pressed': A.voiceOn, title: 'Read my answers aloud', onclick: function () { A.voiceOn = !A.voiceOn; if (!A.voiceOn) Speech.stop(); drawHead(); } }, icon(A.voiceOn ? 'volume' : 'volumeOff', 16), A.voiceOn ? 'Reading aloud' : 'Read aloud'));
-        if (A.voiceOn && Speech.supported) bar.appendChild(h('button', { type: 'button', class: 'tool-btn', title: 'Choose the voice', onclick: voicePicker }, icon('sparkles', 16), 'Voice'));
-        if (A.feed.length) bar.appendChild(h('button', { type: 'button', class: 'tool-btn', title: 'Start a new conversation', onclick: function () { Speech.stop(); A.feed = []; A.pending = []; A.history = []; save(A); redraw(); } }, icon('refresh', 16), 'New chat'));
-        head.appendChild(bar);
-        return;
+  /* ============================== the card: Send / Edit / Delete a message, or yes / no for other actions ============================== */
+  function drawCard() {
+    if (B.card) { B.card.remove(); B.card = null; }
+    if (!B.pending.length) return;
+    const one = B.pending.length === 1 ? B.pending[0] : null;
+    const card = h('div', { class: 'aib-card' });
+    if (one && one.type === 'post_message') {
+      const title = (/^Post this in "([^"]*)"/.exec(one.label) || [])[1] || 'this task';
+      card.appendChild(h('div', { class: 'aib-card-head' }, icon('send', 14), h('span', null, 'Message for “' + title + '”')));
+      if (B.editing) {
+        const ta = h('textarea', { maxlength: 4000, rows: 3, 'aria-label': 'Edit the message' }); ta.value = one.text;
+        card.appendChild(ta);
+        card.appendChild(h('div', { class: 'aib-card-actions' },
+          h('button', { class: 'btn primary small', type: 'button', onclick: function () { const t = ta.value.trim(); if (!t) return; one.text = t; one.label = 'Post this in "' + title + '": "' + (t.length > 140 ? t.slice(0, 140) : t) + '"'; B.editing = false; store.save(); drawCard(); } }, icon('check', 16), 'Save'),
+          h('button', { class: 'btn small', type: 'button', onclick: function () { B.editing = false; drawCard(); } }, 'Cancel')));
+        setTimeout(function () { ta.focus(); }, 30);
+      } else {
+        card.appendChild(h('div', { class: 'aib-card-text' }, one.text));
+        card.appendChild(h('div', { class: 'aib-card-actions' },
+          h('button', { class: 'btn primary small', type: 'button', onclick: confirmPending }, icon('send', 16), 'Send'),
+          h('button', { class: 'btn small', type: 'button', onclick: function () { B.editing = true; drawCard(); } }, icon('edit', 16), 'Edit'),
+          h('button', { class: 'btn small danger', type: 'button', onclick: cancelPending }, icon('trash', 16), 'Delete')));
       }
-      head.appendChild(A.focusId
-        ? h('span', { class: 'focus-chip' }, icon('tasks', 14), h('span', null, 'About: ' + A.focusTitle), h('button', { type: 'button', 'aria-label': 'Ask about everything instead', onclick: function () { A.focusId = ''; A.focusTitle = ''; drawHead(); drawFeed(); } }, icon('x', 14)))
-        : h('strong', null, 'Ask me anything about your work'));
-      const tools = h('div', { class: 'assist-tools' });
+    } else {
+      card.appendChild(h('div', { class: 'aib-card-head' }, icon('check', 14), h('span', null, 'Waiting for your OK')));
+      card.appendChild(h('ul', { class: 'aib-card-list' }, B.pending.map(function (a) { return h('li', null, a.label); })));
+      card.appendChild(h('div', { class: 'aib-card-actions' },
+        h('button', { class: 'btn primary small', type: 'button', onclick: confirmPending }, icon('check', 16), 'Yes, do it'),
+        h('button', { class: 'btn small', type: 'button', onclick: cancelPending }, 'No')));
+    }
+    B.card = card; B.stack.appendChild(card);
+  }
+  async function confirmPending() {
+    if (!B.pending.length || B.busy) return;
+    const todo = B.pending; B.pending = []; B.editing = false; drawCard(); store.save();
+    const my = ++B.token; B.busy = true; B.fab.classList.add('busy'); putBot(dots(), true);
+    let done = 0, big = false; const bad = [];
+    for (let i = 0; i < todo.length; i++) {
+      const a = todo[i];
+      try {
+        if (a.type === 'create_task') { await Api.call('createTask', { title: a.title, description: a.description, dueDate: a.dueDate, assigneeIds: a.assigneeIds }); big = true; }
+        else if (a.type === 'set_progress') { await Api.call('setProgress', { taskId: a.taskId, progress: a.progress }); if (a.progress === 100) big = true; }
+        else if (a.type === 'post_message') await Api.call('postMessage', { taskId: a.taskId, text: a.text });
+        else if (a.type === 'approve_task') { await Api.call('approveTask', { taskId: a.taskId }, { timeout: 90000 }); big = true; }
+        else if (a.type === 'send_back') await Api.call('rejectTask', { taskId: a.taskId, note: a.note });
+        else if (a.type === 'update_task') await Api.call('updateTask', Object.assign({ taskId: a.taskId }, a.patch));
+        done++;
+      } catch (e) {
+        if (e.code === 'AUTH') { B.busy = false; return; }
+        bad.push('Could not do "' + a.label + '": ' + (e.message || 'something went wrong'));
+      }
+    }
+    B.busy = false; B.fab.classList.remove('busy');
+    if (my !== B.token) return;
+    if (done && B.App) { B.App.invalidate(); window.dispatchEvent(new Event('taskapp:changed')); if (big) UI.confetti(); }
+    const sent = todo.length === 1 && todo[0].type === 'post_message';
+    const msg = (done ? (sent ? 'Sent ✓' : (todo.length === 1 ? 'Done ✓' : done + ' done ✓')) : '') + (bad.length ? (done ? '\n' : '') + bad.join('\n') : '');
+    putBot(msg || 'Done.'); store.save();
+    if (done && B.lastVoice && Speech.enabled() && Speech.supported) Speech.speak(sent ? 'Sent.' : 'Done.');
+  }
+  function cancelPending() {
+    B.pending = []; B.editing = false; drawCard(); store.save(); Speech.stop();
+    putBot('Okay, I will not do that.');
+    if (B.lastVoice && Speech.enabled() && Speech.supported) Speech.speak('Okay.');
+  }
+
+  /* ============================== voice settings (Account page) ============================== */
+  function voicePicker() {
+    const body = h('div', { class: 'voice-pick' });
+    const inDemo = !!(window.Api && window.Api.demo);
+    const draw = function () {
+      UI.clear(body);
+      const list = Speech.voices(), current = Speech.voice(), studio = Speech.studio();
+      body.appendChild(h('p', { class: 'small muted' }, list.length ? 'Tap a voice to hear it. The ones marked Natural sound the most like a person. Phones and Microsoft Edge usually have the best ones.' : 'No English voices were found on this device. Try Microsoft Edge on a computer, or Chrome on a phone.'));
+      list.slice(0, 14).forEach(function (v) {
+        const on = !studio && v.uri === current;
+        body.appendChild(h('button', { type: 'button', class: 'voice-opt' + (on ? ' on' : ''), onclick: function () {
+          Speech.setStudio(false); Speech.setVoice(v.uri); Speech.unlock(); Speech.speak('Hello, this is how I sound. I can read your tasks and updates to you.', { voiceUri: v.uri }); draw();
+        } }, h('span', null, v.name.replace(/^Microsoft |^Google /, ''), h('small', null, v.lang + (v.natural ? ' · Natural' : ''))), on ? icon('check', 18) : null));
+      });
+      if (!inDemo) body.appendChild(h('button', { type: 'button', class: 'voice-opt studio' + (studio ? ' on' : ''), onclick: function () { Speech.setStudio(!studio); Speech.unlock(); if (!studio) Speech.speak('Hello, this is the studio voice.'); draw(); } },
+        h('span', null, 'Studio voice (AI-made)', h('small', null, 'Very natural, but the free daily limit runs out quickly. Then your device voice takes over.')), studio ? icon('check', 18) : null));
+    };
+    draw();
+    Speech.onVoicesChanged(function () { if (body.isConnected) draw(); });
+    UI.modal({ title: 'Choose the voice', body: body, onClose: function () { Speech.stop(); }, actions: [{ label: 'Done', kind: 'primary' }] });
+  }
+  function settingsCard() {
+    const box = h('div', { class: 'card' });
+    const draw = function () {
+      UI.clear(box);
+      box.appendChild(h('h2', null, 'AI assistant'));
+      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Touch anywhere else when you are done.'));
+      const row = h('div', { class: 'row' });
       if (Speech.supported) {
         const on = Speech.enabled();
-        tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (on ? ' on' : ''), 'aria-pressed': on, title: 'Read the answers aloud', onclick: function () { Speech.setEnabled(!Speech.enabled()); if (!Speech.enabled()) A.convo = false; drawHead(); } }, icon(on ? 'volume' : 'volumeOff', 16), 'Voice replies'));
+        row.appendChild(h('button', { type: 'button', class: 'tool-btn' + (on ? ' on' : ''), 'aria-pressed': on, onclick: function () { Speech.setEnabled(!Speech.enabled()); draw(); } }, icon(on ? 'volume' : 'volumeOff', 16), on ? 'Speaks answers when I speak' : 'Silent answers'));
+        row.appendChild(h('button', { type: 'button', class: 'tool-btn', onclick: voicePicker }, icon('sparkles', 16), 'Choose voice'));
       }
-      if (Speech.supported && Speech.enabled()) {
-        tools.appendChild(h('button', { type: 'button', class: 'tool-btn', title: 'Choose the voice that reads the answers', onclick: voicePicker }, icon('sparkles', 16), 'Choose voice'));
-      }
-      if (Audio2.supported()) {
-        tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (A.convo ? ' on' : ''), 'aria-pressed': A.convo, title: 'Keep listening after each answer, like a phone call', onclick: function () {
-          A.convo = !A.convo;
-          if (A.convo) { if (!Speech.enabled()) Speech.setEnabled(true); if (!A.busy && !A.rec) startListening(); }
-          else if (A.rec) A.rec.cancel();
-          drawHead();
-        } }, icon('mic', 16), 'Hands-free'));
-      }
-      if (A.feed.length) tools.appendChild(h('button', { type: 'button', class: 'tool-btn', title: 'Start a new conversation', onclick: function () { Speech.stop(); A.feed = []; A.pending = []; A.history = []; A.convo = false; save(A); redraw(); } }, icon('refresh', 16), 'New chat'));
-      head.appendChild(tools);
-    }
-
-    /* ---- choose the voice: the voices installed on this device (free, no limit), or the studio voice (Gemini, small daily quota) ---- */
-    function voicePicker() {
-      const body = h('div', { class: 'voice-pick' });
-      const inDemo = !!(window.Api && window.Api.demo);
-      const draw = function () {
-        UI.clear(body);
-        const list = Speech.voices(), current = Speech.voice(), studio = Speech.studio();
-        body.appendChild(h('p', { class: 'small muted' }, list.length ? 'Tap a voice to hear it. The ones marked Natural sound the most like a person. Phones and Microsoft Edge usually have the best ones.' : 'No English voices were found on this device. Try Microsoft Edge on a computer, or Chrome on a phone.'));
-        list.slice(0, 14).forEach(function (v) {
-          const on = !studio && v.uri === current;
-          body.appendChild(h('button', { type: 'button', class: 'voice-opt' + (on ? ' on' : ''), onclick: function () {
-            Speech.setStudio(false); Speech.setVoice(v.uri); Speech.unlock(); Speech.speak('Hello, this is how I sound. I can read your tasks and updates to you.', { voiceUri: v.uri }); draw();
-          } }, h('span', null, v.name.replace(/^Microsoft |^Google /, ''), h('small', null, v.lang + (v.natural ? ' \u00b7 Natural' : ''))), on ? icon('check', 18) : null));
-        });
-        if (!inDemo) body.appendChild(h('button', { type: 'button', class: 'voice-opt studio' + (studio ? ' on' : ''), onclick: function () { Speech.setStudio(!studio); Speech.unlock(); if (!studio) Speech.speak('Hello, this is the studio voice.'); draw(); } },
-          h('span', null, 'Studio voice (AI-made)', h('small', null, 'Very natural, but the free daily limit runs out quickly. Then your device voice takes over.')), studio ? icon('check', 18) : null));
-      };
-      draw();
-      Speech.onVoicesChanged(function () { if (body.isConnected) draw(); });
-      UI.modal({ title: 'Choose the voice', body: body, onClose: function () { Speech.stop(); drawHead(); }, actions: [{ label: 'Done', kind: 'primary' }] });
-    }
-
-    /* ---- the conversation ---- */
-    function suggestions() {
-      const out = [];
-      if (embedded) { out.push(['Catch me up on this conversation', true], ['What is the latest update?', true], ['Is anything blocking this task?', true], ['What are the next steps?', true], ['What do the photos and files show?', true], ['Draft a short reply for me', true]); return out; }
-      if (A.focusId) {
-        out.push(['Summarize this task so far', true], ['Is anything blocking it?', true], ['What do the shared files say?', true], ['Draft a short progress message for me', true]);
-        return out;
-      }
-      out.push(['What needs my attention today?', true], ['Summarize all my ongoing tasks', true]);
-      if (S.canAssign) {
-        out.push(['Who is behind schedule?', true], ['What did my team report this week?', true]);
-        const p = (Api.cacheGet('assignable') || [])[0];
-        out.push(['Give ' + (p ? p.name.split(/\s+/)[0] : 'Ruwan') + ' a task to check the stock, due Friday', false]);
-      } else {
-        out.push(['What is due this week?', true], ['Set my progress on my first task to 50 percent', false]);
-      }
-      return out;
-    }
-    function drawFeed() {
-      UI.clear(feedBox);
-      if (!A.feed.length) {
-        const first = String(me.name || '').split(/\s+/)[0];
-        feedBox.appendChild(h('div', { class: 'a-welcome' }, h('div', { class: 'a-orb' }, icon('sparkles', embedded ? 28 : 36)), h('h2', null, embedded ? 'I\'ve been following this chat' : 'Hi' + (first ? ' ' + first : '') + ', how can I help?'),
-          h('p', { class: 'muted' }, embedded ? 'I have read every message, voice message, photo and document here. Ask me about any update, or tell me what to do. Only you see my answers.' : 'I know your tasks, conversations and files. Ask a question, or tell me what to do. You can type, or tap the microphone and talk.'),
-          h('div', { class: 'a-chips' }, suggestions().map(function (s) {
-            return h('button', { type: 'button', class: 'a-chip', onclick: function () { if (s[1]) ask({ text: s[0] }); else { text.value = s[0]; text.focus(); resize(); toggleSend(); } } }, s[0]);
-          }))));
-        return;
-      }
-      A.feed.forEach(function (f) {
-        if (f.k === 'typing') return feedBox.appendChild(h('div', { class: 'a-msg bot typing', 'aria-label': 'Thinking' }, h('i'), h('i'), h('i')));
-        if (f.k === 'done') return feedBox.appendChild(h('div', { class: 'a-done' + (f.bad ? ' bad' : '') }, f.text, f.link && !(embedded && f.link === A.focusId) ? h('span', null, ' ', h('a', { href: '#/task/' + f.link }, 'Open')) : null));
-        const el = h('div', { class: 'a-msg ' + (f.k === 'user' ? 'user' : 'bot') },
-          f.voice ? h('div', { class: 'a-tag' }, icon('mic', 12), 'You said') : null, f.text,
-          f.links && f.links.length ? h('div', { style: 'margin-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap' }, f.links.map(function (l) { return h('a', { class: 'btn small', href: '#/task/' + l.taskId }, icon('arrowRight', 14), l.label.replace(/^Open /, '')); })) : null);
-        feedBox.appendChild(el);
-      });
-    }
-    function drawActions() {
-      UI.clear(actBox);
-      if (!A.pending.length) return;
-      actBox.appendChild(h('div', { class: 'a-act' }, h('h4', null, 'Waiting for your OK'),
-        h('ul', null, A.pending.map(function (a) { return h('li', null, a.label); })),
-        h('div', { class: 'row' },
-          h('button', { class: 'btn primary', type: 'button', onclick: confirmPending }, icon('check', 18), 'Yes, do it'),
-          h('button', { class: 'btn', type: 'button', onclick: cancelPending }, 'No, cancel'),
-          h('span', { class: 'muted small' }, 'or just say "yes"'))));
-    }
-
-    /* ---- the box at the bottom ---- */
-    function resize() { text.style.height = '46px'; text.style.height = Math.min(text.scrollHeight, 130) + 'px'; text.style.overflowY = text.scrollHeight > 130 ? 'auto' : 'hidden'; }
-    let sendBtn = null;
-    function toggleSend() { if (sendBtn) sendBtn.classList.toggle('hidden', !text.value.trim()); if (micBtn) micBtn.classList.toggle('hidden', !!text.value.trim()); }
-    function drawComposer() {
-      UI.clear(compBox);
-      if (A.rec) {
-        levelBars = []; const lvl = h('div', { class: 'lvl', 'aria-hidden': 'true' });
-        for (let i = 0; i < 28; i++) { const b = h('i'); levelBars.push(b); lvl.appendChild(b); }
-        micBtn = h('button', { class: 'mic-big live', type: 'button', 'aria-label': 'Done speaking - send', title: 'Done speaking', onclick: function () { A.rec.stop(); } }, icon('send', 22));
-        compBox.appendChild(h('div', { class: 'a-listen' }, h('span', { class: 'lbl' }, 'Listening…'), lvl,
-          h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Cancel', title: 'Cancel', onclick: function () { A.convo = false; drawHead(); A.rec.cancel(); } }, icon('x', 20)), micBtn));
-        compBox.appendChild(h('p', { class: 'a-hint' }, 'Speak naturally. I will answer when you pause.'));
-        return;
-      }
-      text = h('textarea', { placeholder: A.pending.length ? 'Say or type "yes" to go ahead…' : embedded ? 'Ask about this chat…' : 'Ask anything, or tap the microphone and talk…', maxlength: 1500, rows: 1, 'aria-label': 'Message to the assistant', disabled: A.busy });
-      sendBtn = h('button', { class: 'send hidden', type: 'button', 'aria-label': 'Send', onclick: sendTyped }, icon('send', 20));
-      micBtn = Audio2.supported() ? h('button', { class: 'mic-big', type: 'button', 'aria-label': 'Talk to the assistant', title: 'Tap and talk', disabled: A.busy, onclick: startListening }, icon('mic', 24)) : null;
-      text.addEventListener('input', function () { resize(); toggleSend(); });
-      text.addEventListener('keydown', function (e) {
-        if (e.key !== 'Enter' || e.isComposing) return;
-        if (e.ctrlKey || e.metaKey || (!e.shiftKey && window.matchMedia && window.matchMedia('(pointer: fine)').matches)) { e.preventDefault(); sendTyped(); }
-      });
-      compBox.appendChild(h('div', { class: 'composer-in' }, text, micBtn, sendBtn));
-      if (!Audio2.supported()) compBox.appendChild(h('p', { class: 'a-hint' }, 'Voice needs a newer browser (Chrome, Edge, Safari). You can still type.'));
-      toggleSend();
-    }
-    function setLevel(v) {
-      if (micBtn) micBtn.style.setProperty('--lv', v.toFixed(2));
-      levelBars.forEach(function (b, i) { b.style.height = Math.max(10, Math.min(100, v * 100 * (0.45 + 0.55 * Math.abs(Math.sin(i * 1.7 + Date.now() / 140))) + 8)) + '%'; });
-    }
-    function redraw() { drawHead(); drawFeed(); drawActions(); drawComposer(); }
-
-    /* ---- talking ---- */
-    async function startListening() {
-      if (A.busy || A.rec || !A.active) return;
-      Speech.unlock();
-      if (!Audio2.supported()) return UI.toast('Voice is not supported in this browser. You can type instead.', 'bad');
-      Speech.stop();
-      let rec;
-      try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: 1700, onLevel: setLevel }); }
-      catch (e) { A.convo = false; drawHead(); return UI.toast(e.message, 'bad'); }
-      A.rec = rec; drawComposer();
-      const r = await rec.done;
-      A.rec = null; if (!A.active) return;
-      drawComposer();
-      if (!r) return;                                                   // cancelled
-      if (!r.heard || r.secs < 0.7) { A.convo = false; drawHead(); return UI.toast("I didn't hear anything. Tap the microphone and try again.", 'bad'); }
-      ask({ audio: await Audio2.prepareLite(r.blob, r.secs) });
-    }
-    function sendTyped() { const v = text.value.trim(); if (!v || A.busy) return; text.value = ''; resize(); ask({ text: v }); }
-    function speakReply(reply) {
-      const again = function () { if (A.convo && A.active && !A.busy && !A.rec) setTimeout(startListening, 350); };
-      const speak = embedded ? (A.voiceOn || A.lastVoice) : Speech.enabled();
-      if (speak && Speech.supported) Speech.speak(reply, { onend: again }); else again();
-    }
-
-    async function ask(o) {
-      if (A.busy) return;
-      Speech.unlock(); Speech.stop(); A.lastVoice = !!o.audio;
-      // "yes" / "no" typed while something is waiting: no need to ask the server
-      if (o.text && A.pending.length) {
-        if (YES.test(o.text)) { A.feed.push({ k: 'user', text: o.text }); return confirmPending(); }
-        if (NO.test(o.text)) { A.feed.push({ k: 'user', text: o.text }); return cancelPending(); }
-      }
-      A.busy = true;
-      const userItem = o.text ? { k: 'user', text: o.text } : { k: 'user', text: 'Listening to what you said…', voice: true };
-      A.feed.push(userItem, { k: 'typing' }); redraw(); scrollDown();
-      let reply = '', say = '';
-      try {
-        const payload = Object.assign({ history: A.history.slice(-10), pending: A.pending.map(function (p) { return p.label; }), taskId: A.focusId || undefined, text: o.text || undefined }, o.audio || {});
-        const r = await Api.call('assistant', payload, { timeout: 120000 });
-        A.feed = A.feed.filter(function (f) { return f.k !== 'typing'; });
-        if (userItem.voice) userItem.text = r.heard || '(I could not make out what you said)';
-        reply = r.reply; say = r.spoken || r.reply;
-        A.history.push({ role: 'user', text: r.heard || o.text || '' }, { role: 'assistant', text: r.reply });
-        const free = (r.actions || []).filter(function (a) { return !a.needsConfirm; }), needs = (r.actions || []).filter(function (a) { return a.needsConfirm; });
-        A.feed.push({ k: 'bot', text: r.reply, links: free.map(function (a) { return { taskId: a.taskId, label: a.label }; }) });
-        if (needs.length) A.pending = needs;
-        else if (r.confirm === 'no') A.pending = [];
-        A.busy = false;
-        if (r.confirm === 'yes' && A.pending.length) { const todo = A.pending; A.pending = []; redraw(); await runActions(todo); reply = ''; say = ''; }   // runActions already said "Done"
-      } catch (e) {
-        A.feed = A.feed.filter(function (f) { return f.k !== 'typing'; });
-        if (userItem.voice) userItem.text = '(voice message)';
-        if (e.code === 'AUTH') { A.busy = false; return; }
-        reply = e.message || 'Something went wrong. Please try again.'; say = reply;
-        A.feed.push({ k: 'bot', text: reply });
-        A.convo = false;
-      }
-      A.busy = false; save(A); redraw(); scrollDown();
-      if (say) speakReply(say);
-    }
-
-    /* ---- doing what was agreed ---- */
-    async function runActions(list) {
-      A.busy = true; drawComposer();
-      let done = 0, big = false;
-      for (let i = 0; i < list.length; i++) {
-        const a = list[i];
-        try {
-          if (a.type === 'create_task') { const r = await Api.call('createTask', { title: a.title, description: a.description, dueDate: a.dueDate, assigneeIds: a.assigneeIds }); A.feed.push({ k: 'done', text: 'Created "' + r.task.title + '".', link: r.task.id }); big = true; }
-          else if (a.type === 'set_progress') { await Api.call('setProgress', { taskId: a.taskId, progress: a.progress }); A.feed.push({ k: 'done', text: 'Done: ' + a.label, link: a.taskId }); if (a.progress === 100) big = true; }
-          else if (a.type === 'post_message') { await Api.call('postMessage', { taskId: a.taskId, text: a.text }); A.feed.push({ k: 'done', text: 'Done: ' + a.label, link: a.taskId }); }
-          else if (a.type === 'approve_task') { await Api.call('approveTask', { taskId: a.taskId }, { timeout: 90000 }); A.feed.push({ k: 'done', text: 'Done: ' + a.label + '. It is now in History.' }); big = true; }
-          else if (a.type === 'send_back') { await Api.call('rejectTask', { taskId: a.taskId, note: a.note }); A.feed.push({ k: 'done', text: 'Done: ' + a.label, link: a.taskId }); }
-          else if (a.type === 'update_task') { await Api.call('updateTask', Object.assign({ taskId: a.taskId }, a.patch)); A.feed.push({ k: 'done', text: 'Done: ' + a.label, link: a.taskId }); }
-          done++;
-        } catch (e) {
-          if (e.code === 'AUTH') return;
-          A.feed.push({ k: 'done', bad: true, text: 'Could not do "' + a.label + '": ' + (e.message || 'something went wrong') });
-        }
-      }
-      if (done) { App.invalidate(); if (o.onActed) o.onActed(); if (big) UI.confetti(); }
-      A.busy = false; save(A); redraw(); scrollDown();
-      if (done) speakReply(done === list.length ? 'Done.' : 'Some of that is done, but not everything. Please check the messages.');
-    }
-    async function confirmPending() { if (!A.pending.length || A.busy) return; const todo = A.pending; A.pending = []; redraw(); await runActions(todo); }
-    function cancelPending() { A.pending = []; A.feed.push({ k: 'bot', text: 'Okay, I will not do that.' }); save(A); redraw(); scrollDown(); if (embedded ? A.voiceOn : Speech.enabled()) speakReply('Okay.'); }
-
-    redraw(); scrollDown();
-    if (A.feed.length === 0 && o.page && !A.focusId) Profiles.refresh();
-  }
-
-  /* ============================== the AI inside a task: a bubble that opens a panel ============================== */
-
-  function openPanel(App, taskId, title, hooks) {
-    if (openPanelNow) openPanelNow.close();
-    const A = sess(App.S.user.id, taskId); A.focusTitle = title || 'this task';
-    const closers = []; let closed = false;
-    const body = h('div', { class: 'ai-body' });
-    const close = function () {
-      if (closed) return; closed = true;
-      document.removeEventListener('keydown', onKey);
-      panel.classList.remove('open'); veil.classList.remove('open');
-      closers.forEach(function (fn) { try { fn(); } catch (e) { /* ignore */ } });
-      setTimeout(function () { panel.remove(); veil.remove(); }, 260);
-      if (openPanelNow && openPanelNow.close === close) openPanelNow = null;
-      if (hooks && hooks.onClose) hooks.onClose();
+      row.appendChild(h('button', { type: 'button', class: 'tool-btn', onclick: function () { try { localStorage.removeItem(POS_KEY); } catch (e) { /* ignore */ } B.pos = null; layout(); UI.toast('The bubble is back in its usual place.'); } }, icon('refresh', 16), 'Reset bubble position'));
+      box.appendChild(row);
     };
-    const onKey = function (e) { if (e.key === 'Escape' && !document.querySelector('.overlay')) close(); };
-    const veil = h('div', { class: 'ai-veil', onclick: close });
-    const panel = h('aside', { class: 'ai-panel', role: 'dialog', 'aria-label': 'AI assistant for this conversation' },
-      h('div', { class: 'ai-panel-head' },
-        h('span', { class: 'ai-avatar' }, icon('sparkles', 20), h('i', { class: 'presence' })),
-        h('div', { class: 'grow' }, h('strong', null, 'AI assistant'), h('small', null, 'Listening to \u201c' + (A.focusTitle.length > 38 ? A.focusTitle.slice(0, 36) + '\u2026' : A.focusTitle) + '\u201d')),
-        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close', onclick: close }, icon('x', 20))),
-      body);
-    document.body.appendChild(veil); document.body.appendChild(panel); document.addEventListener('keydown', onKey);
-    requestAnimationFrame(function () { panel.classList.add('open'); veil.classList.add('open'); });
-    mount(App, A, { root: body, onClose: function (fn) { closers.push(fn); }, onActed: hooks && hooks.onActed });
-    openPanelNow = { close: close };
-    return openPanelNow;
+    draw();
+    return box;
   }
 
-  // The round "AI" button that floats over a task's conversation. Everyone in the conversation sees it.
-  function taskBubble(App, taskId, getTitle, onActed) {
-    const TIP = 'aibub.tip';
-    let panel = null, count = -1, heardTimer = null;
-    const tip = h('span', { class: 'ai-tip' }, 'Ask AI about this chat');
-    const avatar = h('span', { class: 'ai-avatar' }, icon('sparkles', 24), h('i', { class: 'presence' }));
-    const btn = h('button', { class: 'ai-bubble', type: 'button', 'aria-label': 'Ask the AI assistant about this conversation', title: 'Ask the AI about this conversation', onclick: function () {
-      Speech.unlock(); tip.remove();
-      panel = openPanel(App, taskId, getTitle(), { onActed: onActed, onClose: function () { panel = null; btn.classList.remove('open'); } });
-      btn.classList.add('open');
-    } }, tip, avatar);
-    let showTip = true; try { showTip = localStorage.getItem(TIP) !== 'seen'; localStorage.setItem(TIP, 'seen'); } catch (e) { /* storage blocked */ }
-    if (!showTip) tip.remove();
-    document.body.appendChild(btn);
-    App.onLeave(function () { btn.remove(); if (panel) panel.close(); });
-    return {
-      // called whenever the conversation is redrawn: the bubble perks up when something new has been said
-      update: function (messages) {
-        const n = messages.length;
-        if (count >= 0 && n > count) { btn.classList.add('heard'); clearTimeout(heardTimer); heardTimer = setTimeout(function () { btn.classList.remove('heard'); }, 1400); }
-        count = n;
-      }
-    };
+  /* ============================== public ============================== */
+  // Called by the app on every screen once somebody is signed in.
+  function ensure(App) {
+    B.App = App;
+    if (B.uid !== App.S.user.id) { B.uid = App.S.user.id; B.history = []; B.pending = []; store.load(); if (B.built) { clearMessages(); drawCard(); } }
+    if (!B.built) { build(); if (B.pending.length) drawCard(); }
+    B.fab.classList.remove('hidden'); layout();
   }
+  function where(o) { B.where = { task: (o && o.task) || '', archived: (o && o.archived) || '' }; }
+  function hide() { if (!B.built) return; endSession(); B.fab.classList.add('hidden'); }
+  function reset() {
+    if (B.built) { endSession(); B.stack.remove(); B.typer.remove(); B.fab.remove(); document.removeEventListener('pointerdown', onAnyTouch, true); window.removeEventListener('resize', layout); }
+    try { Object.keys(sessionStorage).filter(function (k) { return k.indexOf('aib:') === 0; }).forEach(function (k) { sessionStorage.removeItem(k); }); } catch (e) { /* ignore */ }
+    B.built = false; B.uid = ''; B.history = []; B.pending = []; B.card = null; B.userEl = null; B.botEl = null; B.pos = null; B.where = { task: '', archived: '' };
+  }
+  function listenNow() { if (B.built) tap(); }
 
   /* ============================== "Today at a glance" ============================== */
 
@@ -369,7 +347,7 @@
         })));
       }
       box.appendChild(h('div', { class: 'brief-foot' },
-        h('a', { class: 'btn primary small', href: '#/assistant' }, icon('mic', 16), 'Ask me anything'),
+        h('button', { class: 'btn primary small', type: 'button', onclick: listenNow }, icon('mic', 16), 'Ask me anything'),
         busy && b ? h('span', { class: 'brief-note' }, 'Updating…') : data && data.at ? h('span', { class: 'brief-note' }, (data.stale ? 'New activity since · ' : '') + 'Updated ' + UI.ago(data.at)) : null));
     }
     async function load(force) {
@@ -386,5 +364,5 @@
     return { el: box, load: load };
   }
 
-  w.Assistant = { view: view, briefingCard: briefingCard, taskBubble: taskBubble, reset: reset };
+  w.Assistant = { ensure: ensure, where: where, hide: hide, reset: reset, listen: listenNow, settingsCard: settingsCard, briefingCard: briefingCard };
 })(window);
