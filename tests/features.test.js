@@ -9,7 +9,7 @@ const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP////
 
 function makeApp(opts) {
   let clock = Date.UTC(2026, 10, 12, 9, 0, 0);
-  const env = createMemoryEnv(Object.assign({ now: () => clock, hashRounds: 5 }, opts || {}));
+  const env = createMemoryEnv(Object.assign({ now: () => clock, hashRounds: 5, settings: { AI_MAX_LEVEL: '3' } }, opts || {}));   // in these tests everybody may use the AI unless a test says otherwise
   const core = createCore(env);
   const app = {
     env, core,
@@ -277,4 +277,32 @@ test('bubble: show or enter a task, completed tasks can be opened and read, and 
   assert.equal(withArchive.focus.id, old.id);
   app.ok('assistant', s.tok.wk2, { text: 'what was the total?', archivedId: old.id });          // someone who was not part of it gets nothing
   assert.equal(ai.calls[ai.calls.length - 1].context.includes('4820'), false);
+});
+
+test('AI access: only Senior General Managers and above (the cut-off is the layer of that job title, or AI_MAX_LEVEL)', () => {
+  const find = (app, id) => app.ok('listTasks', id).tasks;   // just to prove ordinary use is untouched
+  // 1) no setting: the cut-off is found from a job title that looks like "Senior General Manager"
+  const app = makeApp({ settings: {} });
+  const admin = app.ok('login', null, { username: 'admin', password: 'Admin-pass-1' });
+  app.ok('changePassword', admin.token, { oldPassword: 'Admin-pass-1', newPassword: 'Admin-pass-2' });
+  const A = app.ok('login', null, { username: 'admin', password: 'Admin-pass-2' }).token;
+  const mk = (t, l) => app.ok('adminSaveJobTitle', A, { title: t, level: l }).id;
+  const ids = { ceo: mk('CEO', 1), sgm: mk('Senior General Manager', 2), gm: mk('General Manager', 3), mgr: mk('Manager', 4) };
+  const who = {};
+  [['ceo', 'ceo'], ['sgm', 'sgm'], ['gm', 'gm'], ['mgr', 'mgr']].forEach(([u, t]) => {
+    u += '1';
+    const r = app.ok('adminSaveUser', A, { name: u, username: u, jobTitleId: ids[t] });
+    const tok = app.ok('login', null, { username: u, password: r.tempPassword }).token;
+    app.ok('changePassword', tok, { oldPassword: r.tempPassword, newPassword: 'Newpass-123' });
+    who[u] = app.ok('login', null, { username: u, password: 'Newpass-123' }).token;
+  });
+  const can = (u) => app.ok('me', who[u + '1']).canUseAi;
+  assert.deepEqual(['ceo', 'sgm', 'gm', 'mgr'].map(can), [true, true, false, false]);
+  assert.equal(app.ok('me', A).canUseAi, false);                                   // the Administrator has no job title
+  ['assistant', 'briefing', 'speak'].forEach((a) => { app.err(a, who.gm1, { text: 'hi' }, 'FORBIDDEN'); });
+  assert.ok(find(app, who.gm1));                                                    // everything else works as usual
+  // 2) the property wins over the job-title search
+  const app2 = makeApp({ settings: { AI_MAX_LEVEL: '1' } }); const s2 = seed(app2);
+  assert.equal(app2.ok('me', s2.tok.ceo).canUseAi, true);
+  assert.equal(app2.ok('me', s2.tok.mgr).canUseAi, false);
 });

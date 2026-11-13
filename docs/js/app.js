@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const root = document.getElementById('app');
-  const S = { user: null, company: '', canAssign: false, timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
+  const S = { user: null, company: '', canAssign: false, canUseAi: false, timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
 
   /* ============================== helpers ============================== */
 
@@ -165,7 +165,7 @@
       ev.preventDefault(); UI.clear(err); btn.disabled = true; btn.textContent = 'Signing in…';
       try {
         const r = await Api.call('login', { username: user.value, password: pass.value });
-        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign;
+        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign; S.canUseAi = !!r.canUseAi;
         if (r.user.mustChange) return viewMustChange();
         if (r.canAssign === undefined) await loadMe(); else rememberMe();   // the sign-in answer already holds the profile
         Profiles.load(); Profiles.refresh(true);
@@ -207,11 +207,11 @@
 
   async function loadMe() {
     const me = await Api.call('me');
-    S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign;
+    S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign; S.canUseAi = !!me.canUseAi;
     rememberMe();
   }
   function rememberMe() {
-    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign });
+    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign, canUseAi: S.canUseAi });
     Api.saveCompany(S.company);
   }
 
@@ -237,7 +237,7 @@
   }
 
   function viewTasks() {
-    const brief = Assistant.briefingCard(App);
+    const brief = S.canUseAi ? Assistant.briefingCard(App) : { el: null, needsRefresh: function () { return false; }, load: function () {} };   // the overview and the bubble are for Senior General Managers and above
     const statBox = h('div'), list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show tasks' }), activeBox = h('div');
     const q = h('input', { type: 'search', placeholder: 'Search tasks or people…', 'aria-label': 'Search tasks or people', value: S.q });
     const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest first'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
@@ -247,8 +247,8 @@
       h('div', { class: 'hero2' },
         h('div', { class: 'hero2-top' }, h('span', { class: 'logo' }, icon('checkCircle', 20)), h('span', { class: 'nm' }, S.company || 'Task Manager'), h('a', { href: '#/account', 'aria-label': 'My profile' }, UI.avatar(S.user.name, 'sm', S.user.id))),
         h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), subLine, statBox),
-      h('div', { class: 'home-grid' },
-        h('div', { class: 'home-side' }, brief.el),
+      h('div', { class: 'home-grid' + (brief.el ? '' : ' solo') },
+        brief.el ? h('div', { class: 'home-side' }, brief.el) : null,
         h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, activeBox, list)),
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks', { bare: true });
     let tasks = [], statSig = '', animated = false;
@@ -575,7 +575,7 @@
       catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/tasks' }, '← Back to tasks'))), 'tasks', barOpts); }
     }
 
-    let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = !!(Api.demo && window.DemoBackend && window.DemoBackend.realAi), recording = null;   // the demo's AI is capped, so it only summarises when asked
+    let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = !S.canUseAi || !!(Api.demo && window.DemoBackend && window.DemoBackend.realAi), recording = null;   // the demo's AI is capped, so it only summarises when asked
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
     const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
@@ -649,6 +649,7 @@
 
     function drawSummary() {
       UI.clear(sumBox);
+      if (!S.canUseAi && !task.summary) return;   // nothing to show, and no right to ask for one
       const stale = task.summaryStale && task.messageCount > 0;
       const btn = h('button', { class: 'btn small', type: 'button', disabled: summaryBusy, onclick: function () { runSummary(true); } }, icon('refresh', 15), summaryBusy ? 'Updating…' : (task.summary ? 'Refresh summary' : 'Create summary'));
       let status = null;
@@ -656,7 +657,7 @@
       else if (summaryError) status = h('span', { class: 'small', style: 'color:var(--bad)' }, summaryError);
       else if (stale && task.summary) status = h('span', { class: 'small muted' }, 'New messages since this summary (' + UI.ago(task.summaryAt) + ').');
       else if (task.summary && task.summaryAt) status = h('span', { class: 'small muted' }, 'Updated ' + UI.ago(task.summaryAt) + '.');
-      sumBox.appendChild(summaryNode(task.summary, task.messageCount > 0 ? h('div', { class: 'sum-foot' }, h('span', { class: 'grow' }, status), btn) : null));
+      sumBox.appendChild(summaryNode(task.summary, task.messageCount > 0 && S.canUseAi ? h('div', { class: 'sum-foot' }, h('span', { class: 'grow' }, status), btn) : null));
     }
     async function runSummary(force) {
       if (summaryBusy) return;
@@ -1035,7 +1036,7 @@
           });
           return box;
         })()),
-      isPureAdmin() ? null : Assistant.settingsCard(),
+      isPureAdmin() || !S.canUseAi ? null : Assistant.settingsCard(),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
       h('div', { class: 'card tip' }, icon('phone', 22), h('div', null, h('h3', null, 'Add to your home screen'), h('p', { class: 'muted small', style: 'margin:0' }, 'Open this page on your phone, then in Chrome use the ⋮ menu → "Add to Home screen". On iPhone (Safari) use Share → "Add to Home Screen". It then opens like an app.'))),
       h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: signOut }, icon('logout', 18), 'Sign out'), Api.demo ? h('button', { class: 'btn', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data') : null)), 'account');
@@ -1051,7 +1052,7 @@
     Profiles.refresh();
     const p = (location.hash || '#/tasks').slice(2).split('/');
     // the AI bubble floats over every screen (not over the administrator-only pages); it knows which task or completed task is open
-    if (isPureAdmin()) Assistant.hide(); else {
+    if (isPureAdmin() || !S.canUseAi) Assistant.hide(); else {
       Assistant.ensure(App);
       Assistant.where({ task: p[0] === 'task' && p[1] ? decodeURIComponent(p[1]) : '', archived: p[0] === 'history' && p[1] ? decodeURIComponent(p[1]) : '' });
     }
@@ -1113,8 +1114,8 @@
         const known = Api.cacheGet('me');
         if (known && known.user) {
           // Returning visitor: open straight into the app with the last known profile and check it in the background.
-          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign;
-          const sig = function () { const u = S.user || {}; return [u.id, u.isAdmin, u.mustChange, u.jobTitleId, u.active, S.canAssign].join('|'); };
+          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign; S.canUseAi = !!known.canUseAi;
+          const sig = function () { const u = S.user || {}; return [u.id, u.isAdmin, u.mustChange, u.jobTitleId, u.active, S.canAssign, S.canUseAi].join('|'); };
           const before = sig();
           loadMe().then(function () { if (S.user && sig() !== before) route(); }).catch(function () { /* AUTH is handled by Api.onAuthLost; offline keeps the cached view */ });
         } else {

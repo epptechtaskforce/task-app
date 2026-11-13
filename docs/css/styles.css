@@ -726,7 +726,7 @@ h1 { letter-spacing: -.025em; }
 /* a little trail of two dots from the bubble to its words, like a thought */
 .aib-stack::before, .aib-stack::after { content: ""; position: absolute; border-radius: 50%; background: var(--aib-glass); border: 1px solid var(--aib-edge); box-shadow: 0 4px 12px rgba(20, 6, 40, .22); animation: aibpop .4s var(--spring) .15s both; }
 .aib-stack::before { width: 11px; height: 11px; } .aib-stack::after { width: 6px; height: 6px; animation-delay: .05s; }
-.aib-stack:empty::before, .aib-stack:empty::after { display: none; }
+.aib-stack:not(.has)::before, .aib-stack:not(.has)::after { display: none; }
 .aib-stack.above::before { bottom: -17px; } .aib-stack.above::after { bottom: -25px; }
 .aib-stack.below::before { top: -17px; } .aib-stack.below::after { top: -25px; }
 .aib-stack::before { left: calc(var(--tx, 40px) + var(--tdx, 0px) - 5.5px); } .aib-stack::after { left: calc(var(--tx, 40px) - 3px); }
@@ -801,3 +801,21 @@ h1 { letter-spacing: -.025em; }
 @media print { .aib-fab, .aib-stack, .aib-typer { display: none !important; } }
 
 .slow-note { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 60; padding: 8px 14px; border-radius: 999px; background: rgba(20,24,32,.88); color: #fff; font-size: 13px; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+@media (min-width: 1100px) { .home-grid.solo { display: block; } }
+
+/* the chat can be tucked away and brought back (same conversation) */
+.aib-stack { transition: opacity .25s ease, transform .25s ease, visibility 0s; }
+.aib-stack.min { opacity: 0; visibility: hidden; transform: scale(.9); transition: opacity .22s ease, transform .22s ease, visibility 0s .22s; transform-origin: var(--tx, 50%) 100%; }
+.aib-stack.below.min { transform-origin: var(--tx, 50%) 0; }
+.aib-stack.min * { pointer-events: none !important; }
+.aib-fab.unread .aib-dot { background: #ff5a3c; animation: aibunread 1.2s ease-in-out infinite; }
+@keyframes aibunread { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.35); } }
+/* small tools tied to the conversation: ask by voice, type, clear */
+.aib-tools { display: none; pointer-events: auto; gap: .3rem; align-items: center; order: 5; width: max-content; }
+.aib-stack.has .aib-tools { display: flex; }
+.aib-stack.right .aib-tools { align-self: flex-end; margin-right: var(--aib-edge, 0px); }
+.aib-stack.left .aib-tools { align-self: flex-start; margin-left: var(--aib-edge, 0px); }
+.aib-tb { height: 30px; min-width: 30px; padding: 0 .55rem; border-radius: 999px; border: 1px solid var(--aib-edge); background: var(--aib-glass); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); color: var(--mute); display: inline-flex; align-items: center; justify-content: center; gap: .3rem; font: inherit; font-size: .72rem; font-weight: 700; cursor: pointer; box-shadow: 0 3px 10px rgba(20, 6, 40, .18); }
+.aib-tb:hover { color: var(--ink); }
+.aib-tb.clr:hover { color: var(--bad); }
+@media (prefers-reduced-motion: reduce) { .aib-stack { transition: none; } }

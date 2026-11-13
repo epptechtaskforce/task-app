@@ -299,9 +299,26 @@ function createCore(env) {
     return { loggedOut: true };
   } };
 
+  // Who may use the AI (assistant bubble, home overview, new task summaries, natural voice): Senior General Managers and everyone
+  // above them. The cut-off is the layer of the job title that looks like "Senior General Manager" / "Senior GM" / "SGM"; the
+  // script property AI_MAX_LEVEL (a layer number, 1 = top) overrides it. People without a job title (the Administrator) have no AI.
+  function aiLevelCap(ctx) {
+    const set = parseInt(env.setting && env.setting('AI_MAX_LEVEL'), 10);
+    if (set > 0) return set;
+    let cap = 0;
+    ctx.rows('JobTitles').forEach(function (t) { if (/senior\s+(general\s+)?manager|senior\s+gm|(^|[^a-z])sgm([^a-z]|$)/i.test(t.title) && t.level > cap) cap = t.level; });
+    return cap;
+  }
+  function aiAllowed(ctx, user) {
+    const lvl = levelOf(user, titlesById(ctx)), cap = aiLevelCap(ctx);
+    return !!cap && lvl !== null && lvl !== undefined && lvl <= cap;
+  }
+  function needAi(ctx, user) {
+    if (!aiAllowed(ctx, user)) throw fail('FORBIDDEN', 'The AI assistant is available to Senior General Managers and above.');
+  }
   function meView(ctx, user) {
     const company = (ctx.rows('Settings').filter(function (x) { return x.key === 'companyName'; })[0] || {}).value || '';
-    return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }) };
+    return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }), canUseAi: aiAllowed(ctx, user) };
   }
   A.me = { run: function (ctx, user) { return meView(ctx, user); } };
 
@@ -724,6 +741,7 @@ function createCore(env) {
     const content = countContent(msgs);
     if (!content) return { summary: null, summaryStale: false };
     if (t.summary && t.summary.summary_en !== undefined && t.summaryMsgCount === content && !req.force) return { summary: t.summary, summaryStale: false };
+    needAi(ctx, user);                                                       // a new summary costs an AI call: only for those allowed to use the AI
     const input = {
       task: { title: t.title, description: t.description, progress: t.progress, status: t.status, dueDate: t.dueDate, manager: brief(ctx, t.creatorId).name, assignees: t.assigneeIds.map(function (id) { return brief(ctx, id).name; }) },
       messages: msgs.map(function (m) { return { time: env.formatDate(m.createdAt), from: m.senderId ? brief(ctx, m.senderId).name : 'System', role: m.senderId === t.creatorId ? 'manager' : (m.senderId ? 'assignee' : 'system'), type: m.type, text: m.type === 'voice' ? voiceMemo(m) : m.type === 'file' ? aiMsgText(ctx, m) : m.text }; })
@@ -891,6 +909,7 @@ function createCore(env) {
   }
 
   A.assistant = { run: function (ctx, user, req) {
+    needAi(ctx, user);
     const text = clip(req.text, LIMITS.maxAssistText).trim();
     let audio = null;
     if (req.wavB64 || req.audioB64) {
@@ -935,6 +954,7 @@ function createCore(env) {
 
   // Natural-sounding speech for the assistant's answers (a few seconds of audio per call). The browser falls back to its own voice if this fails.
   A.speak = { run: function (ctx, user, req) {
+    needAi(ctx, user);
     const text = clip(req.text, 400).replace(/\s+/g, ' ').trim();
     if (!text) throw fail('VALIDATION', 'Nothing to say');
     if (!env.ai.speak) throw fail('AI_FAILED', 'Natural voice is not available');
@@ -945,6 +965,7 @@ function createCore(env) {
 
   // The overview at the top of the home page. Made again only when something changed (and at most every 20 minutes), kept per person.
   A.briefing = { run: function (ctx, user, req) {
+    needAi(ctx, user);
     const mine = openTasksOf(ctx, user), now = aiNow();
     if (!mine.length) return { briefing: { headline: 'You have no open tasks right now.', items: [] }, at: env.now(), stale: false };
     const sig = env.sha256Hex(now.date + '|' + mine.map(function (t) { return [t.id, t.status, t.progress, t.dueDate, t.updatedAt, t.assigneeIds.length].join(':'); }).sort().join('|'));

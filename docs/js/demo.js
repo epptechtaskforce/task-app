@@ -97,7 +97,7 @@
         await loadScript('js/core.js');
         let offset = 0;
         try { ['taskapp.demo.db.v1', 'taskapp.demo.db.v2', 'taskapp.demo.db.v2.files'].forEach(function (k) { localStorage.removeItem(k); }); } catch (e) { /* ignore */ }
-        const env = w.MemoryEnv.createMemoryEnv({ persistKey: KEY, now: function () { return Date.now() + offset; }, hashRounds: 30 });
+        const env = w.MemoryEnv.createMemoryEnv({ persistKey: KEY, now: function () { return Date.now() + offset; }, hashRounds: 30, settings: { AI_MAX_LEVEL: '2' } });
         core = createCore(env);
         let existing = null;
         try { existing = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { /* ignore */ }

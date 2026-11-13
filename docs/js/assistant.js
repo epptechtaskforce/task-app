@@ -1,6 +1,8 @@
 /* assistant.js - the AI bubble.
  * One round bubble floats over every screen. Tap it and talk: your question and the answer float next to it (only the last two),
- * the app stays visible behind. Touch anywhere else and they fade away. Drag the bubble anywhere you like.
+ * the app stays visible behind. Touching the screen elsewhere does NOT close the chat. Tap the bubble to tuck the chat away
+ * (minimise) and tap it again to bring the same conversation back; a small Clear button next to the chat forgets it.
+ * Drag the bubble anywhere you like.
  * The assistant only PROPOSES actions (post a message, set progress, create a task...). They are shown in a small card
  * (Send / Edit / Delete for a message) and run, through the normal permission-checked calls, only after the person agrees.
  * All text is inserted with textContent (via h()), never as HTML.
@@ -14,7 +16,7 @@
 
   /* ============================== state (kept for this browser tab, wiped at sign-out) ============================== */
   const B = { recog: null, App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, bars: [],
-    history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
+    history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, min: false, tools: null, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
   const store = {
     load: function () { try { const v = JSON.parse(sessionStorage.getItem('aib:' + B.uid) || 'null'); if (v) { B.history = v.history || []; B.pending = v.pending || []; } } catch (e) { /* ignore */ } },
     save: function () { try { sessionStorage.setItem('aib:' + B.uid, JSON.stringify({ history: B.history.slice(-12), pending: B.pending })); } catch (e) { /* storage blocked */ } }
@@ -28,12 +30,17 @@
     B.input = h('input', { type: 'text', maxlength: 1500, placeholder: 'Type to the assistant…', 'aria-label': 'Message to the assistant', autocomplete: 'off' });
     B.typer = h('form', { class: 'aib-typer hidden', onsubmit: function (e) { e.preventDefault(); const v = B.input.value.trim(); if (!v) return; B.input.value = ''; closeTyper(); ask({ text: v }); } },
       B.input, h('button', { type: 'submit', class: 'aib-send', 'aria-label': 'Send' }, icon('send', 20)));
+    // a small row tied to the conversation: ask by voice, type instead, and clear (forget) the conversation
+    B.tools = h('div', { class: 'aib-tools' },
+      h('button', { type: 'button', class: 'aib-tb', title: 'Ask by voice', 'aria-label': 'Ask by voice', onclick: function () { startListening(); } }, icon('mic', 15)),
+      h('button', { type: 'button', class: 'aib-tb', title: 'Type instead', 'aria-label': 'Type instead', onclick: function () { switchToTyping(); } }, icon('edit', 15)),
+      h('button', { type: 'button', class: 'aib-tb clr', title: 'Clear this conversation', 'aria-label': 'Clear this conversation', onclick: clearConversation }, icon('trash', 14), 'Clear'));
+    B.stack.appendChild(B.tools);
     document.body.appendChild(B.stack); document.body.appendChild(B.typer); document.body.appendChild(B.fab);
     wireDrag(); layout();
     window.addEventListener('resize', layout);
     if (window.ResizeObserver) new ResizeObserver(function () { layout(); }).observe(document.documentElement);   // a scrollbar appearing changes the width too
-    document.addEventListener('pointerdown', onAnyTouch, true);
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && active() && !document.querySelector('.overlay')) endSession(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && shown() && !document.querySelector('.overlay')) minimize(); });
     B.built = true;
   }
 
@@ -88,7 +95,15 @@
 
   /* ============================== the two floating messages ============================== */
   function active() { return !!(B.userEl || B.botEl || B.typing || B.rec); }
-  function bubbleEl(kind, content) { return h('div', { class: 'aib-msg ' + kind, onclick: function () { endSession(); } }, content); }
+  function hasConvo() { return !!(B.userEl || B.botEl || B.card); }
+  function shown() { return B.built && !B.min && (hasConvo() || B.typing || !!B.rec); }
+  // keeps the small tools row and the speech-bubble tail in step with what is on screen
+  function sync() {
+    if (!B.built) return;
+    B.stack.classList.toggle('has', hasConvo());
+    B.stack.classList.toggle('min', B.min);
+  }
+  function bubbleEl(kind, content) { return h('div', { class: 'aib-msg ' + kind }, content); }
   function dissolve(el) { if (!el || !el.parentNode) return; el.classList.add('out'); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 380); }
   // Your words come out of your own profile picture, on the side opposite to the AI bubble (like two people chatting).
   function putUser(content) {
@@ -98,7 +113,7 @@
     }
     const row = h('div', { class: 'aib-urow' }, h('span', { class: 'aib-dp' }, UI.avatar(me.name, '', me.id)), msg);
     B.userEl = row; if (old) old.remove();
-    B.stack.insertBefore(row, B.stack.firstChild); return msg;
+    B.stack.insertBefore(row, B.stack.firstChild); sync(); return msg;
   }
   // The assistant's words: a small name tag, then the text laid out in lines (lines starting with "- " become bullets) with the
   // words fading in one after another, so it feels like it is speaking. Very long answers skip the per-word effect.
@@ -119,23 +134,39 @@
     if (typeof content === 'string') content = botCard(content);
     const old = B.botEl; B.botEl = bubbleEl('bot' + (typing ? ' typing' : ''), content);
     if (old) old.remove();
-    B.stack.insertBefore(B.botEl, B.userEl ? B.userEl.nextSibling : B.stack.firstChild); return B.botEl;
+    B.stack.insertBefore(B.botEl, B.userEl ? B.userEl.nextSibling : B.stack.firstChild); sync(); return B.botEl;
   }
   function dots() { return [h('i'), h('i'), h('i')]; }
-  function clearMessages() { dissolve(B.userEl); dissolve(B.botEl); B.userEl = null; B.botEl = null; }
+  function clearMessages() { dissolve(B.userEl); dissolve(B.botEl); B.userEl = null; B.botEl = null; sync(); }
+  // Stops listening / speaking / typing and removes the messages. The remembered conversation (B.history) is untouched.
   function endSession() {
     B.token++;                                              // anything still on its way is ignored
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
     if (B.recog) { B.recog.abort(); B.recog = null; }
-    B.busy = false; B.fab.classList.remove('listening', 'busy'); Speech.stop(); closeTyper(true);
-    clearMessages();
+    B.busy = false; B.fab.classList.remove('listening', 'busy', 'unread'); Speech.stop(); closeTyper(true);
+    B.min = false; clearMessages();
     if (B.App && B.App.clearSpot) B.App.clearSpot();
   }
-  function onAnyTouch(e) {
-    if (!B.built || !active()) return;
-    const t = e.target;
-    if (t && t.closest && t.closest('.aib-fab, .aib-stack, .aib-typer, .overlay')) return;
-    endSession();                                           // the touch itself carries on (scrolling, tapping) as normal
+  // Tuck the chat away. The conversation stays exactly as it is (an answer still on its way arrives quietly: the bubble shows a dot).
+  function minimize() {
+    if (!B.built || B.min) return;
+    Speech.stop(); closeTyper(true);
+    if (B.rec || B.recog || B.fab.classList.contains('listening') || (B.userEl && B.userEl.querySelector('.listening'))) {          // it was only listening: stop that, nothing was asked yet
+      B.token++;
+      if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
+      if (B.recog) { B.recog.abort(); B.recog = null; }
+      B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
+      if (B.userEl && B.userEl.querySelector('.listening')) { B.userEl.remove(); B.userEl = null; }
+    }
+    if (B.App && B.App.clearSpot) B.App.clearSpot();
+    B.min = true; sync();
+  }
+  function restore() { if (!B.built) return; B.min = false; B.fab.classList.remove('unread'); sync(); layout(); }
+  // Forget this conversation completely: what is on screen, what the assistant remembers of it, and any draft waiting for an OK.
+  function clearConversation() {
+    B.pending = []; B.history = []; B.editing = false; drawCard();
+    endSession(); store.save();
+    UI.toast('Conversation cleared');
   }
 
   /* ============================== talking ============================== */
@@ -148,12 +179,20 @@
     for (let i = 0; i < 14; i++) { const b = h('i'); B.bars.push(b); lvl.appendChild(b); }
     return [h('span', { class: 'lbl' }, 'Listening…'), lvl, h('button', { type: 'button', class: 'aib-kbd', 'aria-label': 'Type instead', title: 'Type instead', onclick: function (e) { e.stopPropagation(); switchToTyping(); } }, icon('edit', 16))];
   }
+  // Tap on the bubble: chat showing -> tuck it away; tucked away -> the same conversation pops up; nothing yet -> start listening.
   function tap() {
     Speech.unlock();
+    if (shown()) return minimize();
+    if (B.min && hasConvo()) return restore();
+    startListening();
+  }
+  function startListening() {
+    Speech.unlock(); restore();
     if (B.App && B.App.clearSpot) B.App.clearSpot();
-    clearMessages(); Speech.stop(); closeTyper(true);
+    Speech.stop(); closeTyper(true);
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
-    listen();
+    if (B.recog) { B.recog.abort(); B.recog = null; }
+    listen(true);                                           // the last answer stays in view while the next question is asked
   }
   /* ---- the phone's own speech recognition (English): instant words, no upload ---- */
   const speechCtor = function () { return w.SpeechRecognition || w.webkitSpeechRecognition; };
@@ -235,6 +274,7 @@
     }
     if (my !== B.token) return;                                                     // the person moved on
     B.busy = false; B.fab.classList.remove('busy');
+    if (B.min) B.fab.classList.add('unread');
     const heard = r.heard || o.text || '';
     if (o.audio) putUser(heard || '(I could not make out what you said)');
     B.history.push({ role: 'user', text: heard }, { role: 'assistant', text: r.reply });
@@ -248,9 +288,9 @@
   }
   function say(text, my, shown) {
     const again = function () {                                                      // it asked something: listen for the answer
-      if (my === B.token && B.lastVoice && !B.busy && !B.rec && B.botEl && (/\?\s*$/.test(shown || '') || B.pending.length)) setTimeout(function () { if (my === B.token) listen(true); }, 300);
+      if (my === B.token && !B.min && B.lastVoice && !B.busy && !B.rec && B.botEl && (/\?\s*$/.test(shown || '') || B.pending.length)) setTimeout(function () { if (my === B.token) listen(true); }, 300);
     };
-    if (B.lastVoice && Speech.enabled() && Speech.supported) Speech.speak(text, { onend: again }); else again();
+    if (B.lastVoice && !B.min && Speech.enabled() && Speech.supported) Speech.speak(text, { onend: again }); else again();
   }
   function openTask(a) {
     if (!B.App) return;
@@ -260,7 +300,7 @@
 
   /* ============================== the card: Send / Edit / Delete a message, or yes / no for other actions ============================== */
   function drawCard() {
-    if (B.card) { B.card.remove(); B.card = null; }
+    if (B.card) { B.card.remove(); B.card = null; sync(); }
     if (!B.pending.length) return;
     const one = B.pending.length === 1 ? B.pending[0] : null;
     const card = h('div', { class: 'aib-card' });
@@ -288,7 +328,7 @@
         h('button', { class: 'btn primary small', type: 'button', onclick: confirmPending }, icon('check', 16), 'Yes, do it'),
         h('button', { class: 'btn small', type: 'button', onclick: cancelPending }, 'No')));
     }
-    B.card = card; B.stack.appendChild(card);
+    B.card = card; B.stack.appendChild(card); sync();
   }
   async function confirmPending() {
     if (!B.pending.length || B.busy) return;
@@ -316,7 +356,8 @@
     const sent = todo.length === 1 && todo[0].type === 'post_message';
     const msg = (done ? (sent ? 'Sent ✓' : (todo.length === 1 ? 'Done ✓' : done + ' done ✓')) : '') + (bad.length ? (done ? '\n' : '') + bad.join('\n') : '');
     putBot(msg || 'Done.'); store.save();
-    if (done && B.lastVoice && Speech.enabled() && Speech.supported) Speech.speak(sent ? 'Sent.' : 'Done.');
+    if (B.min) B.fab.classList.add('unread');
+    if (done && B.lastVoice && !B.min && Speech.enabled() && Speech.supported) Speech.speak(sent ? 'Sent.' : 'Done.');
   }
   function cancelPending() {
     B.pending = []; B.editing = false; drawCard(); store.save(); Speech.stop();
@@ -350,7 +391,7 @@
     const draw = function () {
       UI.clear(box);
       box.appendChild(h('h2', null, 'AI assistant'));
-      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Touch anywhere else when you are done.'));
+      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Tap it again to tuck the chat away, and tap it once more to bring the same conversation back. The small Clear button next to the chat forgets it.'));
       const row = h('div', { class: 'row' });
       if (Speech.supported) {
         const on = Speech.enabled();
@@ -372,18 +413,32 @@
   // Called by the app on every screen once somebody is signed in.
   function ensure(App) {
     B.App = App;
-    if (B.uid !== App.S.user.id) { B.uid = App.S.user.id; B.history = []; B.pending = []; store.load(); if (B.built) { clearMessages(); drawCard(); } }
-    if (!B.built) { build(); if (B.pending.length) drawCard(); }
+    let fresh = false;
+    if (B.uid !== App.S.user.id) { B.uid = App.S.user.id; B.history = []; B.pending = []; store.load(); fresh = true; if (B.built) { B.min = false; clearMessages(); drawCard(); } }
+    if (!B.built) { build(); fresh = true; }
+    if (fresh) {                                        // after a reload the last exchange is put back, tucked away behind the bubble
+      if (B.pending.length) drawCard();
+      rebuildLast();
+    }
     B.fab.classList.remove('hidden'); layout();
   }
-  function where(o) { B.where = { task: (o && o.task) || '', archived: (o && o.archived) || '' }; }
-  function hide() { if (!B.built) return; endSession(); B.fab.classList.add('hidden'); }
-  function reset() {
-    if (B.built) { endSession(); B.stack.remove(); B.typer.remove(); B.fab.remove(); document.removeEventListener('pointerdown', onAnyTouch, true); window.removeEventListener('resize', layout); }
-    try { Object.keys(sessionStorage).filter(function (k) { return k.indexOf('aib:') === 0; }).forEach(function (k) { sessionStorage.removeItem(k); }); } catch (e) { /* ignore */ }
-    B.built = false; B.uid = ''; B.history = []; B.pending = []; B.card = null; B.userEl = null; B.botEl = null; B.pos = null; B.where = { task: '', archived: '' };
+  function rebuildLast() {
+    if (B.userEl || B.botEl || !B.history.length) return;
+    let a = -1; for (let i = B.history.length - 1; i >= 0; i--) { if (B.history[i].role === 'assistant') { a = i; break; } }
+    if (a < 0) return;
+    const u = a > 0 && B.history[a - 1].role === 'user' ? B.history[a - 1].text : '';
+    if (u) putUser(u);
+    putBot(B.history[a].text);
+    B.min = true; sync();
   }
-  function listenNow() { if (B.built) tap(); }
+  function where(o) { B.where = { task: (o && o.task) || '', archived: (o && o.archived) || '' }; }
+  function hide() { if (!B.built) return; minimize(); B.fab.classList.add('hidden'); }   // the conversation waits, tucked away, for when the bubble is back
+  function reset() {
+    if (B.built) { endSession(); B.stack.remove(); B.typer.remove(); B.fab.remove(); window.removeEventListener('resize', layout); }
+    try { Object.keys(sessionStorage).filter(function (k) { return k.indexOf('aib:') === 0; }).forEach(function (k) { sessionStorage.removeItem(k); }); } catch (e) { /* ignore */ }
+    B.min = false; B.built = false; B.uid = ''; B.history = []; B.pending = []; B.card = null; B.userEl = null; B.botEl = null; B.pos = null; B.where = { task: '', archived: '' };
+  }
+  function listenNow() { if (B.built) startListening(); }
 
   /* ============================== "Today at a glance" ============================== */
 

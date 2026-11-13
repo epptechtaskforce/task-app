@@ -8,7 +8,7 @@ const { createMemoryEnv, sha256Hex } = require('../docs/js/memory-env.js');
 
 function makeApp(opts) {
   let clock = Date.UTC(2026, 10, 12, 9, 0, 0);
-  const env = createMemoryEnv(Object.assign({ now: () => clock, hashRounds: 5 }, opts || {}));
+  const env = createMemoryEnv(Object.assign({ now: () => clock, hashRounds: 5, settings: { AI_MAX_LEVEL: "3" } }, opts || {}));
   const core = createCore(env);
   const app = {
     env, core,
