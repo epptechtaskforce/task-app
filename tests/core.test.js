@@ -223,7 +223,7 @@ test('full task life cycle: shared chat, progress, send back, approve, archive',
 test('voice messages: stored, transcribed, and a failing AI does not lose the audio', () => {
   let failing = false;
   const ai = {
-    transcribe: () => { if (failing) throw new Error('503 overloaded'); return { transcript: 'වැඩේ අවසන්', language: 'Sinhala', english_translation: 'The work is finished' }; },
+    transcribe: () => { if (failing) throw new Error('503 overloaded'); return { english: 'The work is finished', language: 'Sinhala', key_points: 'Work reported finished.' }; },
     summarize: () => ({})
   };
   const app = makeApp({ ai }); const s = seed(app);
@@ -232,7 +232,11 @@ test('voice messages: stored, transcribed, and a failing AI does not lose the au
   app.err('postVoice', s.tok.wk1, { taskId: t.id, audioB64: '', mime: 'audio/webm' }, 'VALIDATION');
   app.err('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio, mime: 'text/html' }, 'VALIDATION');
   const ok = app.ok('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio, wavB64: audio, mime: 'audio/webm;codecs=opus', secs: 12.4 });
-  assert.equal(ok.message.status, 'ok'); assert.equal(ok.message.transcript, 'වැඩේ අවසන්'); assert.equal(ok.message.audioSecs, 12);
+  assert.equal(ok.message.status, 'ok'); assert.equal(ok.message.audioSecs, 12);
+  // the chat shows audio only: what the AI understood is never sent to the browser
+  assert.equal(ok.message.transcript, undefined); assert.equal(ok.message.translation, undefined); assert.equal(ok.message.text, '');
+  assert.equal(JSON.stringify(app.ok('getTask', s.tok.mgr, { taskId: t.id })).includes('The work is finished'), false);
+  assert.equal(JSON.stringify(app.ok('listTasks', s.tok.mgr, {})).includes('The work is finished'), false);
   failing = true;
   const bad = app.ok('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio, wavB64: audio, mime: 'audio/webm', secs: 5 });
   assert.equal(bad.message.status, 'failed'); assert.equal(bad.transcribeFailed, true); assert.equal(bad.message.hasAudio, true);
@@ -252,7 +256,7 @@ test('voice messages: stored, transcribed, and a failing AI does not lose the au
 
 test('AI summary: cached until new messages arrive; failures are reported cleanly', () => {
   let calls = 0, failing = false, lastInput = null;
-  const ai = { transcribe: () => ({}), summarize: (input) => { calls++; lastInput = input; if (failing) throw new Error('boom'); return { summary_en: 'Going well', summary_si: 'හොඳයි', health: 'on_track', blockers: ['x'], next_steps: ['y'], progress_note: 'half' }; } };
+  const ai = { transcribe: () => ({}), summarize: (input) => { calls++; lastInput = input; if (failing) throw new Error('boom'); return { summary_en: 'Going well', health: 'on_track', blockers: ['x'], next_steps: ['y'], progress_note: 'half' }; } };
   const app = makeApp({ ai }); const s = seed(app);
   const t = app.ok('createTask', s.tok.mgr, { title: 'Sum', assigneeIds: [s.users.wk1.id] }).task;
   assert.equal(app.ok('refreshSummary', s.tok.mgr, { taskId: t.id }).summary, null);   // nothing to summarize yet

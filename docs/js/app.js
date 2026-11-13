@@ -458,7 +458,7 @@
     return h('div', { class: 'card sumcard' },
       h('div', { class: 'sum-head' }, h('span', { class: 'sum-ico' }, icon('sparkles', 18)), h('span', { class: 'grow' }, 'AI summary'), s ? healthChip(s.health) : null),
       h('div', { class: 'body' },
-        s ? h('div', null, h('p', null, s.summary_en), s.summary_si ? h('p', { class: 'muted' }, s.summary_si) : null, s.progress_note ? h('p', { class: 'small' }, h('strong', null, 'So far: '), s.progress_note) : null, list('Blockers', s.blockers), list('Next steps', s.next_steps))
+        s ? h('div', null, h('p', null, s.summary_en), s.progress_note ? h('p', { class: 'small' }, h('strong', null, 'So far: '), s.progress_note) : null, list('Blockers', s.blockers), list('Next steps', s.next_steps))
           : h('p', { class: 'muted' }, 'No summary yet. It appears once people post updates.')),
       extra);
   }
@@ -517,14 +517,9 @@
     const mine = m.senderId === S.user.id;
     let body;
     if (m.type === 'voice') {
-      const transcribing = m.status === 'transcribing';
-      const text = transcribing ? 'Transcribing…' : m.transcript ? m.transcript : 'Transcript not available - play the audio.';
       const play = m.hasAudio ? h('button', { class: 'play', type: 'button', 'data-id': m.id, 'aria-label': 'Play voice message', onclick: function (e) { togglePlay(e.currentTarget, m, o); } }) : null;
       if (play) setPlayIcon(play, S.playing && S.playing.id === m.id ? 'pause' : 'play');
-      body = h('div', null,
-        h('div', { class: 'voice' + (S.playing && S.playing.id === m.id ? ' playing' : '') }, play, waveform(m.id), h('span', { class: 'dur' }, UI.duration(m.audioSecs))),
-        h('div', { class: 'txt' + (transcribing ? ' transcribing' : '') }, text),
-        m.translation && m.translation !== m.transcript ? h('div', { class: 'tr' }, 'English: ' + m.translation) : null);
+      body = h('div', { class: 'voice' + (S.playing && S.playing.id === m.id ? ' playing' : '') }, play, waveform(m.id), h('span', { class: 'dur' }, UI.duration(m.audioSecs)));   // audio only; the AI keeps what was said in its own memory of the task
     } else if (m.type === 'file' && m.file) body = h('div', null, fileBubble(m, o), m.text ? h('div', { class: 'txt' }, m.text) : null);
     else body = h('div', { class: 'txt' }, m.text);
     const bubble = h('div', { class: 'msg' + (mine ? ' me' : '') }, mine || o.cont ? null : h('div', { class: 'who' }, m.senderName, m.senderTitle ? h('span', null, ' · ' + m.senderTitle) : null), body, h('div', { class: 'time' }, UI.time(m.createdAt)));
@@ -669,7 +664,7 @@
     async function refresh(force) { apply(await Api.call('getTask', { taskId: id }), force); }
     function apply(d, force) {
       S.taskMem[id] = d;
-      const newSig = d.messages.map(function (m) { return m.id + m.status + (m.transcript || '').length; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
+      const newSig = d.messages.map(function (m) { return m.id + m.status; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
       sig = newSig; task = d.task; messages = d.messages;
@@ -762,12 +757,11 @@
     }
 
     async function sendVoice(r) {
-      const temp = pendingRow(h('div', { class: 'txt' }, '🎤 Sending voice message (' + UI.duration(r.secs) + ')… the transcript can take up to a minute.'));
+      const temp = pendingRow(h('div', { class: 'txt' }, '🎤 Sending voice message (' + UI.duration(r.secs) + ')…'));
       showPending(temp);
       try {
         const payload = await Audio2.prepare(r.blob, r.secs);
-        const res = await Api.call('postVoice', Object.assign({ taskId: id }, payload), { timeout: 170000 });
-        if (res.transcribeFailed) UI.toast('Sent. The transcript could not be created, but people can play the audio.');
+        await Api.call('postVoice', Object.assign({ taskId: id }, payload), { timeout: 170000 });
       } catch (e) { UI.toast(e.message, 'bad'); }
       await refresh(true).catch(function () {});
       dropPending(temp);
@@ -817,7 +811,7 @@
     try { doc = await Api.call('getArchived', { taskId: id }, { timeout: 60000 }); }
     catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/history' }, '← Back to history'))), 'history', barOpts); }
     const t = doc.task;
-    const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
+    const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
     const chat = h('div', { class: 'chat' });
     renderChat(chat, msgs, { archived: true, taskId: id });
     shell(h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),

@@ -1,9 +1,9 @@
-# Task Manager - assign, follow and archive work (with Sinhala voice updates)
+# Task Manager - assign, follow and archive work (with voice updates)
 
 A small internal app for a management team of about 20 people.
 
 - Managers assign a task to one or **several people** below them. Everyone on the task shares **one conversation**.
-- People answer by **text or voice message** (Sinhala, English or mixed). Voice is transcribed by AI.
+- People answer by **text or voice message** (English, or Sinhala which the AI turns into English). A voice message appears in the chat as audio only; the AI listens to it and remembers it for the task, for summaries and for the assistant.
 - Assignees drag a **progress slider**. At 100% the task waits for the manager's **Agree** (or "send back").
 - An **AI summary** tells the manager where the task stands, based on the conversation.
 - Approved tasks move to **History** (start date, completion date, full conversation, voice files).

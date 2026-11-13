@@ -92,8 +92,8 @@ function smokeTest() {
   const root = DriveApp.createFolder('TaskApp SMOKETEST (safe to delete)');
   const voice = root.createFolder('Voice'), archive = root.createFolder('Archive');
   const stubAi = {
-    transcribe: function () { return { transcript: 'වැඩේ අවසන්', language: 'Sinhala', english_translation: 'The work is finished' }; },
-    summarize: function () { return { summary_en: 'ok', summary_si: 'හරි', health: 'on_track', blockers: [], next_steps: [], progress_note: 'x' }; },
+    transcribe: function () { return { english: 'The work is finished', language: 'Sinhala', key_points: 'Work reported finished.' }; },
+    summarize: function () { return { summary_en: 'ok', health: 'on_track', blockers: [], next_steps: [], progress_note: 'x' }; },
     assistant: function (input) { return { heard: 'hello', reply: 'Hi ' + input.userName, confirm: '', actions: [] }; },
     speak: function () { return { b64: Utilities.base64Encode('0000'), mime: 'audio/L16;codec=pcm;rate=24000' }; },
     briefing: function () { return { headline: 'All good', items: [{ tone: 'good', text: 'Nothing is late', task_id: '' }] }; }
@@ -134,7 +134,7 @@ function smokeTest() {
     });
     const fake = Utilities.base64Encode('not-really-audio');
     const v = must('postVoice', staff1, { taskId: task.id, audioB64: fake, wavB64: fake, mime: 'audio/webm', secs: 3 });
-    check(v.message.status === 'ok' && v.message.transcript === 'වැඩේ අවසන්', 'voice message saved and transcribed (Sinhala text survives the sheet)');
+    check(v.message.status === 'ok' && v.message.transcript === undefined, 'voice message saved and understood; the chat shows audio only');
     check(must('getAudio', boss1, { messageId: v.message.id }).b64 === fake, 'voice file can be read back from Drive');
     must('setProgress', staff1, { taskId: task.id, progress: 100 });
     must('approveTask', boss1, { taskId: task.id });
@@ -203,6 +203,18 @@ function assistantTest() {
   Logger.log(JSON.stringify(ai.briefing({ context: context, userName: 'Kamala Silva' })));
   const t0 = Date.now(); const v = ai.speak('You have one task that is overdue. Ruwan says the third pump needs a new valve.');
   Logger.log('Natural voice: ' + v.mime + ', ' + v.b64.length + ' chars of audio, ' + (Date.now() - t0) + ' ms');
+}
+
+// Real voice-message test: the speech model says a Sinhala and an English sentence, then the app's own listener turns each into English.
+function voiceTest() {
+  const ai = new GeminiAi_();
+  ['ඉරිගේෂන් පද්ධතියේ පොම්පය හදලා ඉවරයි, හෙට C කොටසට වතුර දානවා.', 'The pump is fixed and I will water block C tomorrow.'].forEach(function (said) {
+    try {
+      const v = ai.speak(said); const t0 = Date.now();
+      Logger.log('SAID: ' + said + '
+HEARD: ' + JSON.stringify(ai.transcribe(v.b64, 'audio/wav', 'Task: Irrigation check. People: Ruwan Jayasinghe.')) + '  (' + (Date.now() - t0) + ' ms)');
+    } catch (e) { Logger.log('FAILED for "' + said + '": ' + e); }
+  });
 }
 
 function selfTest() {

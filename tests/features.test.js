@@ -114,8 +114,8 @@ function spyAi() {
   const calls = [];
   const ai = {
     calls,
-    transcribe() { return { transcript: 't', language: 'English', english_translation: 't' }; },
-    summarize() { return { summary_en: 's', summary_si: '', health: 'on_track', blockers: [], next_steps: [], progress_note: '' }; },
+    transcribe() { return { english: 't', language: 'English', key_points: '' }; },
+    summarize() { return { summary_en: 's', health: 'on_track', blockers: [], next_steps: [], progress_note: '' }; },
     assistant(input) { calls.push(input); return ai.reply(input); },
     reply() { return { reply: 'ok', actions: [] }; },
     briefing(input) { calls.push({ briefing: true, input }); return ai.briefReply(input); },
@@ -215,7 +215,7 @@ test('briefing: made once per change, shared by quick repeat visits, and cleaned
 });
 
 test('voice notes: the AI is told who is in the task, to help it spell names', () => {
-  const seen = []; const ai = spyAi(); ai.transcribe = (b, m, hints) => { seen.push(hints); return { transcript: 'ok', language: 'English', english_translation: 'ok' }; };
+  const seen = []; const ai = spyAi(); ai.transcribe = (b, m, hints) => { seen.push(hints); return { english: 'ok', language: 'English', key_points: '' }; };
   const app = makeApp({ ai }); const s = seed(app);
   const task = app.ok('createTask', s.tok.mgr, { title: 'Irrigation check', assigneeIds: [s.users.wk1.id] }).task;
   app.ok('postVoice', s.tok.wk1, { taskId: task.id, audioB64: 'AAAA', mime: 'audio/webm', secs: 3 });
@@ -235,4 +235,22 @@ test('assistant: a short spoken version is always returned; the speak action nee
   app.err('speak', null, { text: 'Hello' }, 'AUTH');
   ai.speak = () => { throw new Error('quota'); };
   app.err('speak', s.tok.mgr, { text: 'Hello' }, 'AI_FAILED');
+});
+
+test('voice messages: shown as audio only, but the AI remembers them in English for summaries and the assistant', () => {
+  const ai = spyAi(); let summaryInput = null;
+  ai.transcribe = () => ({ english: 'The pump is fixed and I will water block C tomorrow', language: 'Sinhala', key_points: 'Pump fixed. Watering block C tomorrow.' });
+  ai.summarize = (input) => { summaryInput = input; return { summary_en: 's', health: 'on_track', blockers: [], next_steps: [], progress_note: '' }; };
+  const app = makeApp({ ai }); const s = seed(app);
+  const task = app.ok('createTask', s.tok.mgr, { title: 'Irrigation check', assigneeIds: [s.users.wk1.id] }).task;
+  const v = app.ok('postVoice', s.tok.wk1, { taskId: task.id, audioB64: 'AAAA', mime: 'audio/webm', secs: 4 });
+  const shown = JSON.stringify([v, app.ok('getTask', s.tok.mgr, { taskId: task.id }), app.ok('listTasks', s.tok.mgr, {})]);
+  assert.equal(shown.includes('pump'), false);                                                 // nothing of it reaches the chat
+  assert.equal(app.ok('listTasks', s.tok.mgr, {}).tasks.filter((t) => t.id === task.id)[0].lastMessage.text, 'Voice message');
+  app.ok('refreshSummary', s.tok.mgr, { taskId: task.id });
+  assert.ok(summaryInput.messages.some((m) => m.type === 'voice' && m.text.includes('The pump is fixed')));   // the summary knows it
+  app.ok('assistant', s.tok.mgr, { text: 'what did the worker say?', focusTaskId: task.id });
+  assert.ok(ai.calls[ai.calls.length - 1].context.includes('The pump is fixed'));              // so does the assistant
+  assert.equal(app.ok('assistant', s.tok.wk2, { text: 'anything?' }).reply, 'ok');
+  assert.equal(ai.calls[ai.calls.length - 1].context.includes('pump'), false);                 // and only people in the task
 });

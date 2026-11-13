@@ -102,7 +102,7 @@
   // Fake AI used in tests and demo mode (the real one calls Gemini).
   function fakeAi() {
     return {
-      transcribe: function () { return { transcript: '(demo) This is a sample transcript of the voice message.', language: 'English', english_translation: '(demo) This is a sample transcript of the voice message.' }; },
+      transcribe: function () { return { english: '(demo) This is a sample of what the AI understood from the voice message.', language: 'English', key_points: '' }; },
       // Demo stand-ins: they only read the context they are given and cannot really understand speech or questions.
       assistant: function (input) {
         const lines = String(input.context).split(/\r?\n/).filter(function (l) { return l.indexOf('TASK id=') === 0; });
@@ -125,7 +125,6 @@
         const p = input.task.progress;
         return {
           summary_en: input.task.assignees.join(', ') + ' reported ' + msgs.length + ' update(s). Progress is ' + p + '%. Latest: "' + (last ? String(last.text).slice(0, 120) : 'none') + '"',
-          summary_si: '(demo) සාරාංශය: ප්‍රගතිය ' + p + '% කි.',
           progress_note: 'Progress is at ' + p + '%.',
           health: p >= 100 ? 'done' : p >= 50 ? 'on_track' : 'at_risk',
           blockers: [], next_steps: p >= 100 ? [] : ['Continue the work and report again']

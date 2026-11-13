@@ -31,8 +31,8 @@
  *   env.files.readFile(fileId)     -> {b64, mime}
  *   env.archive.save({folder, files:[{name,content,mime}], audioFileIds}) -> {storage, path, fileId}
  *   env.archive.read({storage, path, fileId}) -> JSON text of task.json
- *   env.ai.transcribe(b64, mime, hints) -> {transcript, language, english_translation}
- *   env.ai.summarize(input)        -> {summary_en, summary_si, progress_note, health, blockers, next_steps}
+ *   env.ai.transcribe(b64, mime, hints) -> {english, language, key_points}   (always English; Sinhala is translated)
+ *   env.ai.summarize(input)        -> {summary_en, progress_note, health, blockers, next_steps}
  *   env.ai.assistant(input)        -> {heard, reply, confirm, actions[]}      (the private secretary; see A.assistant)
  *   env.ai.briefing(input)         -> {headline, items[{tone, text, task_id}]} (the home-page overview; see A.briefing)
  *   env.ai.speak(text)             -> {b64, mime}  natural-sounding speech (raw 16-bit PCM); optional, the browser falls back to its own voice
@@ -201,7 +201,7 @@ function createCore(env) {
   }
   function msgView(ctx, m) {
     const s = brief(ctx, m.senderId);
-    const v = { id: m.id, taskId: m.taskId, senderId: m.senderId, senderName: m.senderId ? s.name : 'System', senderTitle: s.jobTitle, type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, lang: m.lang, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt };
+    const v = { id: m.id, taskId: m.taskId, senderId: m.senderId, senderName: m.senderId ? s.name : 'System', senderTitle: s.jobTitle, type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt };   // a voice message is shown as audio only; what the AI understood from it stays on the server
     if (m.type === 'file') v.file = fileView(attachmentOf(ctx, m.id));
     return v;
   }
@@ -218,7 +218,7 @@ function createCore(env) {
       dueDate: t.dueDate, createdAt: t.createdAt, updatedAt: t.updatedAt, pendingAt: t.pendingAt, closedAt: t.closedAt,
       creator: brief(ctx, t.creatorId), assignees: t.assigneeIds.map(function (id) { return brief(ctx, id); }),
       role: t.creatorId === me.id ? 'creator' : 'assignee', unread: unread, messageCount: content,
-      lastMessage: last ? { senderName: last.senderId ? brief(ctx, last.senderId).name : 'System', type: last.type, text: clip(last.type === 'voice' ? (last.transcript || 'Voice message') : last.type === 'file' ? (last.text || 'Shared a file') : last.text, 90), at: last.createdAt } : null
+      lastMessage: last ? { senderName: last.senderId ? brief(ctx, last.senderId).name : 'System', type: last.type, text: clip(last.type === 'voice' ? 'Voice message' : last.type === 'file' ? (last.text || 'Shared a file') : last.text, 90), at: last.createdAt } : null
     };
     if (opts && opts.detail) {
       v.description = t.description;
@@ -233,7 +233,7 @@ function createCore(env) {
     o = o || {};
     const list = function (x) { return Array.isArray(x) ? x.map(function (i) { return clip(i, 300); }).slice(0, 8) : []; };
     const health = ['on_track', 'at_risk', 'blocked', 'done', 'unknown'].indexOf(o.health) >= 0 ? o.health : 'unknown';
-    return { summary_en: clip(o.summary_en, 1200), summary_si: clip(o.summary_si, 1500), progress_note: clip(o.progress_note, 600), health: health, blockers: list(o.blockers), next_steps: list(o.next_steps) };
+    return { summary_en: clip(o.summary_en, 1200), progress_note: clip(o.progress_note, 600), health: health, blockers: list(o.blockers), next_steps: list(o.next_steps) };
   }
 
   /* ============================== sessions / auth ============================== */
@@ -576,7 +576,8 @@ function createCore(env) {
     try { // AI call happens OUTSIDE the lock so other people are never blocked by a slow model
       const hints = 'Task: ' + t.title + '. People: ' + [t.creatorId].concat(t.assigneeIds).map(function (id) { return brief(ctx, id).name; }).join(', ') + '.';
       const r = env.ai.transcribe(wavB64 || audioB64, wavB64 ? 'audio/wav' : mime, hints) || {};
-      patch = { status: 'ok', transcript: clip(r.transcript, LIMITS.transcript), translation: clip(r.english_translation, LIMITS.transcript), lang: clip(r.language, 40) };
+      // transcript = what was said, in English (Sinhala is translated); translation = the key points. Both are only for the AI's memory of the task.
+      patch = { status: 'ok', transcript: clip(r.english || r.english_translation || r.transcript, LIMITS.transcript), translation: clip(r.key_points, 600), lang: clip(r.language, 40) };
     } catch (e) {
       env.log('transcribe failed: ' + e);
       patch = { status: 'failed', transcript: '', translation: '' };
@@ -725,7 +726,7 @@ function createCore(env) {
     if (t.summary && t.summary.summary_en !== undefined && t.summaryMsgCount === content && !req.force) return { summary: t.summary, summaryStale: false };
     const input = {
       task: { title: t.title, description: t.description, progress: t.progress, status: t.status, dueDate: t.dueDate, manager: brief(ctx, t.creatorId).name, assignees: t.assigneeIds.map(function (id) { return brief(ctx, id).name; }) },
-      messages: msgs.map(function (m) { return { time: env.formatDate(m.createdAt), from: m.senderId ? brief(ctx, m.senderId).name : 'System', role: m.senderId === t.creatorId ? 'manager' : (m.senderId ? 'assignee' : 'system'), type: m.type, text: m.type === 'voice' ? (m.transcript || '(voice message, not transcribed)') : m.type === 'file' ? aiMsgText(ctx, m) : m.text }; })
+      messages: msgs.map(function (m) { return { time: env.formatDate(m.createdAt), from: m.senderId ? brief(ctx, m.senderId).name : 'System', role: m.senderId === t.creatorId ? 'manager' : (m.senderId ? 'assignee' : 'system'), type: m.type, text: m.type === 'voice' ? voiceMemo(m) : m.type === 'file' ? aiMsgText(ctx, m) : m.text }; })
     };
     let summary;
     try { summary = normalizeSummary(env.ai.summarize(input)); }
@@ -744,8 +745,14 @@ function createCore(env) {
   function niceDate(ymd) { const d = new Date(ymd + 'T12:00:00Z'); return DAY_NAMES[d.getUTCDay()].slice(0, 3) + ' ' + d.getUTCDate() + ' ' + MONTH_SHORT[d.getUTCMonth()]; }
   function openTasksOf(ctx, user) { return ctx.rows('Tasks').filter(function (t) { return t.status !== 'closed' && isParticipant(t, user.id); }); }
 
+  // What the AI remembers of a voice message: the English text, plus the key points when it was long.
+  function voiceMemo(m) {
+    if (!m.transcript) return '(voice message, not understood)';
+    return m.transcript.length > 280 && m.translation ? m.transcript + ' [key points: ' + m.translation + ']' : m.transcript;
+  }
+
   function aiMsgText(ctx, m) {
-    if (m.type === 'voice') return '(voice) ' + (m.transcript || 'not transcribed');
+    if (m.type === 'voice') return '(voice) ' + voiceMemo(m);
     if (m.type === 'file') { const a = attachmentOf(ctx, m.id); return '(shared a file: ' + (a ? a.name : 'file') + ')' + (m.text ? ' ' + m.text : ''); }
     if (m.type === 'system') return '(system) ' + m.text;
     return m.text;
@@ -956,7 +963,9 @@ function createCore(env) {
 
   A.getArchived = { run: function (ctx, user, req) {
     const idx = archiveIndexFor(ctx, user, req.taskId);
-    return JSON.parse(env.archive.read(idx));
+    const doc = JSON.parse(env.archive.read(idx));   // the stored copy keeps what the AI understood from voice messages; the browser only gets the audio
+    (doc.messages || []).forEach(function (m) { if (m.type === 'voice') { delete m.transcript; delete m.translation; } });
+    return doc;
   } };
 
   function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'task'; }
@@ -968,11 +977,11 @@ function createCore(env) {
       const body = m.type === 'file' && m.file
         ? '<em>Shared file: ' + esc(m.file.name) + ' (' + Math.max(1, Math.round(m.file.size / 1024)) + ' KB)</em>' + (m.text ? '<div>' + esc(m.text) + '</div>' : '')
         : m.type === 'voice'
-        ? '<em>Voice message (' + m.audioSecs + 's)</em><div>' + esc(m.transcript || 'No transcript available') + '</div>' + (m.translation && m.translation !== m.transcript ? '<div class="tr">English: ' + esc(m.translation) + '</div>' : '')
+        ? '<em>Voice message (' + m.audioSecs + 's)</em><div>' + esc(m.transcript || 'No transcript available') + '</div>' + (m.translation ? '<div class="tr">Key points: ' + esc(m.translation) + '</div>' : '')
         : '<div>' + esc(m.text) + '</div>';
       return '<div class="m ' + esc(m.type) + '"><div class="who">' + esc(m.senderName) + ' &middot; ' + esc(m.time) + '</div>' + body + '</div>';
     }).join('\n');
-    const s = t.summary && t.summary.summary_en ? '<h2>AI summary</h2><p>' + esc(t.summary.summary_en) + '</p><p>' + esc(t.summary.summary_si) + '</p>' : '';
+    const s = t.summary && t.summary.summary_en ? '<h2>AI summary</h2><p>' + esc(t.summary.summary_en) + '</p>' : '';
     return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(t.title) + '</title>' +
       '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#1c2430}.m{border:1px solid #dde2ea;border-radius:10px;padding:10px;margin:8px 0}.m.system{background:#f3f5f8;color:#586272;font-size:.9em}.who{font-size:.8em;color:#6b7685}.tr{color:#6b7685;font-size:.9em}dl{display:grid;grid-template-columns:140px 1fr;gap:4px 12px}dt{color:#6b7685}</style></head><body>' +
       '<h1>' + esc(t.title) + '</h1><dl><dt>Assigned by</dt><dd>' + esc(t.creator.name) + '</dd><dt>Assigned to</dt><dd>' + esc(t.assignees.map(function (a) { return a.name; }).join(', ')) + '</dd>' +
