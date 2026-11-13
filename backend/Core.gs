@@ -34,6 +34,7 @@
  *   env.ai.summarize(input)        -> {summary_en, summary_si, progress_note, health, blockers, next_steps}
  *   env.ai.assistant(input)        -> {heard, reply, confirm, actions[]}      (the private secretary; see A.assistant)
  *   env.ai.briefing(input)         -> {headline, items[{tone, text, task_id}]} (the home-page overview; see A.briefing)
+ *   env.ai.speak(text)             -> {b64, mime}  natural-sounding speech (raw 16-bit PCM); optional, the browser falls back to its own voice
  */
 'use strict';
 
@@ -792,7 +793,7 @@ function createCore(env) {
   }
   function aiContextFit(ctx, user, withPeople, budget) {
     let text = '';
-    [10, 5, 2].some(function (n) { text = aiContext(ctx, user, n, withPeople); return text.length <= budget; });
+    [6, 3, 1].some(function (n) { text = aiContext(ctx, user, n, withPeople); return text.length <= budget; });
     return text.length > budget ? text.slice(0, budget) + '\n(older information left out)' : text;
   }
 
@@ -880,7 +881,7 @@ function createCore(env) {
       const ft = ctx.rows('Tasks').filter(function (x) { return x.id === String(req.taskId) && isParticipant(x, user.id); })[0];
       if (ft) { focus = { id: ft.id, title: ft.title }; files = focusFiles(ctx, ft.id); }
     }
-    const context = aiContextFit(ctx, user, true, 60000);
+    const context = aiContextFit(ctx, user, true, 30000);   // smaller question = faster answer
     let raw;
     try { raw = env.ai.assistant({ context: context, history: history, text: text, audio: audio, pending: pending, focus: focus, files: files, userName: user.name }); }
     catch (e) { env.log('assistant failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.'); }
@@ -895,7 +896,20 @@ function createCore(env) {
     let reply = clip(raw.reply, 2500).trim() || 'Sorry, I did not catch that. Could you say it again?';
     if (problems.length) reply += '\n\n(Note: ' + problems.filter(function (p, i, arr) { return arr.indexOf(p) === i; }).join('; ') + '.)';
     const confirm = !actions.length && pending.length && (raw.confirm === 'yes' || raw.confirm === 'no') ? raw.confirm : '';
-    return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, confirm: confirm, actions: actions };
+    // what is said aloud: a short version (the model writes it; otherwise the first two sentences of the answer)
+    let spoken = clip(raw.spoken, 400).trim();
+    if (!spoken) spoken = (reply.split('\n\n(Note:')[0].replace(/\s+/g, ' ').match(/^.*?[.!?](\s.*?[.!?])?(\s|$)/) || [reply.slice(0, 200)])[0].trim();
+    return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, spoken: clip(spoken, 400), confirm: confirm, actions: actions };
+  } };
+
+  // Natural-sounding speech for the assistant's answers (a few seconds of audio per call). The browser falls back to its own voice if this fails.
+  A.speak = { run: function (ctx, user, req) {
+    const text = clip(req.text, 400).replace(/\s+/g, ' ').trim();
+    if (!text) throw fail('VALIDATION', 'Nothing to say');
+    if (!env.ai.speak) throw fail('AI_FAILED', 'Natural voice is not available');
+    let r;
+    try { r = env.ai.speak(text); } catch (e) { env.log('speak failed: ' + e); throw fail('AI_FAILED', 'Natural voice is not available right now'); }
+    return { b64: r.b64, mime: r.mime };
   } };
 
   // The overview at the top of the home page. Made again only when something changed (and at most every 20 minutes), kept per person.

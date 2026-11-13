@@ -1,65 +1,129 @@
-/* speech.js - the assistant talking back (text-to-speech built into the browser; free, nothing is sent anywhere). */
+/* speech.js - the assistant talking back.
+ * 1. Natural voice: a Gemini speech model (asked through the backend, same free key) - sounds like a person. The first
+ *    sentence starts playing as soon as it is ready while the next one is prepared.
+ * 2. If that is not available (no internet, quota used up, demo mode), the voice built into the browser is used instead.
+ * Nothing is stored; the audio is played and thrown away. */
 (function (w) {
   'use strict';
-  const KEY = 'taskapp.speak';
+  const KEY = 'taskapp.speak', KEY_NAT = 'taskapp.voice';
   const syn = w.speechSynthesis || null;
-  let voices = [], gen = 0, speaking = false;
+  let voices = [], gen = 0, speaking = false, failUntil = 0, player = null;
 
   function loadVoices() { try { voices = syn ? syn.getVoices() : []; } catch (e) { voices = []; } }
   if (syn) { loadVoices(); if (syn.addEventListener) syn.addEventListener('voiceschanged', loadVoices); }
 
-  // Prefer a clear English voice. Sri Lankan listeners usually find British / Indian English easiest; US is the fallback.
+  /* ---------- the voice built into the browser (fallback) ---------- */
   function pickVoice(lang) {
     if (!voices.length) loadVoices();
     const english = voices.filter(function (v) { return /^en[-_]/i.test(v.lang); });
     const score = function (v) {
       let s = 0;
       if (/en[-_]GB/i.test(v.lang)) s += 6; else if (/en[-_]IN/i.test(v.lang)) s += 5; else if (/en[-_]US/i.test(v.lang)) s += 3;
-      if (/google|natural|online|neural/i.test(v.name)) s += 4;
-      if (/female|sonia|libby|aria|samantha|karen|veena|heera/i.test(v.name)) s += 1;
-      if (v.localService === false) s += 1;
+      if (/natural|neural|online/i.test(v.name)) s += 8; else if (/google/i.test(v.name)) s += 4;
+      if (/female|sonia|libby|aria|jenny|samantha|karen|veena|heera|neerja/i.test(v.name)) s += 1;
       return s;
     };
     if (lang === 'si') { const si = voices.filter(function (v) { return /^si/i.test(v.lang); })[0]; if (si) return si; }
     return english.sort(function (a, b) { return score(b) - score(a); })[0] || null;
   }
-
   function clean(text) {
     return String(text || '').replace(/\(Note:[^)]*\)/g, '').replace(/[*_#`>~]/g, '').replace(/^\s*[-•]\s+/gm, '').replace(/\s*\n+\s*/g, '. ').replace(/\s+/g, ' ').trim();
   }
-  // Long utterances are cut off after about 15 seconds in some browsers, so read sentence by sentence.
-  function split(text) {
+  function sentences(text, max) {
     const out = []; let cur = '';
     text.split(/(?<=[.!?])\s+/).forEach(function (s) {
-      if ((cur + ' ' + s).length > 170 && cur) { out.push(cur); cur = s; } else cur = cur ? cur + ' ' + s : s;
+      if ((cur + ' ' + s).length > max && cur) { out.push(cur); cur = s; } else cur = cur ? cur + ' ' + s : s;
     });
     if (cur) out.push(cur);
     return out;
   }
+  function browserSpeak(parts, my, o) {
+    if (!syn || !w.SpeechSynthesisUtterance) { speaking = false; if (o.onend) o.onend(); return; }
+    let i = 0; const sinhala = /[඀-෿]/.test(parts.join(' '));
+    const next = function () {
+      if (my !== gen) return;
+      if (i >= parts.length) { speaking = false; if (o.onend) o.onend(); return; }
+      const u = new SpeechSynthesisUtterance(parts[i++]), v = pickVoice(sinhala ? 'si' : 'en');
+      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = sinhala ? 'si-LK' : 'en-GB';
+      u.rate = 0.97; u.pitch = 1; u.onend = next; u.onerror = next;
+      try { syn.speak(u); } catch (e) { next(); }
+    };
+    next();
+  }
+
+  /* ---------- the natural voice ---------- */
+  // The backend sends raw 16-bit PCM; wrap it so an <audio> element can play it.
+  function pcmUrl(b64, mime) {
+    if (/^UklGR/.test(b64)) { const raw = atob(b64), u8 = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i++) u8[i] = raw.charCodeAt(i); return URL.createObjectURL(new Blob([u8], { type: 'audio/wav' })); }   // already a WAV file
+    const rate = Number((/rate=(\d+)/.exec(mime || '') || [])[1]) || 24000;
+    const bin = atob(b64), n = bin.length, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+    const str = function (o, s) { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n, true);
+    const bytes = new Uint8Array(buf); for (let i = 0; i < n; i++) bytes[44 + i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  function silentUrl() {
+    const b = new Uint8Array(44 + 2), v = new DataView(b.buffer), str = function (o, s) { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 38, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, 2, true);
+    return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+  }
+  function fetchPart(text) {
+    return w.Api.call('speak', { text: text }, { timeout: 45000 }).then(function (r) { return pcmUrl(r.b64, r.mime); });
+  }
+  function playUrl(url, my) {
+    return new Promise(function (resolve, reject) {
+      if (!player) player = new Audio();
+      player.onended = function () { resolve(); };
+      player.onerror = function () { reject(new Error('playback failed')); };
+      player.src = url;
+      const p = player.play(); if (p && p.catch) p.catch(reject);
+    });
+  }
 
   const Speech = {
-    supported: !!(syn && w.SpeechSynthesisUtterance),
+    supported: !!(syn && w.SpeechSynthesisUtterance) || !!w.Audio,
     enabled: function () { try { return localStorage.getItem(KEY) !== 'off'; } catch (e) { return true; } },
     setEnabled: function (on) { try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) { /* storage blocked */ } if (!on) Speech.stop(); },
+    natural: function () { try { return localStorage.getItem(KEY_NAT) !== 'basic'; } catch (e) { return true; } },
+    setNatural: function (on) { try { localStorage.setItem(KEY_NAT, on ? 'natural' : 'basic'); } catch (e) { /* storage blocked */ } },
     isSpeaking: function () { return speaking; },
-    stop: function () { gen++; speaking = false; if (syn) { try { syn.cancel(); } catch (e) { /* ignore */ } } },
+    // Call this from a tap/click: phones only allow sound that was "unlocked" by a touch.
+    unlock: function () {
+      try { if (!player) player = new Audio(); if (!player.__unlocked) { player.__unlocked = true; player.src = silentUrl(); const p = player.play(); if (p && p.catch) p.catch(function () { player.__unlocked = false; }); } } catch (e) { /* ignore */ }
+    },
+    stop: function () { gen++; speaking = false; if (player) { try { player.pause(); player.onended = null; } catch (e) { /* ignore */ } } if (syn) { try { syn.cancel(); } catch (e) { /* ignore */ } } },
     // o: { onstart, onend (not called when stopped by stop()) }
     speak: function (text, o) {
       o = o || {}; Speech.stop();
-      const parts = split(clean(text));
-      if (!Speech.supported || !parts.length) { if (o.onend) o.onend(); return; }
-      const my = ++gen; let i = 0;
-      const sinhala = /[඀-෿]/.test(text);
-      const next = function () {
-        if (my !== gen) return;
-        if (i >= parts.length) { speaking = false; if (o.onend) o.onend(); return; }
-        const u = new SpeechSynthesisUtterance(parts[i++]), v = pickVoice(sinhala ? 'si' : 'en');
-        if (v) { u.voice = v; u.lang = v.lang; } else u.lang = sinhala ? 'si-LK' : 'en-GB';
-        u.rate = 1; u.pitch = 1; u.onend = next; u.onerror = next;
-        try { syn.speak(u); } catch (e) { next(); }
-      };
-      speaking = true; if (o.onstart) o.onstart();
-      next();
+      const plain = clean(text);
+      if (!plain) { if (o.onend) o.onend(); return; }
+      const my = ++gen; speaking = true;
+      const useNatural = Speech.natural() && w.Api && w.Api.token && !w.Api.demo && Date.now() > failUntil;
+      if (!useNatural) { if (o.onstart) o.onstart(); return browserSpeak(sentences(plain, 170), my, o); }
+      // the first sentence alone (so it starts as soon as possible), then the rest in chunks
+      const firstMatch = /^.*?[.!?](?=\s|$)/.exec(plain), first = firstMatch ? firstMatch[0] : plain, parts = [first].concat(sentences(plain.slice(first.length).trim(), 150).filter(Boolean)), jobs = [];
+      const job = function (i) { if (i < parts.length && !jobs[i]) { jobs[i] = fetchPart(parts[i]); jobs[i].catch(function () { /* handled when its turn comes */ }); } return jobs[i]; };
+      (async function () {
+        let started = false;
+        for (let i = 0; i < parts.length; i++) {
+          job(i); job(i + 1);                                           // the next sentence is prepared while this one plays
+          let url;
+          try { url = await jobs[i]; }
+          catch (e) {                                                   // not available: say the rest with the browser's voice, and stop asking for a while
+            failUntil = Date.now() + 5 * 60000;
+            if (my !== gen) return;
+            if (!started && o.onstart) o.onstart();
+            return browserSpeak(sentences(parts.slice(i).join(' '), 170), my, o);
+          }
+          if (my !== gen) return;
+          if (!started) { started = true; if (o.onstart) o.onstart(); }
+          try { await playUrl(url, my); }
+          catch (e) { if (my !== gen) return; failUntil = Date.now() + 5 * 60000; return browserSpeak(sentences(parts.slice(i).join(' '), 170), my, o); }
+          if (my !== gen) return;
+        }
+        speaking = false; if (o.onend) o.onend();
+      })();
     }
   };
   w.Speech = Speech;

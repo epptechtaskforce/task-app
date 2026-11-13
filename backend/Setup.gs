@@ -95,6 +95,7 @@ function smokeTest() {
     transcribe: function () { return { transcript: 'වැඩේ අවසන්', language: 'Sinhala', english_translation: 'The work is finished' }; },
     summarize: function () { return { summary_en: 'ok', summary_si: 'හරි', health: 'on_track', blockers: [], next_steps: [], progress_note: 'x' }; },
     assistant: function (input) { return { heard: 'hello', reply: 'Hi ' + input.userName, confirm: '', actions: [] }; },
+    speak: function () { return { b64: Utilities.base64Encode('0000'), mime: 'audio/L16;codec=pcm;rate=24000' }; },
     briefing: function () { return { headline: 'All good', items: [{ tone: 'good', text: 'Nothing is late', task_id: '' }] }; }
   };
   try {
@@ -171,6 +172,8 @@ function smokeTest() {
     check(call('getFile', admin, { messageId: fm.id }).ok === false, 'admin cannot open files of other people\'s tasks');
     const as = must('assistant', boss1, { text: 'what is open?', taskId: t2.id });
     check(as.reply === 'Hi Boss One' && as.heard === 'hello', 'the assistant answers');
+    check(as.spoken === 'Hi Boss One.' || as.spoken.length > 0, 'a short spoken version of the answer is made');
+    check(must('speak', boss1, { text: 'Hello there' }).mime.indexOf('audio/') === 0, 'the speak action returns audio');
     check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
     must('setProgress', staff1, { taskId: t2.id, progress: 100 });
     must('approveTask', boss1, { taskId: t2.id });
@@ -198,6 +201,8 @@ function assistantTest() {
   Logger.log(JSON.stringify(ask('What is overdue and why?')));
   Logger.log(JSON.stringify(ask('Give Ishara a task to count the crates in the packing shed by next Tuesday.')));
   Logger.log(JSON.stringify(ai.briefing({ context: context, userName: 'Kamala Silva' })));
+  const t0 = Date.now(); const v = ai.speak('You have one task that is overdue. Ruwan says the third pump needs a new valve.');
+  Logger.log('Natural voice: ' + v.mime + ', ' + v.b64.length + ' chars of audio, ' + (Date.now() - t0) + ' ms');
 }
 
 function selfTest() {

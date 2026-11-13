@@ -54,6 +54,10 @@
         const on = Speech.enabled();
         tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (on ? ' on' : ''), 'aria-pressed': on, title: 'Read the answers aloud', onclick: function () { Speech.setEnabled(!Speech.enabled()); if (!Speech.enabled()) A.convo = false; drawHead(); } }, icon(on ? 'volume' : 'volumeOff', 16), 'Voice replies'));
       }
+      if (Speech.supported && Speech.enabled()) {
+        const nat = Speech.natural();
+        tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (nat ? ' on' : ''), 'aria-pressed': nat, title: nat ? 'Natural voice (takes a moment longer to start)' : 'Quick voice of this device (starts at once, sounds more robotic)', onclick: function () { Speech.setNatural(!Speech.natural()); drawHead(); } }, icon('sparkles', 16), nat ? 'Natural voice' : 'Quick voice'));
+      }
       if (Audio2.supported()) {
         tools.appendChild(h('button', { type: 'button', class: 'tool-btn' + (A.convo ? ' on' : ''), 'aria-pressed': A.convo, title: 'Keep listening after each answer, like a phone call', onclick: function () {
           A.convo = !A.convo;
@@ -150,6 +154,7 @@
     /* ---- talking ---- */
     async function startListening() {
       if (A.busy || A.rec || !A.active) return;
+      Speech.unlock();
       if (!Audio2.supported()) return UI.toast('Voice is not supported in this browser. You can type instead.', 'bad');
       Speech.stop();
       let rec;
@@ -171,7 +176,7 @@
 
     async function ask(o) {
       if (A.busy) return;
-      Speech.stop();
+      Speech.unlock(); Speech.stop();
       // "yes" / "no" typed while something is waiting: no need to ask the server
       if (o.text && A.pending.length) {
         if (YES.test(o.text)) { A.feed.push({ k: 'user', text: o.text }); return confirmPending(); }
@@ -180,30 +185,30 @@
       A.busy = true;
       const userItem = o.text ? { k: 'user', text: o.text } : { k: 'user', text: 'Listening to what you said…', voice: true };
       A.feed.push(userItem, { k: 'typing' }); redraw(); scrollDown();
-      let reply = '';
+      let reply = '', say = '';
       try {
         const payload = Object.assign({ history: A.history.slice(-10), pending: A.pending.map(function (p) { return p.label; }), taskId: A.focusId || undefined, text: o.text || undefined }, o.audio || {});
         const r = await Api.call('assistant', payload, { timeout: 120000 });
         A.feed = A.feed.filter(function (f) { return f.k !== 'typing'; });
         if (userItem.voice) userItem.text = r.heard || '(I could not make out what you said)';
-        reply = r.reply;
+        reply = r.reply; say = r.spoken || r.reply;
         A.history.push({ role: 'user', text: r.heard || o.text || '' }, { role: 'assistant', text: r.reply });
         const free = (r.actions || []).filter(function (a) { return !a.needsConfirm; }), needs = (r.actions || []).filter(function (a) { return a.needsConfirm; });
         A.feed.push({ k: 'bot', text: r.reply, links: free.map(function (a) { return { taskId: a.taskId, label: a.label }; }) });
         if (needs.length) A.pending = needs;
         else if (r.confirm === 'no') A.pending = [];
         A.busy = false;
-        if (r.confirm === 'yes' && A.pending.length) { const todo = A.pending; A.pending = []; redraw(); await runActions(todo); reply = ''; }   // runActions already said "Done"
+        if (r.confirm === 'yes' && A.pending.length) { const todo = A.pending; A.pending = []; redraw(); await runActions(todo); reply = ''; say = ''; }   // runActions already said "Done"
       } catch (e) {
         A.feed = A.feed.filter(function (f) { return f.k !== 'typing'; });
         if (userItem.voice) userItem.text = '(voice message)';
         if (e.code === 'AUTH') { A.busy = false; return; }
-        reply = e.message || 'Something went wrong. Please try again.';
+        reply = e.message || 'Something went wrong. Please try again.'; say = reply;
         A.feed.push({ k: 'bot', text: reply });
         A.convo = false;
       }
       A.busy = false; save(); redraw(); scrollDown();
-      if (reply) speakReply(reply);
+      if (say) speakReply(say);
     }
 
     /* ---- doing what was agreed ---- */
@@ -244,8 +249,8 @@
     function say() {
       if (listening) { Speech.stop(); listening = false; return draw(); }
       if (!data) return;
-      listening = true; draw();
-      Speech.speak([data.briefing.headline].concat(data.briefing.items.map(function (i) { return i.text; })).join('. '), { onend: function () { listening = false; draw(); } });
+      Speech.unlock(); listening = true; draw();
+      Speech.speak([data.briefing.headline].concat(data.briefing.items.slice(0, 3).map(function (i) { return i.text; })).join('. '), { onend: function () { listening = false; draw(); } });
     }
     function draw() {
       UI.clear(box);

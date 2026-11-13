@@ -221,3 +221,18 @@ test('voice notes: the AI is told who is in the task, to help it spell names', (
   app.ok('postVoice', s.tok.wk1, { taskId: task.id, audioB64: 'AAAA', mime: 'audio/webm', secs: 3 });
   assert.match(seen[0], /Irrigation check/); assert.match(seen[0], /WK1/); assert.match(seen[0], /MGR/);
 });
+
+test('assistant: a short spoken version is always returned; the speak action needs a voice and fails politely without one', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  ai.reply = () => ({ reply: 'You have two tasks. One is late and needs a call today. The other is fine.', spoken: 'Two tasks, one is late.', actions: [] });
+  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken, 'Two tasks, one is late.');
+  ai.reply = () => ({ reply: 'You have two tasks. One is late and needs a call today. The other is fine.', actions: [] });
+  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken, 'You have two tasks. One is late and needs a call today.');
+  app.err('speak', s.tok.mgr, { text: '   ' }, 'VALIDATION');
+  app.err('speak', s.tok.mgr, { text: 'Hello' }, 'AI_FAILED');                    // the stand-in AI has no voice
+  ai.speak = (t) => ({ b64: 'AAAA', mime: 'audio/L16;codec=pcm;rate=24000', t });
+  assert.equal(app.ok('speak', s.tok.mgr, { text: 'Hello' }).mime, 'audio/L16;codec=pcm;rate=24000');
+  app.err('speak', null, { text: 'Hello' }, 'AUTH');
+  ai.speak = () => { throw new Error('quota'); };
+  app.err('speak', s.tok.mgr, { text: 'Hello' }, 'AI_FAILED');
+});

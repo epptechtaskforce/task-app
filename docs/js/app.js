@@ -114,7 +114,7 @@
     const adminSwitch = u.isAdmin && adminKeys.indexOf(active) >= 0 && !isPureAdmin()
       ? h('nav', { class: 'seg seg-admin', 'aria-label': 'Administration' }, m.admin.map(function (n) { return h('a', { href: n.href, class: n.k === active ? 'active' : '' }, n.label); })) : null;
 
-    mount(h('div', { class: 'app' + (opts.focus ? ' focus' : '') },
+    mount(h('div', { class: 'app' + (opts.focus ? ' focus' : '') + (opts.bare ? ' bare' : '') },
       h('a', { class: 'skip', href: '#main', onclick: function (e) { e.preventDefault(); const mn = document.getElementById('main'); if (mn) { mn.setAttribute('tabindex', '-1'); mn.focus(); } } }, 'Skip to content'),
       sidebar, h('div', { class: 'main-col' }, mtop, h('main', { id: 'main', class: 'content' }, adminSwitch, content)), bottom));
     document.body.classList.toggle('focus-view', !!opts.focus);
@@ -215,10 +215,12 @@
     const f = taskFlags(t), b = bucket(t);
     const state = { late: 'bad', wait: 'warn', active: 'info', 'new': '' }[b];
     const others = t.role === 'creator' ? t.assignees : [t.creator];
+    const ic = { late: 'alert', wait: 'clock', active: 'trend', 'new': 'flag' }[b];
     return h('a', { class: 'card task' + (state ? ' st-' + state : ''), href: '#/task/' + t.id, style: '--i:' + Math.min(i || 0, 10) },
-      h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'new' }, 'NEW') : null),
-      h('div', { class: 'people' }, UI.avatarStack(others), h('span', { class: 't' }, peopleLine(t))),
-      h('div', { class: 'prog' }, UI.progressBar(t.progress, t.status), h('strong', null, t.progress + '%')),
+      h('div', { class: 't-row' }, h('span', { class: 't-ico', 'aria-hidden': 'true' }, icon(ic, 22)),
+        h('div', { class: 't-main' }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'new' }, 'NEW') : null),
+          h('div', { class: 'people' }, UI.avatarStack(others), h('span', { class: 't' }, peopleLine(t)))),
+        h('div', { class: 't-ring', style: '--p:' + t.progress, role: 'img', 'aria-label': t.progress + ' percent done' }, h('b', null, t.progress + '%'))),
       h('div', { class: 'meta' }, statusChip(t), f.due ? UI.chip(f.due.text, f.due.cls, 'calendar') : null, h('span', { class: 'muted small' }, 'Updated ' + UI.ago(t.updatedAt))),
       t.lastMessage ? h('div', { class: 'last' }, t.lastMessage.senderName + ': ' + (t.lastMessage.type === 'voice' ? '🎤 ' : t.lastMessage.type === 'file' ? '📎 ' : '') + t.lastMessage.text) : null);
   }
@@ -229,12 +231,15 @@
     const q = h('input', { type: 'search', placeholder: 'Search tasks or people…', 'aria-label': 'Search tasks or people', value: S.q });
     const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest first'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
     const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+    const subLine = h('p', { class: 'sub' }, ' ');
     shell(h('div', null,
-      h('div', { class: 'greet' }, h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : ''))),
+      h('div', { class: 'hero2' },
+        h('div', { class: 'hero2-top' }, h('span', { class: 'logo' }, icon('checkCircle', 20)), h('span', { class: 'nm' }, S.company || 'Task Manager'), h('a', { href: '#/account', 'aria-label': 'My profile' }, UI.avatar(S.user.name, 'sm', S.user.id))),
+        h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), subLine, statBox),
       h('div', { class: 'home-grid' },
         h('div', { class: 'home-side' }, brief.el),
-        h('div', { class: 'home-main' }, statBox, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, activeBox, list)),
-      S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks');
+        h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, activeBox, list)),
+      S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks', { bare: true });
     let tasks = [], statSig = '', animated = false;
     const cacheKey = 'tasks:' + S.user.id;
     q.addEventListener('input', function () { S.q = q.value; drawList(); });
@@ -265,6 +270,8 @@
       if (sig === statSig) return;
       statSig = sig; const anim = !animated; animated = true;
       UI.clear(statBox);
+      const attention = counts.late + counts.wait + tasks.filter(function (t) { return t.unread; }).length;
+      subLine.textContent = !tasks.length ? 'Nothing open right now. Enjoy the calm!' : attention ? attention + ' thing' + (attention === 1 ? '' : 's') + ' need' + (attention === 1 ? 's' : '') + ' your attention' : 'Everything is on track';
       if (!tasks.length) return;
       const bar = h('div', { class: 'statbar', role: 'img', 'aria-label': BUCKETS.map(function (b) { return counts[b[0]] + ' ' + b[1]; }).join(', ') });
       BUCKETS.forEach(function (b) {
@@ -1008,7 +1015,17 @@
           h('div', { class: 'row', style: 'margin-top:.5rem;gap:.35rem' }, me.jobTitle ? UI.chip(me.jobTitle, 'brand') : null, me.isAdmin ? UI.chip('Administrator', 'info', 'shield') : null, removeBtn),
           h('label', { style: 'margin-top:1.1rem' }, 'About me'), bio, h('div', { class: 'row between' }, counter, saveBio),
           h('div', { class: 'hint' }, 'Your picture and bio are visible to the people you work with: your managers, your team and anyone you share a task with.'))),
-      h('div', { class: 'card' }, h('h2', null, 'Appearance'), h('p', { class: 'muted small' }, 'Auto follows your phone or computer setting.'), seg),
+      h('div', { class: 'card' }, h('h2', null, 'Appearance'), h('p', { class: 'muted small' }, 'Auto follows your phone or computer setting.'), seg,
+        h('h3', { style: 'margin-top:1.1rem' }, 'Colour'),
+        (function () {
+          const box = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Colour' });
+          UI.accent.list.forEach(function (a) {
+            box.appendChild(h('button', { type: 'button', class: 'swatch' + (UI.accent.get() === a[0] ? ' on' : ''), style: '--a:' + a[2] + ';--b:' + a[3], 'aria-pressed': UI.accent.get() === a[0], 'data-v': a[0], onclick: function () {
+              UI.accent.set(a[0]); box.querySelectorAll('.swatch').forEach(function (b) { const on = b.getAttribute('data-v') === a[0]; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+            } }, h('i'), a[1]));
+          });
+          return box;
+        })()),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
       h('div', { class: 'card tip' }, icon('phone', 22), h('div', null, h('h3', null, 'Add to your home screen'), h('p', { class: 'muted small', style: 'margin:0' }, 'Open this page on your phone, then in Chrome use the ⋮ menu → "Add to Home screen". On iPhone (Safari) use Share → "Add to Home Screen". It then opens like an app.'))),
       h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: signOut }, icon('logout', 18), 'Sign out'), Api.demo ? h('button', { class: 'btn', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data') : null)), 'account');
@@ -1048,7 +1065,7 @@
   const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate };
 
   async function boot() {
-    UI.theme.apply();
+    UI.theme.apply(); UI.accent.apply();
     Profiles.load(); Profiles.onChange(function () { UI.hydrateAvatars(document); });
     if (!Api.configured) return notConfigured();
     try {

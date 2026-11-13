@@ -621,10 +621,16 @@
   }
   function themeSet(v) { try { if (v === 'auto') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage blocked */ } themeApply(); }
 
+  const ACCENT_KEY = 'taskapp.accent';
+  const ACCENTS = [['berry', 'Berry', '#a0246a', '#d0408c'], ['ocean', 'Ocean', '#1769c9', '#2fa8f5'], ['forest', 'Forest', '#1f8a4c', '#3cc77a'], ['sunset', 'Sunset', '#d9622b', '#ff9a4d'], ['violet', 'Violet', '#6a3fd0', '#9b7cf2']];
+  function accentGet() { try { return localStorage.getItem(ACCENT_KEY) || 'berry'; } catch (e) { return 'berry'; } }
+  function accentApply() { const v = accentGet(); if (v === 'berry') document.documentElement.removeAttribute('data-accent'); else document.documentElement.setAttribute('data-accent', v); }
+  function accentSet(v) { try { if (v === 'berry') localStorage.removeItem(ACCENT_KEY); else localStorage.setItem(ACCENT_KEY, v); } catch (e) { /* storage blocked */ } accentApply(); }
+
   w.h = h;
   w.UI = { h: h, svg: svg, clear: clear, icon: icon, setIcon: setIcon, date: date, time: time, dateTime: dateTime, dayLabel: dayLabel, ago: ago, duration: duration, dueInfo: dueInfo, greeting: greeting, ymd: ymd,
     toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
     chip: chip, initials: initials, avatar: avatar, avatarStack: avatarStack, hydrateAvatars: hydrateAvatars, pickPhoto: pickPhoto, reduced: reduced,
-    skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply },
+    skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply }, accent: { get: accentGet, set: accentSet, apply: accentApply, list: ACCENTS },
     fileIcon: fileIcon, fileKind: fileKind, fmtSize: fmtSize, prepareFile: prepareFile, attachMenu: attachMenu, b64Url: b64Url, saveUrl: saveUrl, lightbox: lightbox, MAX_FILE_BYTES: MAX_FILE_BYTES };
 })(window);

@@ -391,7 +391,8 @@ const ASSISTANT_PROMPT_ =
   '  {"type":"open_task","task_id":id}   (to show a task)\n' +
   'Work out dates from TODAY (for example "Friday" = the next Friday; "tomorrow"; "end of the month"). Do not propose an action if you are unsure who or which task is meant: ask a short question instead. Never invent ids.\n' +
   'CONFIRMATION: if PENDING ACTIONS are listed and the person says yes / okay / go ahead / confirm (in any wording or accent), return "confirm":"yes" and "actions":[]. If they say no / cancel / stop, return "confirm":"no" and "actions":[]. If they change their mind about the details, return the corrected action(s) in "actions" and "confirm":"".\n' +
-  'OUTPUT: JSON only: {"heard": string, "reply": string, "confirm": "yes"|"no"|"", "actions": []}.';
+  'SPOKEN: "spoken" is what you say ALOUD, so it must sound like a friendly person talking, not a document: at most two short sentences (under 35 words), contractions allowed ("I\'ve", "you\'ve got"), no lists, no ids. For a long answer say only the headline and add that the details are on screen. "reply" is the text shown on screen (fuller than "spoken", but still concise).\n' +
+  'OUTPUT: JSON only: {"heard": string, "spoken": string, "reply": string, "confirm": "yes"|"no"|"", "actions": []}.';
 
 GeminiAi_.prototype.assistant = function (input) {
   let system = ASSISTANT_PROMPT_ + '\n\n=== CONTEXT ===\n' + input.context;
@@ -405,7 +406,48 @@ GeminiAi_.prototype.assistant = function (input) {
   input.files.forEach(function (f) { parts.push({ text: 'Attached file: ' + f.name }); parts.push({ inlineData: { mimeType: f.mime, data: f.b64 } }); });
   parts.push({ text: input.audio ? (input.text ? input.text + '\n' : '') + '(The person spoke their message in the audio above.)' : input.text });
   push('user', parts);
-  return callGemini_(system, null, { contents: contents, temperature: 0.3 });
+  // SPEED: no long "thinking" phase, and for typed questions the small fast model first (it answers in about a second or two).
+  // Spoken questions go to the main model first because understanding accents is harder.
+  const main = prop_('GEMINI_MODEL') || DEFAULT_MODEL, fast = prop_('GEMINI_FAST_MODEL') || FALLBACK_MODELS[0];
+  return callGemini_(system, null, { contents: contents, temperature: 0.3, quick: true, models: input.audio ? [main, fast] : [fast, main] });
+};
+
+/* ---- natural-sounding voice (Gemini speech model, same free key) ---- */
+function ttsModel_() {
+  const set = prop_('GEMINI_TTS_MODEL');
+  if (set) return set;
+  let cache = null; try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
+  const hit = cache && cache.get('tts-model');
+  if (hit) return hit;
+  const res = UrlFetchApp.fetch(GEMINI_BASE.replace(/models\/$/, 'models') + '?pageSize=200', { headers: { 'x-goog-api-key': prop_('GEMINI_API_KEY') }, muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error('ListModels error ' + res.getResponseCode());
+  const names = JSON.parse(res.getContentText()).models.map(function (m) { return m.name.replace('models/', ''); }).filter(function (n) { return /tts/i.test(n); });
+  // prefer a "flash" model (fast) and the newest name
+  names.sort(function (a, b) { return (/flash/.test(b) ? 1 : 0) - (/flash/.test(a) ? 1 : 0) || (a < b ? 1 : a > b ? -1 : 0); });
+  if (!names.length) throw new Error('No speech model is available for this key');
+  if (cache) cache.put('tts-model', names[0], 21600);
+  return names[0];
+}
+GeminiAi_.prototype.speak = function (text) {
+  const key = prop_('GEMINI_API_KEY');
+  if (!key) throw new Error('GEMINI_API_KEY is not set in Script properties');
+  const model = ttsModel_();
+  const call = function (voice) {
+    return UrlFetchApp.fetch(GEMINI_BASE + model + ':generateContent', {
+      method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true,
+      payload: JSON.stringify({
+        contents: [{ parts: [{ text: 'Say this in a warm, natural, friendly voice, like a helpful colleague talking in a relaxed, conversational way: ' + text }] }],
+        generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+      })
+    });
+  };
+  let res = call(prop_('GEMINI_TTS_VOICE') || 'Sulafat');
+  if (res.getResponseCode() === 400) res = call('Kore');          // an unknown voice name: use one that always exists
+  if (res.getResponseCode() !== 200) throw new Error('Speech error ' + res.getResponseCode() + ' (' + model + '): ' + res.getContentText().slice(0, 200));
+  const parts = ((JSON.parse(res.getContentText()).candidates || [])[0] || {}).content;
+  const audio = parts && parts.parts ? parts.parts.filter(function (p) { return p.inlineData; })[0] : null;
+  if (!audio) throw new Error('The speech model returned no audio');
+  return { b64: audio.inlineData.data, mime: audio.inlineData.mimeType || 'audio/L16;codec=pcm;rate=24000' };
 };
 
 /* ---- the overview at the top of the home page (see A.briefing in Core.gs) ---- */
@@ -444,19 +486,25 @@ function callGemini_(systemText, parts, opts) {
     contents: opts.contents || [{ role: 'user', parts: parts }],
     generationConfig: { temperature: opts.temperature === undefined ? 0.2 : opts.temperature, responseMimeType: 'application/json' }
   };
-  const models = [prop_('GEMINI_MODEL') || DEFAULT_MODEL].concat(FALLBACK_MODELS);
+  // opts.models: the order to try. opts.quick: ask the model not to "think" at length (much faster; fine for conversation).
+  const models = (opts.models || [prop_('GEMINI_MODEL') || DEFAULT_MODEL]).concat(FALLBACK_MODELS).filter(function (m, i, a) { return a.indexOf(m) === i; });
   const started = Date.now();
   let lastError = 'No model was tried';
+  const send = function (model, body) {
+    return UrlFetchApp.fetch(GEMINI_BASE + model + ':generateContent', { method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body), muteHttpExceptions: true });
+  };
   for (let i = 0; i < models.length; i++) {
     if (Date.now() - started > MAX_AI_SECONDS * 1000) break;
-    const res = UrlFetchApp.fetch(GEMINI_BASE + models[i] + ':generateContent', {
-      method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key },
-      payload: JSON.stringify(payload), muteHttpExceptions: true
-    });
+    let res;
+    if (opts.quick) {
+      const quick = JSON.parse(JSON.stringify(payload)); quick.generationConfig.thinkingConfig = { thinkingLevel: 'minimal' };
+      res = send(models[i], quick);
+      if (res.getResponseCode() === 400) res = send(models[i], payload);   // this model does not know that setting: ask normally
+    } else res = send(models[i], payload);
     const code = res.getResponseCode(), text = res.getContentText();
     if (code === 200) return parseGeminiJson_(text);
     lastError = 'Gemini error ' + code + ' (' + models[i] + '): ' + text.slice(0, 300);
-    if (code === 400 || code === 401 || code === 403) break;  // our request or key is wrong; other models will not help
+    if (code === 401 || code === 403 || (code === 400 && !opts.quick)) break;  // our request or key is wrong; other models will not help
     // 404 (retired) / 429 / 500 / 503 (busy): try the next model
   }
   throw new Error(lastError);
