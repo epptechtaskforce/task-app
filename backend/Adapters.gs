@@ -369,7 +369,7 @@ GeminiAi_.prototype.transcribe = function (b64, mime, hints) {
     'Do not add, guess or invent anything. Mark unclear parts as [unclear]. If there is no speech, return empty strings. ' +
     'Return JSON: {"english": string (everything said, in English, same meaning and order), "language": string (the main language spoken), ' +
     '"key_points": string (at most 3 short sentences: what was reported or done, problems or blockers, requests or promises, any dates or numbers; empty if nothing worth noting)}.';
-  return callGemini_(system, [{ inlineData: { mimeType: mime, data: b64 } }, { text: 'Write what was said, in English.' }]);
+  return callGemini_(system, [{ inlineData: { mimeType: mime, data: b64 } }, { text: 'Write what was said, in English.' }], { quick: true, temperature: 0 });   // quick: no long "thinking", the sender waits for this
 };
 
 /* ---- the private secretary (see A.assistant in Core.gs) ---- */
