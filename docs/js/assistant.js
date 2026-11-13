@@ -17,7 +17,7 @@
   const NO = /^(no|nope|cancel|stop|delete|delete it|don't|do not|never mind|leave it)\b[\s.!]*$/i;
 
   /* ============================== state (kept for this browser tab, wiped at sign-out) ============================== */
-  const B = { recog: null, App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, bars: [],
+  const B = { recog: null, App: null, uid: '', built: false, fab: null, stack: null, typer: null, input: null, userEl: null, botEl: null, card: null, live: false, bars: [],
     history: [], pending: [], busy: false, rec: null, token: 0, lastVoice: false, min: false, unseen: false, tools: null, where: { task: '', archived: '' }, pos: null, typing: false, editing: false };
   const store = {
     load: function () { try { const v = JSON.parse(sessionStorage.getItem('aib:' + B.uid) || 'null'); if (v) { B.history = v.history || []; B.pending = v.pending || []; } } catch (e) { /* ignore */ } },
@@ -32,8 +32,9 @@
     B.input = h('input', { type: 'text', maxlength: 1500, placeholder: 'Type to the assistant…', 'aria-label': 'Message to the assistant', autocomplete: 'off' });
     B.typer = h('form', { class: 'aib-typer hidden', onsubmit: function (e) { e.preventDefault(); const v = B.input.value.trim(); if (!v) return; B.input.value = ''; closeTyper(); ask({ text: v }); } },
       B.input, h('button', { type: 'submit', class: 'aib-send', 'aria-label': 'Send' }, icon('send', 20)));
-    // one small button tied to the conversation: clear (forget) it. Asking is done by tapping the bubble; typing by the keyboard button in your own bubble.
+    // two small buttons tied to the AI bubble: type instead of speaking, and clear (forget) the conversation. Asking by voice is done by tapping the bubble.
     B.tools = h('div', { class: 'aib-tools' },
+      h('button', { type: 'button', class: 'aib-tb', title: 'Type instead', 'aria-label': 'Type instead', onclick: function () { switchToTyping(); } }, icon('edit', 15)),
       h('button', { type: 'button', class: 'aib-tb clr', title: 'Clear this conversation', 'aria-label': 'Clear this conversation', onclick: clearConversation }, icon('trash', 14), 'Clear'));
     B.stack.appendChild(B.tools);
     document.body.appendChild(B.stack); document.body.appendChild(B.typer); document.body.appendChild(B.fab);
@@ -115,8 +116,9 @@
   }
 
   /* ============================== the two floating messages ============================== */
-  function active() { return !!(B.userEl || B.botEl || B.typing || B.rec); }
-  function hasConvo() { return !!(B.userEl || B.botEl || B.card); }
+  function active() { return !!(B.botEl || B.typing || B.rec || B.live); }
+  // (there is no bubble for what you say: only the AI's words are shown; B.live = the assistant is listening to you right now)
+  function hasConvo() { return !!(B.botEl || B.card || B.live); }
   function shown() { return B.built && !B.min && (hasConvo() || B.typing || !!B.rec); }
   // keeps the small tools row and the speech-bubble tail in step with what is on screen
   function sync() {
@@ -126,18 +128,6 @@
   }
   function bubbleEl(kind, content) { return h('div', { class: 'aib-msg ' + kind }, content); }
   function dissolve(el) { if (!el || !el.parentNode) return; el.classList.add('out'); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 380); }
-  // Your words come out of your own profile picture, on the side opposite to the AI bubble (like two people chatting).
-  function putUser(content) {
-    const me = B.App ? B.App.S.user : { name: '?', id: '' }, msg = bubbleEl('user', content), old = B.userEl;
-    if (old && old.parentNode && !old.classList.contains('out')) {          // same speaker still talking: change the words only
-      old.classList.remove('speaking'); msg.classList.add('swap'); const was = old.querySelector('.aib-msg');
-      if (was) old.replaceChild(msg, was); else old.appendChild(msg);
-      return msg;
-    }
-    const row = h('div', { class: 'aib-urow' }, h('span', { class: 'aib-dp' }, UI.avatar(me.name, '', me.id)), msg);
-    B.userEl = row; if (old) old.remove();
-    B.stack.insertBefore(row, B.stack.firstChild); sync(); return msg;
-  }
   // The assistant's words: a small name tag, then the text laid out in lines (lines starting with "- " become bullets) with the
   // words fading in one after another, so it feels like it is speaking. Very long answers skip the per-word effect.
   function botCard(text) {
@@ -157,7 +147,7 @@
     if (typeof content === 'string') content = botCard(content);
     const old = B.botEl; B.botEl = bubbleEl('bot' + (typing ? ' typing' : ''), content);
     if (old) old.remove();
-    B.stack.insertBefore(B.botEl, B.userEl ? B.userEl.nextSibling : B.stack.firstChild); sync(); return B.botEl;
+    B.stack.insertBefore(B.botEl, B.stack.firstChild); sync(); return B.botEl;
   }
   function clearMessages() { dissolve(B.userEl); dissolve(B.botEl); B.userEl = null; B.botEl = null; sync(); }
   // Stops listening / speaking / typing and removes the messages. The remembered conversation (B.history) is untouched.
@@ -165,7 +155,7 @@
     B.token++;                                              // anything still on its way is ignored
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
     if (B.recog) { B.recog.abort(); B.recog = null; }
-    B.busy = false; B.fab.classList.remove('listening', 'busy', 'unread'); Speech.stop(); closeTyper(true);
+    B.busy = false; B.live = false; B.fab.classList.remove('listening', 'busy', 'unread'); Speech.stop(); closeTyper(true);
     B.min = false; clearMessages();
     if (B.App && B.App.clearSpot) B.App.clearSpot();
   }
@@ -173,12 +163,12 @@
   function minimize() {
     if (!B.built || B.min) return;
     Speech.stop(); closeTyper(true);
-    if (B.rec || B.recog || B.fab.classList.contains('listening') || (B.userEl && B.userEl.querySelector('.kbdonly'))) {          // it was only listening: stop that, nothing was asked yet
+    if (B.rec || B.recog || B.fab.classList.contains('listening') || B.live) {          // it was only listening: stop that, nothing was asked yet
       B.token++;
       if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
       if (B.recog) { B.recog.abort(); B.recog = null; }
       B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
-      if (B.userEl && B.userEl.querySelector('.kbdonly')) { B.userEl.remove(); B.userEl = null; }
+      B.live = false;
     }
     if (B.App && B.App.clearSpot) B.App.clearSpot();
     B.min = true; sync();
@@ -194,17 +184,6 @@
   /* ============================== talking ============================== */
   function setLevel(v) {
     B.fab.style.setProperty('--lv', v.toFixed(2));
-    if (B.userEl) B.userEl.style.setProperty('--lv', v.toFixed(2));          // the rings around your picture swell with your voice
-  }
-  // While listening your own bubble is just your picture, alive with rings that follow your voice, and one small keyboard button
-  // (type instead). What you say is never shown as text: after you speak, your picture simply stays as it is.
-  function listeningPill() {
-    return [h('button', { type: 'button', class: 'aib-kbd', 'aria-label': 'Type instead', title: 'Type instead', onclick: function (e) { e.stopPropagation(); switchToTyping(); } }, icon('edit', 16))];
-  }
-  function iconOnly() {
-    const row = B.userEl; if (!row) return;
-    row.classList.remove('speaking'); row.style.setProperty('--lv', 0);
-    const m = row.querySelector('.aib-msg'); if (m) m.remove();
   }
   // Tap on the bubble: chat showing -> tuck it away; otherwise it pops up AND starts listening. The earlier conversation stays in the
   // assistant's memory (so you can simply carry on), and only its last message is still in view.
@@ -222,7 +201,6 @@
     if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; }
     if (B.recog) { B.recog.abort(); B.recog = null; }
     if (wasMin) {                                           // popping up again: the earlier messages are remembered, not shown
-      if (B.userEl) { B.userEl.remove(); B.userEl = null; }
       if (B.botEl && !unseen) { B.botEl.remove(); B.botEl = null; }   // (an answer that came while it was tucked away is still shown once)
       sync();
     }
@@ -255,8 +233,7 @@
   async function listen(keep) {
     if (!Audio2.supported()) return openTyper();
     const my = ++B.token; B.busy = false;
-    putUser(listeningPill()).classList.add('kbdonly');
-    if (B.userEl) B.userEl.classList.add('speaking');
+    B.live = true; sync();                                  // the tools row (type / clear) shows while it listens
     B.fab.classList.add('listening');                       // the AI bubble shows right away that it is listening
     let rec;
     // The phone's own speech recognition listens alongside: when its words look good they are
@@ -265,14 +242,14 @@
     B.recog = recog;
     const stopRecog = function () { if (recog) recog.abort(); if (B.recog === recog) B.recog = null; };
     try { rec = await Audio2.listen({ maxSecs: 45, silenceMs: recog ? 1100 : 1400, onLevel: setLevel }); }
-    catch (e) { stopRecog(); if (my !== B.token) return; B.fab.classList.remove('listening'); dissolve(B.userEl); B.userEl = null; putBot(e.message || 'I could not use the microphone.'); return; }
+    catch (e) { stopRecog(); if (my !== B.token) return; B.fab.classList.remove('listening'); B.live = false; putBot(e.message || 'I could not use the microphone.'); return; }
     if (my !== B.token) { stopRecog(); try { rec.cancel(); } catch (e) { /* ignore */ } return; }
     B.rec = rec; B.fab.classList.add('listening');
     const r = await rec.done;
-    B.rec = null; B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
+    B.rec = null; B.live = false; B.fab.classList.remove('listening'); B.fab.style.setProperty('--lv', 0);
     if (my !== B.token) { stopRecog(); return; }
-    if (!r) { stopRecog(); dissolve(B.userEl); B.userEl = null; return; }                       // cancelled
-    if (!r.heard || r.secs < 0.7) { stopRecog(); dissolve(B.userEl); B.userEl = null; if (!B.botEl) putBot("I didn't hear anything. Tap me and try again."); return; }   // an earlier answer stays in view
+    if (!r) { stopRecog(); B.live = false; sync(); return; }                       // cancelled
+    if (!r.heard || r.secs < 0.7) { stopRecog(); B.live = false; sync(); if (!B.botEl) putBot("I didn't hear anything. Tap me and try again."); return; }   // an earlier answer stays in view
     let words = '';
     if (recog) {
       recog.stop(); await Promise.race([recog.finished, new Promise(function (res) { setTimeout(res, 500); })]);
@@ -285,19 +262,19 @@
   }
   function openTyper() { B.typing = true; B.typer.classList.remove('hidden'); setTimeout(function () { B.input.focus(); }, 30); }
   function closeTyper(quiet) { B.typing = false; B.typer.classList.add('hidden'); if (!quiet) B.input.blur(); }
-  function switchToTyping() { B.token++; if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; } B.fab.classList.remove('listening'); dissolve(B.userEl); B.userEl = null; openTyper(); }
+  function switchToTyping() { B.token++; if (B.rec) { try { B.rec.cancel(); } catch (e) { /* ignore */ } B.rec = null; } B.fab.classList.remove('listening'); B.live = false; sync(); openTyper(); }
 
   async function ask(o, mine) {
     const my = mine || ++B.token;
     Speech.unlock(); Speech.stop();
     // "yes" / "no" typed while something waits for an OK: no need to ask the server
     if (o.text && B.pending.length) {
-      if (YES.test(o.text)) { if (o.voice) iconOnly(); else putUser(o.text); return confirmPending(); }
-      if (NO.test(o.text)) { if (o.voice) iconOnly(); else putUser(o.text); return cancelPending(); }
+      if (YES.test(o.text)) return confirmPending();
+      if (NO.test(o.text)) return cancelPending();
     }
     B.busy = true; B.lastVoice = !!(o.audio || o.voice); B.fab.classList.add('busy');
     // no bouncing dots: the AI bubble itself shows a small spinning ring and "Thinking…" while it works
-    if (o.text && !o.voice) putUser(o.text); else iconOnly();               // typed words are shown; spoken ones are not: your picture stays as it is
+    B.live = false;                                                        // what you said or typed is never shown: only the answer is
     dissolve(B.botEl); B.botEl = null; sync();
     let r;
     try {

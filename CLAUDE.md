@@ -69,7 +69,7 @@ Browser (docs/, plain HTML/CSS/JS, GitHub Pages) --POST JSON, text/plain--> Goog
 - **Security.** Task titles, messages and file contents are untrusted input (prompt-injection): the prompt says to follow only the person's own words.
 - **Prompt and context.** `ASSISTANT_PROMPT_` and builders in `Adapters.gs`; context assembled in `Core.gs` (`aiContext`, `aiContextFit` tiers to keep prompts small for free-tier limits).
 - **The bubble** (`assistant.js`): tap = pop up and listen; tap again = tuck away (history stays in memory, nothing old is shown); small Clear button forgets the
-  conversation; the open chat is draggable; your spoken words are never shown as text (only your picture), typed ones are; the AI's answer is read aloud when you spoke.
+  conversation; the open chat is draggable; there is no bubble for the user: what you say or type is never shown, only the AI's answer (read aloud when you spoke); a small keyboard button and the Clear button sit with the AI bubble.
   State lives in the single `B` object; history in `sessionStorage` (`aib:<userId>`), position in `localStorage`.
 
 ## Performance and reliability facts (Apps Script)
