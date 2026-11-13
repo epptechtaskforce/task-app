@@ -37,7 +37,7 @@
       let res;
       if (demo) {
         await new Promise(function (r) { setTimeout(r, 120); });
-        res = w.DemoBackend.handle(JSON.parse(JSON.stringify(req)));
+        res = await w.DemoBackend.handle(JSON.parse(JSON.stringify(req)));
       } else {
         const ctl = new AbortController();
         const timer = setTimeout(function () { ctl.abort(); }, opts.timeout || 60000);

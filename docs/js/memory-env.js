@@ -170,7 +170,7 @@
    */
   function createMemoryEnv(options) {
     options = options || {};
-    const files = {}, archives = {};
+    const files = {}, archives = {}, counters = {};
     let counter = 0;
     let timer = null, filesDirty = false;
     const saveNow = function (s) {
@@ -205,6 +205,11 @@
       log: options.log || function () {},
       formatDate: formatDate,
       store: store,
+      setting: function (name) { return (options.settings || {})[name] || ''; },
+      counter: function (key, seconds) {
+        const b = Math.floor(env.now() / (seconds * 1000)), c = counters[key];
+        counters[key] = { b: b, n: c && c.b === b ? c.n + 1 : 1 }; return counters[key].n;
+      },
       files: {
         saveAudio: function (o) { return keep(o); },
         readAudio: function (id) { if (!files[id]) throw new Error('Audio is not available in demo mode after a page reload'); return files[id]; },

@@ -459,7 +459,7 @@
       h('div', { class: 'sum-head' }, h('span', { class: 'sum-ico' }, icon('sparkles', 18)), h('span', { class: 'grow' }, 'AI summary'), s ? healthChip(s.health) : null),
       h('div', { class: 'body' },
         s ? h('div', null, h('p', null, s.summary_en), s.progress_note ? h('p', { class: 'small' }, h('strong', null, 'So far: '), s.progress_note) : null, list('Blockers', s.blockers), list('Next steps', s.next_steps))
-          : h('p', { class: 'muted' }, 'No summary yet. It appears once people post updates.')),
+          : h('p', { class: 'muted' }, 'No summary yet. It appears once people post updates, or tap “Create summary”.')),
       extra);
   }
 
@@ -562,7 +562,7 @@
       catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/tasks' }, '← Back to tasks'))), 'tasks', barOpts); }
     }
 
-    let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = false, recording = null;
+    let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = !!(Api.demo && window.DemoBackend && window.DemoBackend.realAi), recording = null;   // the demo's AI is capped, so it only summarises when asked
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
     const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);

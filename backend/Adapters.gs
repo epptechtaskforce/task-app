@@ -36,7 +36,17 @@ function makeEnv_(cfg) {
     store: new SheetsStore_(ssId),
     files: new DriveFiles_(voiceId),
     archive: new DriveArchive_(archiveId),
-    ai: cfg.ai || new GeminiAi_()
+    ai: cfg.ai || new GeminiAi_(),
+    setting: function (name) { return prop_(name) || ''; },
+    // how many times this has been asked in the current window (fixed windows of `seconds`), counting this call
+    counter: function (key, seconds) {
+      return lock_(function () {
+        const p = PropertiesService.getScriptProperties(); let m = {};
+        try { m = JSON.parse(p.getProperty('COUNTERS') || '{}'); } catch (e) { m = {}; }
+        const b = Math.floor(Date.now() / (seconds * 1000)), n = m[key] && m[key].b === b ? m[key].n + 1 : 1;
+        m[key] = { b: b, n: n }; p.setProperty('COUNTERS', JSON.stringify(m)); return n;
+      });
+    }
   };
 }
 
