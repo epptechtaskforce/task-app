@@ -101,3 +101,7 @@ python -m http.server 8765 --directory docs   # then open http://localhost:8765/
 - Free AI tiers can be slow or busy; the backend tries several models and providers and reports clearly when the AI is unavailable. Free-tier content may be used by the provider to improve its models: use a paid key if that matters.
 - Voice messages are limited to 2 minutes. Voice playback needs a browser that can play the format it was recorded in (any current phone or desktop browser).
 - A web page cannot see an iPhone's home screen, so on iPhone the install page always offers "Install" (with a three-picture guide), and browsers only let a page close a tab it opened itself.
+
+## Licence
+
+[MIT](LICENSE): free to use, copy, change and share, with the copyright notice kept. No warranty.

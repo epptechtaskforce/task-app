@@ -2,6 +2,7 @@
   "name": "task-manager-app",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Task assignment and monitoring app with voice updates (Google Apps Script + GitHub Pages)",
   "scripts": {
     "test": "node --test tests/core.test.js tests/features.test.js tests/sync.test.js tests/adapters-cache.test.js tests/ai-providers.test.js tests/api-client.test.js tests/theme.test.js tests/update.test.js tests/generic.test.js",
