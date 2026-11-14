@@ -377,6 +377,11 @@ test('drive access: only people who assign ask; the admin allows or withdraws; o
   assert.deepEqual(app.ok('driveStatus', s.tok.mgr, {}), { eligible: true, status: '', email: '', folderUrl: '' });
   for (const bad of ['', 'nope', 'a@b', 'two words@gmail.com', 'x'.repeat(130) + '@gmail.com']) app.err('requestDriveAccess', s.tok.mgr, { email: bad }, 'VALIDATION');
   assert.equal(app.ok('requestDriveAccess', s.tok.mgr, { email: '  Manager.Name@Gmail.com ' }).status, 'requested');
+  const t0 = app.ok('createTask', s.tok.mgr, { title: 'First job', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('setProgress', s.tok.wk1, { taskId: t0.id, progress: 100 }); app.ok('approveTask', s.tok.mgr, { taskId: t0.id });
+  const waiting = app.ok('getArchived', s.tok.mgr, { taskId: t0.id }).archive;                               // the History page shows where the request stands
+  assert.deepEqual([waiting.canOpen, waiting.mine, waiting.status, waiting.email], [false, true, 'requested', 'manager.name@gmail.com']);
+  assert.deepEqual([app.ok('getArchived', s.tok.wk1, { taskId: t0.id }).archive.status, app.ok('getArchived', s.tok.wk1, { taskId: t0.id }).archive.email], ['', '']);   // other people never see it
   assert.equal(app.ok('driveStatus', s.tok.mgr, {}).email, 'manager.name@gmail.com');
   // the admin sees the request first; nobody else may use the admin actions
   const list = app.ok('adminDriveList', s.A, {}).people;

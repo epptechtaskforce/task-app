@@ -102,3 +102,11 @@ test('unshareFolder: withdraws the access, and says so when it is still there', 
 test('Adapters.gs does not use calls that need a Google permission the project was never given (they only fail on the real Drive)', () => {
   assert.equal(/getEffectiveUser|getActiveUser/.test(src), false);
 });
+
+test('the app: nothing about Google Drive on the Account page; the two buttons and the request sit on the History task', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'app.js'), 'utf8');
+  const acc = app.slice(app.indexOf('function viewAccount()'), app.indexOf('function ', app.indexOf('function viewAccount()') + 30));
+  assert.equal(/Drive/i.test(acc), false, 'the Account page must not mention Google Drive');
+  const det = app.slice(app.indexOf('function archivedDetails('), app.indexOf('async function viewArchived('));
+  assert.ok(det.includes('Open the folder in Google Drive') && det.includes('Open the zip') && det.includes('Request access') && det.includes("requestDriveAccess"));
+});
