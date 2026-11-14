@@ -956,6 +956,7 @@
           h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null),
           t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
       });
+      list.appendChild(h('p', { class: 'muted small', style: 'text-align:center;margin:.8rem 0' }, 'The app shows the last 12 months. Older tasks are kept for good in the full history sheet in Google Drive (the admin can open it).'));
       if (total > items.length) list.appendChild(h('div', { style: 'text-align:center;margin:.6rem 0 1rem' }, h('button', { class: 'btn small', type: 'button', onclick: function () { load(true); } }, 'Show more (' + (total - items.length) + ' left)')));
     }
     async function load(more) {
@@ -1199,6 +1200,12 @@
           h('div', { class: 'tags' }, chip), h('div', { class: 'row', style: 'gap:.4rem' }, buttons)));
       });
       box.appendChild(card);
+      box.appendChild(h('div', { class: 'card' }, h('h3', null, 'Full history sheet'),
+        h('p', { class: 'muted small' }, 'Every completed task is also written, for good, to one Google Sheet in Drive (one row per task: who, what, when, days late, documents, where its zip is). The app itself keeps only the last 12 months, so it never fills up.'),
+        h('button', { class: 'btn small', type: 'button', onclick: async function () {
+          const w = window.open('', '_blank');
+          await guarded(async function () { const r = await Api.call('adminHistorySheet', {}, { timeout: 60000 }); if (w) w.location = r.url; else UI.toast('Allow pop-ups to open the sheet'); });
+        } }, 'Open the full history sheet')));
       box.appendChild(h('div', { class: 'note' }, 'Allowed people can open, read and download what is in their folder. They cannot change, delete, move or share anything, and they cannot see anything else in the Drive. Only the person can enter their Google email (on their Account page): you can allow or refuse it, not change it.'));
     }
     load();

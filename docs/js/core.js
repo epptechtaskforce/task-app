@@ -34,6 +34,7 @@
  *   env.archive.readZip({fileId, path}, ['Summary.txt','Conversation.txt']) -> {name: text}   (text files inside a task's zip)
  *   env.archive.shareFolder({person, email}) -> {folderId}   (view-only access to the ONE folder EPP/<person>; throws if that would be wider)
  *   env.archive.unshareFolder({person, email})
+ *   env.history.append([row, ...]) / ids() -> {archiveId: 1} / removeTasks({taskId: 1}) / clear() / url() / fileId()   (the full history sheet; a row is an array in HISTORY_COLUMNS order)
  *   env.ai.transcribe(b64, mime, hints) -> {english, language, key_points}   (always English; Sinhala is translated)
  *   env.ai.summarize(input)        -> {summary_en, progress_note, health, blockers, next_steps}
  *   env.ai.assistant(input)        -> {heard, reply, confirm, actions[]}      (the private secretary; see A.assistant)
@@ -49,6 +50,11 @@ const LOCK_MINUTES = 15;
 const DEFAULT_HASH_ROUNDS = 300;
 const REJECT_PROGRESS = 90;
 const MIN_PASSWORD = 8;
+// The FULL history: one readable row per completed task, kept in a Google Sheet in Drive for good ("EPP History"). It is written when a task is approved
+// (and repaired every night), so the live database only has to keep the last HISTORY_KEEP_DAYS days of History and never fills up.
+const HISTORY_COLUMNS = ['Archive ID', 'Completed', 'Started', 'Due date', 'Days taken', 'Days late', 'Title', 'Assigned by', 'Assigned to', 'Purpose', 'Summary', 'Documents', 'Messages', 'Zip file', 'Folder', 'Zip link', 'Folder link', 'Task id'];
+const HISTORY_KEEP_DAYS = 365;
+
 const LIMITS = {
   name: 80, title: 120, description: 2000, text: 4000, transcript: 8000, note: 300,
   maxAssignees: 20, maxAudioB64: 6000000, maxWavB64: 9000000, maxVoiceSecs: 150, maxLinks: 3000,
@@ -84,7 +90,7 @@ const TABLES = {
   Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
   Attachments:  { key: 'id', cols: { id: 's', taskId: 's', name: 's', mime: 's', size: 'n', fileId: 's', thumb: 's', w: 'n', h: 'n', createdAt: 'n' } },   // id = the id of the message that carries the file
   Briefings:    { key: 'userId', cols: { userId: 's', sig: 's', at: 'n', data: 'j' } },                                                               // the last home-page overview made for each person
-  ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n', folderId: 's', purpose: 's', fileCount: 'n', archiveNo: 'n', docs: 'j' } },
+  ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n', folderId: 's', purpose: 's', fileCount: 'n', archiveNo: 'n', docs: 'j', dueDate: 's' } },
   AuditLog:     { key: 'id', cols: { id: 's', at: 'n', userId: 's', action: 's', detail: 's' } }
 };
 
@@ -1182,6 +1188,11 @@ function createCore(env) {
     });
   } };
 
+  A.adminHistorySheet = { admin: true, run: function () {
+    if (!env.history) throw fail('ERROR', 'The full history sheet is not available here');
+    return { url: env.history.url(), keepDays: HISTORY_KEEP_DAYS };
+  } };
+
   A.adminDriveList = { admin: true, run: function (ctx) {
     const rows = {}; ctx.rows('DriveAccess').forEach(function (r) { rows[r.userId] = r; });
     const order = { requested: 0, granted: 1, '': 2 };
@@ -1284,7 +1295,23 @@ function createCore(env) {
   function indent(s) { return String(s == null ? '' : s).replace(/\r?\n/g, '\n    '); }
   // The number printed on every archived task ("EPP-0042"): the next one after the highest used so far.
   function archiveCode(n) { return 'EPP-' + ('0000' + Number(n || 0)).slice(-4); }
-  function nextArchiveNo(ctx) { return ctx.rows('ArchiveIndex').reduce(function (hi, x) { return Math.max(hi, Number(x.archiveNo) || 0); }, 0) + 1; }
+  // The counter is stored (Settings "archiveCounter") as well as read from the rows, because old rows leave the live sheet after a year: numbers never repeat.
+  function nextArchiveNo(ctx) {
+    const row = ctx.rows('Settings').filter(function (k) { return k.key === 'archiveCounter'; })[0];
+    return Math.max(Number(row && row.value) || 0, ctx.rows('ArchiveIndex').reduce(function (hi, x) { return Math.max(hi, Number(x.archiveNo) || 0); }, 0)) + 1;
+  }
+  function saveArchiveNo(ctx, no) {
+    const row = ctx.rows('Settings').filter(function (k) { return k.key === 'archiveCounter'; })[0];
+    if (row) update(ctx, 'Settings', 'archiveCounter', { value: String(no) }); else insert(ctx, 'Settings', { key: 'archiveCounter', value: String(no) });
+  }
+  // One row of the full history sheet, from a History index row.
+  function historyRow(x) {
+    const day = function (ms) { return env.formatDate(ms).slice(0, 10); }, closed = day(x.closedAt), parts = String(x.path || '').split('/');
+    const lateMs = x.dueDate ? Date.parse(closed) - Date.parse(x.dueDate) : 0;
+    return [archiveCode(x.archiveNo), closed, day(x.createdAt), x.dueDate || '', Math.max(0, Math.round((x.closedAt - x.createdAt) / 86400000)), lateMs > 0 ? Math.round(lateMs / 86400000) : 0,
+      x.title, x.creatorName, x.assigneeNames, x.purpose || '', x.summaryText || '', (x.docs || []).map(function (d) { return d.name; }).join('; '), x.messageCount || 0,
+      parts[2] || '', parts[0] && parts[1] ? parts[0] + ' / ' + parts[1] : '', x.storage === 'zip' && x.fileId ? 'https://drive.google.com/file/d/' + x.fileId + '/view' : '', x.folderId ? 'https://drive.google.com/drive/folders/' + x.folderId : '', x.id];
+  }
 
   // Conversation.txt: the whole conversation as plain text. Voice messages are written out (the audio itself is not kept).
   function renderConversationText(doc) {
@@ -1379,7 +1406,10 @@ function createCore(env) {
     const participantIds = [t.creatorId].concat(t.assigneeIds);
     const docs = doc.messages.filter(function (m) { return m.file; }).slice(0, 40).map(function (m) { return { name: clip(m.file.name, 100), size: m.file.size, by: m.senderName, at: m.time.slice(0, 10) }; });
     const gist = t.summary && t.summary.summary_en ? t.summary.summary_en : plainGist(doc);
-    insert(ctx, 'ArchiveIndex', { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: names(doc.task.assignees), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(gist, 400), messageCount: countContent(msgs), folderId: saved.folderId || '', purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: no, docs: docs });
+    const idxRow = { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: names(doc.task.assignees), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(gist, 400), messageCount: countContent(msgs), folderId: saved.folderId || '', purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: no, docs: docs, dueDate: t.dueDate || '' };
+    insert(ctx, 'ArchiveIndex', idxRow); saveArchiveNo(ctx, no);
+    // the full history sheet in Drive: one more row. If it cannot be written now, the task is still archived and the nightly job adds the row later.
+    try { if (env.history) env.history.append([historyRow(idxRow)]); } catch (e) { env.log('full history sheet: could not add ' + code + ' now: ' + e); }
     // Only after the archive is safely written do we remove the live rows.
     removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
     if (hasFiles) removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
@@ -1440,11 +1470,22 @@ function createCore(env) {
       const expired = removeWhere(ctx, 'Sessions', function (s) { return s.expires < env.now(); });
       const keep = env.now() - 365 * 86400000;
       const oldAudit = removeWhere(ctx, 'AuditLog', function (a) { return a.at < keep; });
-      return { expiredSessions: expired, oldAudit: oldAudit };
+      // Full history: every completed task of the live sheet must be in the full history sheet; then History older than a year leaves the live sheet.
+      let history = { added: 0, pruned: 0 };
+      try {
+        if (env.history) {
+          const have = env.history.ids(), code = function (x) { return x.archiveNo ? archiveCode(x.archiveNo) : ''; };
+          const missing = ctx.rows('ArchiveIndex').filter(function (x) { return code(x) && !have[code(x)]; });
+          if (missing.length) { env.history.append(missing.map(historyRow)); missing.forEach(function (x) { have[code(x)] = 1; }); }
+          const cutoff = env.now() - HISTORY_KEEP_DAYS * 86400000;
+          history = { added: missing.length, pruned: removeWhere(ctx, 'ArchiveIndex', function (x) { return x.closedAt < cutoff && !!code(x) && !!have[code(x)]; }) };
+        }
+      } catch (e) { env.log('full history sync failed (nothing was removed): ' + e); }
+      return { expiredSessions: expired, oldAudit: oldAudit, history: history };
     });
   }
 
   return { handle: handle, setup: setup, maintenance: maintenance, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS };
+if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS, HISTORY_COLUMNS: HISTORY_COLUMNS };

@@ -193,7 +193,7 @@
    */
   function createMemoryEnv(options) {
     options = options || {};
-    const files = {}, archives = {}, folders = {}, shares = {}, counters = {};
+    const files = {}, archives = {}, folders = {}, shares = {}, counters = {}, hist = { rows: [], failAppend: false, failIds: false };
     let counter = 0;
     let timer = null, filesDirty = false;
     const saveNow = function (s) {
@@ -259,8 +259,17 @@
         },
         read: function (idx) { if (!archives[idx.fileId]) throw new Error('Archive not found'); return archives[idx.fileId]; }
       },
+      // the full history sheet: rows kept in memory (arrays in HISTORY_COLUMNS order, Archive ID first, task id last); tests can make it fail
+      history: {
+        append: function (rows) { if (hist.failAppend) throw new Error('history sheet unavailable'); rows.forEach(function (r) { hist.rows.push(r.slice()); }); },
+        ids: function () { if (hist.failIds) throw new Error('history sheet unavailable'); const o = {}; hist.rows.forEach(function (r) { o[r[0]] = 1; }); return o; },
+        removeTasks: function (set) { const n = hist.rows.length; hist.rows = hist.rows.filter(function (r) { return !set[r[r.length - 1]]; }); return n - hist.rows.length; },
+        clear: function () { const n = hist.rows.length; hist.rows = []; return n; },
+        url: function () { return 'https://docs.google.com/spreadsheets/d/EPPHISTORY'; },
+        fileId: function () { return 'EPPHISTORY'; }
+      },
       ai: options.ai || fakeAi(),
-      _files: files, _archives: archives, _folders: folders, _shares: shares
+      _files: files, _archives: archives, _folders: folders, _shares: shares, _history: hist
     };
     return env;
   }
