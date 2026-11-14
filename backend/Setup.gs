@@ -143,7 +143,8 @@ function smokeTest() {
     check(hist.total === 1, 'closed task appears in history');
     const doc = must('getArchived', staff1, { taskId: task.id });
     // created (system) + risky texts + voice + progress (system) = 3 + risky.length
-    check(doc.messages.length === 3 + risky.length && doc.task.title === 'Smoke task', 'archived conversation (' + doc.messages.length + ' messages) can be opened from Drive');
+    // the History details count the people's messages (the texts and the voice message; the two system notes are not counted)
+    check(doc.messageCount === 1 + risky.length && doc.task.title === 'Smoke task', 'the archived task opens with its details (' + doc.messageCount + ' messages)');
     check(doc.detailsOnly === true && doc.archive.code === 'EPP-0001', 'the archived task opens as details with its archive number: ' + (doc.archive && doc.archive.code));
     check(call('getAudio', staff1, { archived: true, taskId: task.id, messageId: v.message.id }).ok === false, 'voice audio is not kept after archiving (the words are)');
     const zipOf = function (d) {
@@ -197,7 +198,6 @@ function smokeTest() {
     must('approveTask', boss1, { taskId: t2.id });
     check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 5).getValues()[0].join('|') === 'folderId|purpose|fileCount|archiveNo|docs', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
     const doc2 = must('getArchived', staff1, { taskId: t2.id });
-    const fm2 = doc2.messages.filter(function (m) { return m.type === 'file'; })[0];
     const z2 = zipOf(doc2), e2 = z2 ? entries(z2) : {}, docName = Object.keys(e2).filter(function (n) { return n.indexOf('Files/') === 0; });
     check(doc2.archive.code === 'EPP-0002', 'the second archived task gets the next number: ' + doc2.archive.code);
     check(docName.length === 1 && /^Files\/\d{4}-\d{2}-\d{2} \d{2}-\d{2} Staff - Smoke report\.pdf$/.test(docName[0]), 'the shared document is inside the zip, in Files, with a readable name: ' + docName.join(', '));
