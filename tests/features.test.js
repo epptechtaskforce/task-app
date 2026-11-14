@@ -370,3 +370,46 @@ test('companion: the assistant is told which screen the person is on (checked ag
   assert.deepEqual([a.type, a.title, a.dueDate, a.assigneeIds, a.needsConfirm], ['fill_task', 'Fix the gate', '2026-11-20', [s.users.wk1.id], false]);
   assert.ok(r.reply.includes('not allowed'));                                         // told that someone was left out
 });
+
+test('confirmation: what the person says decides, not how the model words its answer (no more "Sent!" while the card is still waiting)', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  const t = app.ok('createTask', s.tok.mgr, { title: 'Pump house roof', assigneeIds: [s.users.wk1.id] }).task;
+  const waiting = ['Post this in "Pump house roof": "Started the roof today"'];
+  const again = { type: 'post_message', task_id: t.id, text: 'Started the roof today' };
+  // 1. the person says yes (voice: only the model hears it); the model re-proposes the same message and says it sent it
+  ai.reply = () => ({ heard: 'yes please send it', reply: 'Sent!', confirm: '', actions: [again] });
+  let r = app.ok('assistant', s.tok.mgr, { audioB64: 'AAAA', mime: 'audio/webm', pending: waiting });
+  assert.equal(r.confirm, 'yes'); assert.deepEqual(r.actions, []);
+  ai.reply = () => ({ heard: 'yes', reply: 'Sent!', confirm: 'yes', actions: [] });   // (the model's idea of what it heard does not override typed words)
+  r = app.ok('assistant', s.tok.mgr, { text: 'how is the roof going', pending: waiting });
+  assert.equal(r.confirm, 'yes');                                                      // (its own yes label is still respected)
+  // 2. typed words are enough on their own, whatever the model says
+  ai.reply = () => ({ reply: 'Done, it is posted.', confirm: '', actions: [] });
+  r = app.ok('assistant', s.tok.mgr, { text: 'okay go ahead', pending: waiting });
+  assert.equal(r.confirm, 'yes');
+  // 3. the model says yes but also re-proposes the action: it is still one confirmation, not a new card
+  ai.reply = () => ({ heard: 'sure', reply: 'Sending.', confirm: 'yes', actions: [again] });
+  r = app.ok('assistant', s.tok.mgr, { audioB64: 'AAAA', mime: 'audio/webm', pending: waiting });
+  assert.equal(r.confirm, 'yes'); assert.equal(r.actions.length, 0);
+  // 4. no / cancel
+  ai.reply = () => ({ reply: 'Okay.', confirm: '', actions: [again] });
+  r = app.ok('assistant', s.tok.mgr, { text: 'never mind', pending: waiting });
+  assert.equal(r.confirm, 'no'); assert.equal(r.actions.length, 0);
+  // 5. "yes, but change it" is NOT a yes: the corrected action goes through the card again
+  ai.reply = () => ({ reply: 'Here is the new version. Shall I send it?', confirm: '', actions: [{ type: 'post_message', task_id: t.id, text: 'Started the roof today, finishing tomorrow' }] });
+  r = app.ok('assistant', s.tok.mgr, { text: 'yes but add that we finish tomorrow', pending: waiting });
+  assert.equal(r.confirm, ''); assert.equal(r.actions.length, 1);
+  r = app.ok('assistant', s.tok.mgr, { text: 'no, make it shorter', pending: waiting });
+  assert.equal(r.confirm, ''); assert.equal(r.actions.length, 1);
+  // 6. the model claims it is done although the person did not confirm anything: the answer must not say so
+  ai.reply = () => ({ reply: 'I have sent it to the team.', confirm: '', actions: [] });
+  r = app.ok('assistant', s.tok.mgr, { text: 'how is the roof going', pending: waiting });
+  assert.equal(r.confirm, ''); assert.ok(/not done yet/.test(r.reply) && !/sent it/.test(r.reply));
+  // an ordinary answer while something waits is left alone, and nothing is touched when nothing waits
+  ai.reply = () => ({ reply: 'The roof is at 35%.', confirm: '', actions: [] });
+  r = app.ok('assistant', s.tok.mgr, { text: 'how is the roof going', pending: waiting });
+  assert.equal(r.reply, 'The roof is at 35%.');
+  ai.reply = () => ({ reply: 'Done, I noted that.', confirm: 'yes', actions: [] });
+  r = app.ok('assistant', s.tok.mgr, { text: 'yes' });
+  assert.equal(r.confirm, ''); assert.equal(r.reply, 'Done, I noted that.');
+});

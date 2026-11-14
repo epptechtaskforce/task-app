@@ -973,6 +973,29 @@ function createCore(env) {
     return L.join('\n');
   }
 
+  // Short spoken or typed answers to "shall I go ahead?" ("yes", "yes please send it", "okay go ahead" / "no", "cancel that").
+  // Anything longer or with a change of mind in it ("yes but make it shorter") is left to the model, which then returns the corrected action.
+  function plainWords(s) { return String(s || '').toLowerCase().replace(/[^a-z' ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function saidYes(s) {
+    const t = plainWords(s);
+    if (!t || t.split(' ').length > 8) return false;
+    if (/\b(not|don't|dont|no|never|wait|stop|cancel|but|instead|change|edit|add|rather|actually|shorter|longer)\b/.test(t)) return false;
+    return /^(yes|yeah|yep|yup|yea|ok|okay|sure|correct|confirm|confirmed|approve|approved|agreed|alright|please do|go ahead|do it|send it|send that|send this|send|post it|please send|that's right|thats right|sounds good|looks good|perfect|fine)\b/.test(t)
+      || /\b(go ahead|send it|send that|do it|confirm it)\b/.test(t);
+  }
+  function saidNo(s) {
+    const t = plainWords(s);
+    if (!t || t.split(' ').length > 4 || /\b(change|edit|instead|make|shorter|longer|add)\b/.test(t)) return false;
+    return /^(no|nope|nah|cancel|stop|delete|don't|dont|do not|never mind|nevermind|leave it|forget it|scrap that|discard)\b/.test(t);
+  }
+  // Does this reply claim that something was sent / done?
+  function claimsDone(reply) {
+    const t = String(reply || '').split('\n\n(Note:')[0].trim().slice(0, 200);
+    return /^(done|sent|posted|all done|all set)\b/i.test(t)
+      || /\bi(?:'ve| have)?\s+(?:just\s+)?(?:sent|posted|created|approved|done)\b/i.test(t)
+      || /\b(?:message|task|it|that)\s+(?:has been|was|is now|is)\s+(?:sent|posted|created|approved|done)\b/i.test(t);
+  }
+
   A.assistant = { run: function (ctx, user, req) {
     needAi(ctx, user);
     const text = clip(req.text, LIMITS.maxAssistText).trim();
@@ -1005,14 +1028,23 @@ function createCore(env) {
     try { raw = env.ai.assistant({ context: context, history: history, text: text, audio: audio, pending: pending, focus: focus, files: files, screen: screen, userName: user.name }); }
     catch (e) { env.log('assistant failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.'); }
     raw = raw || {};
+    // A waiting confirmation is decided by what the PERSON said (or the model's own yes/no label), never by how the model words its answer:
+    // a model can say "Sent!" without sending anything, or re-propose the same action instead of confirming it.
+    let decided = '';
+    if (pending.length) {
+      const said = text || clip(raw.heard, LIMITS.maxAssistText);
+      decided = saidYes(said) ? 'yes' : saidNo(said) ? 'no' : (raw.confirm === 'yes' || raw.confirm === 'no') ? raw.confirm : '';
+    }
     const actions = [], problems = [];
-    (Array.isArray(raw.actions) ? raw.actions : []).slice(0, 5).forEach(function (a) {
+    (Array.isArray(raw.actions) && !decided ? raw.actions : []).slice(0, 5).forEach(function (a) {
       const r = cleanAction(ctx, user, a, mineById, allowed);
       if (r.ok) { actions.push(r.ok); if (r.partial) problems.push('I left out someone you are not allowed to assign tasks to'); } else problems.push(r.err);
     });
     let reply = noIds(clip(raw.reply, 2500)).trim() || 'Sorry, I did not catch that. Could you say it again?';
     if (problems.length) reply += '\n\n(Note: ' + problems.filter(function (p, i, arr) { return arr.indexOf(p) === i; }).join('; ') + '.)';
-    const confirm = !actions.length && pending.length && (raw.confirm === 'yes' || raw.confirm === 'no') ? raw.confirm : '';
+    const confirm = decided;
+    // Something is still waiting for the person's OK and nothing has been done: the answer must not say it has been
+    if (pending.length && !decided && !actions.length && claimsDone(reply)) reply = 'That is not done yet. Say yes, or tap the button, to go ahead.';
     // what is said aloud is the whole answer, word for word (the note about actions that could not be done stays on screen only)
     const spoken = reply.split('\n\n(Note:')[0].trim();
     return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, spoken: spoken, confirm: confirm, actions: actions };
