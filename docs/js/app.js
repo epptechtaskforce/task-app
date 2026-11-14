@@ -757,8 +757,8 @@
     }
 
     async function approve() {
-      if (!(await UI.confirm('Close this task?', 'It will move to History with its full conversation. This cannot be undone.', 'Agree & close', 'ok'))) return;
-      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 90000 }); UI.confetti(); UI.toast('Task closed and saved to History'); go('#/tasks'); });
+      if (!(await UI.confirm('Close this task?', 'It will be saved as a zip file in Google Drive (conversation, documents and summary) and listed in History. This cannot be undone.', 'Agree & close', 'ok'))) return;
+      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 90000 }); UI.confetti(); UI.toast('Task closed and archived'); go('#/tasks'); });
     }
     function sendBack() {
       const note = h('textarea', { maxlength: 300, placeholder: 'What still needs to be done? (optional)' });
@@ -921,7 +921,7 @@
     const q = h('input', { type: 'search', placeholder: 'Search closed tasks by title, person or summary…', 'aria-label': 'Search history', value: S.histQ }); S.histQ = '';   // (the assistant may have filled it in)
     const list = h('div');
     S.peek = function () { return { q: q.value }; };
-    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks, with their full conversation.'))), h('div', { class: 'search', style: 'margin-bottom:1rem' }, icon('search', 18), q), list), 'history');
+    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks: who, what, when, and where each archive is saved in Google Drive.'))), h('div', { class: 'search', style: 'margin-bottom:1rem' }, icon('search', 18), q), list), 'history');
     let timer = null;
     async function load() {
       UI.clear(list); list.appendChild(UI.skeleton('card', 3));
