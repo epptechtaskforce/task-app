@@ -1381,18 +1381,27 @@ function createCore(env) {
     // Shared documents and pictures go into "Files" with names a person can read. A voice message is large: once its words are written down
     // the audio is simply not put in the zip. One without a transcript goes in (folder "Voice (no transcript)"), so nothing is ever lost.
     const moves = [], trash = [], taken = {};
+    // A name inside the zip is "<date time> <first name> - [(2) ]<original name>". Two things must never happen to a document: its name used twice
+    // (the second would replace or hide the first) and its ending cut off (".pdf" lost). So the name is made unique first and only the middle is shortened.
+    const entryName = function (folder, stamp, base, ext) {
+      let n = 1, nm;
+      do {
+        const prefix = stamp + ' - ' + (n > 1 ? '(' + n + ') ' : '');
+        nm = niceName(prefix + String(base).slice(0, Math.max(10, 150 - prefix.length - ext.length - 1)) + (ext ? '.' + ext : ''), 200); n++;
+      } while (taken[(folder + nm).toLowerCase()]);
+      taken[(folder + nm).toLowerCase()] = 1; return nm;
+    };
     doc.messages.forEach(function (m) {
       const stamp = String(m.time).replace(':', '-') + ' ' + niceName(String(m.senderName).split(' ')[0], 20);
       if (m.file && m.file.fileId) {
-        let nm = niceName(stamp + ' - ' + m.file.name, 120), n = 1;
-        while (taken[nm.toLowerCase()]) nm = niceName(stamp + ' - (' + (++n) + ') ' + m.file.name, 120);
-        taken[nm.toLowerCase()] = 1; m.file.archivedAs = nm;
+        const dot = String(m.file.name).lastIndexOf('.'), nm = entryName('Files/', stamp, dot > 0 ? String(m.file.name).slice(0, dot) : m.file.name, dot > 0 ? String(m.file.name).slice(dot + 1) : '');
+        m.file.archivedAs = nm;
         moves.push({ id: m.file.fileId, name: 'Files/' + nm }); trash.push(m.file.fileId);
       }
       if (m.type === 'voice' && m.audioFileId) {
         trash.push(m.audioFileId);
         if (String(m.transcript || '').trim()) { m.audioFileId = ''; m.audioRemoved = true; }
-        else moves.push({ id: m.audioFileId, name: 'Voice (no transcript)/' + niceName(stamp + ' - voice message.' + (String(m.audioMime || '').split(';')[0].split('/')[1] || 'audio').replace('x-m4a', 'm4a'), 120) });
+        else moves.push({ id: m.audioFileId, name: 'Voice (no transcript)/' + entryName('Voice (no transcript)/', stamp, 'voice message', (String(m.audioMime || '').split(';')[0].split('/')[1] || 'audio').replace('x-m4a', 'm4a')) });
       }
     });
     if (env.store.ensureColumns) { try { env.store.ensureColumns('ArchiveIndex'); } catch (e) { env.log('ensureColumns failed: ' + e); } }   // an older sheet gets the newer columns the first time (never a reason to stop an approval)

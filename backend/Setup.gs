@@ -225,6 +225,7 @@ function smokeTest() {
     const z2 = zipOf(doc2), e2 = z2 ? entries(z2) : {}, docName = Object.keys(e2).filter(function (n) { return n.indexOf('Files/') === 0; });
     check(doc2.archive.code === 'EPP-0002', 'the second archived task gets the next number: ' + doc2.archive.code);
     check(docName.length === 1 && /^Files\/\d{4}-\d{2}-\d{2} \d{2}-\d{2} Staff - Smoke report\.pdf$/.test(docName[0]), 'the shared document is inside the zip, in Files, with a readable name: ' + docName.join(', '));
+    check(docName.length === 1 && e2[docName[0]] === '%PDF-1.4\nsmoke test file\n', 'the document inside the zip is exactly the file that was shared');
     check(docName.length === 1 && (e2['Conversation.txt'] || '').indexOf(docName[0]) >= 0 && (e2['Summary.txt'] || '').indexOf('1 shared document and picture') >= 0, 'the text files point to the document');
     check(doc2.documents.length === 1 && doc2.documents[0].name === 'Smoke report.pdf', 'the History details list the shared document by name');
     check(!voice.getFiles().hasNext(), 'the loose copy of the shared document was thrown away after the zip was written');
@@ -584,6 +585,32 @@ function simulationClean(confirmText) {
   props.deleteProperty('SIM_STATE');
   Logger.log('Simulation removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '.');
 }
+
+// Real-Drive check of a BIG archive: `count` documents of about 5 MB each (the biggest file the app accepts) go through the app's own saveZip, which must
+// make the zip, open it again and find every file with the same size and content. Everything is made in a temporary folder and removed at the end.
+// Run it from the editor: archiveSizeTest5 (5 files), archiveSizeTest10, archiveSizeTest20, archiveSizeTest30. Nothing real is touched.
+function archiveSizeTest_(count) {
+  const t0 = Date.now(), root = DriveApp.createFolder('ARCHIVE SIZE TEST (temporary)'), epp = root.createFolder('EPP'), loose = root.createFolder('loose');
+  try {
+    const bytes = []; for (let i = 0; i < 5 * 1024 * 1024; i++) bytes.push(Math.floor(Math.random() * 256) - 128);     // about 5 MB of random bytes: they do not compress, like real photos and PDFs
+    const moves = [], trash = [];
+    for (let i = 0; i < count; i++) {
+      bytes[0] = i - 128; bytes[1] = 37;
+      const f = loose.createFile(Utilities.newBlob(bytes, 'application/pdf', 'big-' + i + '.pdf')); moves.push({ id: f.getId(), name: 'Files/big-' + i + '.pdf' }); trash.push(f.getId());
+    }
+    Logger.log('made ' + count + ' files of ' + Math.round(bytes.length / 1048576) + ' MB in ' + Math.round((Date.now() - t0) / 1000) + ' s');
+    const arch = new DriveArchive_(root.getId(), epp.getId()), t1 = Date.now();
+    const saved = arch.saveZip({ person: 'Size Test', zipName: 'EPP-9999 - size test.zip', files: [{ name: 'Summary.txt', content: 'x', mime: 'text/plain' }, { name: 'Conversation.txt', content: 'y', mime: 'text/plain' }], moves: moves, trashIds: trash });
+    const zip = DriveApp.getFileById(saved.fileId);
+    Logger.log('OK: ' + saved.parts + ' zip file(s) for ' + count + ' documents (the first one ' + Math.round(zip.getSize() / 1048576) + ' MB), made and checked in ' + Math.round((Date.now() - t1) / 1000) + ' s; the loose files were then trashed: ' + trash.every(function (id) { return DriveApp.getFileById(id).isTrashed(); }));
+  } catch (e) {
+    Logger.log('FAILED with ' + count + ' files: ' + e);
+  } finally { root.setTrashed(true); }
+}
+function archiveSizeTest5() { archiveSizeTest_(5); }
+function archiveSizeTest10() { archiveSizeTest_(10); }
+function archiveSizeTest20() { archiveSizeTest_(20); }
+function archiveSizeTest30() { archiveSizeTest_(30); }
 
 /* ------------------------------ AI helpers ------------------------------ */
 
