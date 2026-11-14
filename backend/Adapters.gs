@@ -412,9 +412,10 @@ function driveApi_(method, path, query, body) {
 DriveArchive_.prototype.shareFolder = function (o) {
   const email = String(o.email || '').trim().toLowerCase();
   if (!email) throw new Error('No Google account email');
-  const owner = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
-  if (email === owner) throw new Error('That is the account that owns the app; it needs no access');
   const epp = this.eppFolder(), folder = this.personFolder(o.person), P = DriveApp.Permission;
+  // the owner is read from the folder itself (asking Google "who am I" would need an extra permission this project does not have)
+  let owner = ''; try { owner = String(epp.getOwner().getEmail() || '').toLowerCase(); } catch (e) { owner = ''; }
+  if (email === owner) throw new Error('That is the account that owns the app; it needs no access');
   if (epp.getAccess(email) !== P.NONE || DriveApp.getRootFolder().getAccess(email) !== P.NONE) throw new Error('That Google account already has wider access to this Drive');
   if (folder.getSharingAccess() !== DriveApp.Access.PRIVATE) folder.setSharing(DriveApp.Access.PRIVATE, P.NONE);      // never open to anyone with a link
   try { driveApi_('post', 'files/' + folder.getId() + '/permissions', 'sendNotificationEmail=false&supportsAllDrives=false', { role: 'reader', type: 'user', emailAddress: email }); }   // 'reader' = Viewer; no email is sent
