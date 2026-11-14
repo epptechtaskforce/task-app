@@ -224,7 +224,8 @@
       uuid: function () { counter++; return randomHex(16).slice(0, 28) + ('0000' + counter).slice(-4); },
       randomToken: function () { return randomHex(32); },
       sha256Hex: SHA,
-      lock: function (fn) { return fn(); },
+      lock: options.lock || function (fn) { return fn(); },
+      archiveAtNight: !!options.archiveAtNight,        // false (the demo and most tests): approving files the task at once
       log: options.log || function () {},
       formatDate: formatDate,
       store: store,
@@ -237,7 +238,8 @@
         saveAudio: function (o) { return keep(o); },
         readAudio: function (id) { if (!files[id]) throw new Error('Audio is not available in demo mode after a page reload'); return files[id]; },
         saveFile: function (o) { return keep(o); },
-        readFile: function (id) { if (!files[id]) throw new Error('This file is not available in demo mode after a page reload'); return files[id]; }
+        readFile: function (id) { if (!files[id]) throw new Error('This file is not available in demo mode after a page reload'); return files[id]; },
+        remove: function (id) { delete files[id]; }
       },
       archive: {
         // like Drive: one zip per task in the folder of the person who assigned it; the loose files are thrown away afterwards
@@ -247,8 +249,9 @@
           (o.moves || []).forEach(function (mv) { zip.moved.push({ id: mv.id, name: mv.name }); });
           (o.trashIds || []).forEach(function (fid) { zip.trashed.push(fid); delete files[fid]; });
           folders['EPP/' + o.person + '/' + o.zipName] = zip;
-          return { storage: 'zip', path: 'EPP/' + o.person + '/' + o.zipName, fileId: id, folderId: 'FD' + randomHex(6) };
+          return { storage: 'zip', path: 'EPP/' + o.person + '/' + o.zipName, fileId: id, folderId: 'FD' + randomHex(6), parts: 1, partIds: [id] };
         },
+        discard: function (saved) { delete folders[saved.path]; },
         // like Drive: view-only access to one person's folder, remembered here so tests can see exactly what was shared
         shareFolder: function (o) { shares[o.person] = shares[o.person] || {}; shares[o.person][o.email] = 'VIEW'; return { folderId: 'FD' + String(o.person).replace(/[^A-Za-z0-9]/g, '').slice(0, 10) }; },
         unshareFolder: function (o) { if (shares[o.person]) delete shares[o.person][o.email]; },

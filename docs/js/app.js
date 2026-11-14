@@ -758,7 +758,7 @@
 
     async function approve() {
       if (!(await UI.confirm('Close this task?', 'It will be saved as a zip file in Google Drive (conversation, documents and summary) and listed in History. This cannot be undone.', 'Agree & close', 'ok'))) return;
-      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 300000 }); UI.confetti(); UI.toast('Task closed and archived'); go('#/tasks'); });
+      await guarded(async function () { const r = await Api.call('approveTask', { taskId: id }, { timeout: 60000 }); UI.confetti(); UI.toast(r && r.archived ? 'Task closed and archived' : 'Task closed. It is being saved to Google Drive.'); go('#/tasks'); });
     }
     function sendBack() {
       const note = h('textarea', { maxlength: 300, placeholder: 'What still needs to be done? (optional)' });
@@ -953,7 +953,7 @@
       items.forEach(function (t, i) {
         list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id, style: '--i:' + Math.min(i, 12) }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
           h('div', { class: 'people' }, UI.avatarStack([t.creatorName]), h('span', { class: 't' }, t.creatorName + ' → ' + t.assigneeNames)),
-          h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null),
+          h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null, t.waiting ? UI.chip('Being saved to Drive', 'warn', 'history') : null),
           t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
       });
       list.appendChild(h('p', { class: 'muted small', style: 'text-align:center;margin:.8rem 0' }, 'The app shows the last 12 months. Older tasks are kept for good in the full history sheet in Google Drive (the admin can open it).'));
@@ -988,7 +988,13 @@
       } }, h('p', { class: 'muted small' }, 'To open this in Google Drive, ask for access with your Google account. You will only ever see your own folder, to read and download.'),
       h('label', { style: 'display:grid;gap:.3rem' }, 'Your Google account email', email), h('button', { class: 'btn primary small', type: 'submit', style: 'margin-top:.5rem' }, 'Request access'), err);
     };
-    const where = h('div', { class: 'card arch-where' },
+    // Approved but not in Drive yet (the background job files it within the hour): nothing to open yet, and no archive ID until it is filed.
+    const waitingBox = h('div', { class: 'card arch-where' },
+      h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, 'Given when it is saved'))),
+      h('div', { class: 'sec-title' }, h('h3', null, 'Being saved to Google Drive')),
+      h('p', null, 'This task is approved. The app is putting the whole conversation and every document into one zip in Google Drive (Google Drive › EPP › ' + (ar.person || '') + '). This happens by itself within the hour, you do not have to do anything.'),
+      h('p', { class: 'muted small' }, 'This page then shows the Archive ID and where to find it.'));
+    const where = ar.waiting ? waitingBox : h('div', { class: 'card arch-where' },
       h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, ar.code || '–')),
         ar.code ? h('button', { class: 'btn small', type: 'button', onclick: function () { try { navigator.clipboard.writeText(ar.code); UI.toast('Copied ' + ar.code); } catch (e) { UI.toast('Archive ID: ' + ar.code); } } }, 'Copy ID') : null),
       h('div', { class: 'sec-title' }, h('h3', null, 'Where it is saved')),
