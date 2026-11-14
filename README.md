@@ -119,6 +119,10 @@ My Drive / EPP / <person who assigned the task> / EPP-0042 - Submit the complian
 
 `wipeWorkData('DELETE ALL TASKS AND ARCHIVES')` in `Setup.gs` (run it from a small wrapper function in the Apps Script editor; called with anything else it does nothing) clears all tasks, messages, shared files, History, overviews and the audit log, and empties the `EPP` folder in Drive. It **keeps** job titles, user accounts, the org chart, profiles, settings and sign-ins. It first copies the whole database sheet into the Backups folder, and moves files to the Drive trash (30 days) instead of deleting them for good.
 
+## Trying it with three months of work
+
+`simulateCompany('<address of the site's mock folder>')` in `Setup.gs` fills the app with about 100 tasks over the last 13 weeks for the **real accounts**, using the app's own rules with a clock set back in time (no passwords, no real AI). Tasks follow the arrows of the org chart; each has updates, progress, and sometimes voice messages, pictures, documents or a "send back"; finishing is never more than 7 days after the due date; most are approved (so History and the `EPP` zips fill up) and a few stay open, late or waiting for approval. It works in chunks and schedules itself until finished; `simulationStatus()` shows progress and `simulationClean('REMOVE THE SIMULATION')` removes exactly what it made. The plan (`simPlan_`) is tested offline in `tests/simulation.test.js`, including a run through the real rules.
+
 ## Known limits
 - Google Sheets is the database: fine for dozens of users, not thousands. Closed tasks leave the sheet, which keeps it small.
 - No push notifications (the app polls while open). Unread dots and a badge show new messages.

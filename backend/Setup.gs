@@ -261,6 +261,261 @@ function wipeWorkData(confirmText) {
   Logger.log('Kept: job titles, user accounts, the org chart, profiles, settings and sign-ins.');
 }
 
+// ------------------------------ simulation: about three months of company life ------------------------------
+// simulateCompany(mockBaseUrl)  Makes roughly 100 tasks over the last 13 weeks for the REAL accounts, through the app's own rules (the same actions the
+//   screens use, with a clock set back in time): tasks go from the people who can assign to the people their arrows point to, with updates, progress,
+//   voice messages, pictures, documents, a few "send backs", approvals (so History and the EPP zip archive fill up) and, at the end, some tasks still open
+//   (a few late, a few waiting for approval). Finishing is never more than 7 days after the due date. Nothing here uses a password or the real AI.
+//   It works in chunks of about 3 minutes and schedules itself again until it is finished (one run is enough to start it). simulationStatus() shows progress;
+//   simulationClean('REMOVE THE SIMULATION') removes exactly what it made. mockBaseUrl = the address of the "mock" folder of the published site (pictures).
+const SIM_TEMPLATES_ = {
+  // [title, details, [three progress updates], [two things the person who assigned says], document, picture]
+  exec: [
+    ['Board update on {mon} export volumes', 'One page with the volumes, the new buyers and what we need from the board.', ['First draft is with finance for the numbers.', 'Volumes are in. I am adding the buyers section now.', 'Final version is ready for your review.'], ['Please keep it to one page.', 'Add the cost per kilo for the new cold room.'], 'board-pdf', ''],
+    ['Review the {mon} budget and send comments', 'Go through the draft budget line by line and list what has to change.', ['Reviewed the labour and packaging lines.', 'Transport is higher than last month, checking why.', 'Comments are written up and sent.'], ['Pay attention to packaging, it keeps growing.', 'Please also compare with the same month last year.'], 'quotes-pdf', ''],
+    ['Meet the new buyer and send me the terms', 'Agree volumes, price per kilo and payment days, then summarise in half a page.', ['Meeting is fixed for Thursday.', 'They want 30 days payment and weekly shipments.', 'Terms are written down and attached.'], ['Do not agree to more than 30 days.', 'Ask about the cold chain requirement too.'], 'plan-pdf', ''],
+    ['Prepare for the auditors visit', 'Make sure the records, the packing house and the fields are ready for the visit.', ['Records folder is in order.', 'Packing house cleaned and signs updated.', 'Everything is ready for the visit.'], ['Check the spray records first, they always ask.', 'Walk the packing house once more on the day before.'], 'audit-pdf', ''],
+    ['Make the case for a second cold room', 'Costs, space, power and what we gain in the peak weeks.', ['Collected two quotes.', 'Power supply needs an upgrade, adding that cost.', 'The case is ready with three options.'], ['Include the cost of losing fruit when the room is full.', 'Keep the options simple, the board has little time.'], 'quotes-pdf', ''],
+    ['Draft the expansion plan for Block {blk}', 'Area, water, labour and a rough timeline for the next season.', ['Walked the land with the surveyor.', 'Water source is the main question.', 'Draft plan is attached.'], ['Include a simple cash flow.', 'Mention the labour we will need in season.'], 'plan-pdf', 'field'],
+    ['Update the risk register', 'Add the new items from this month and mark what is closed.', ['Closed four old items.', 'Added weather and fuel price risks.', 'Register updated and shared.'], ['Give each item an owner.', 'Keep it to one page.'], '', ''],
+    ['Plan the labour for the peak season', 'How many pickers and packers we need by week, and how we will find them.', ['Counted last season numbers by week.', 'Need twelve more pickers from week 6.', 'Plan is ready with a hiring timeline.'], ['Include transport for the new people.', 'Check the overtime rules first.'], 'forecast-csv', '']
+  ],
+  ops: [
+    ['Plan the weekend harvest shifts', 'Two shifts on Saturday and one on Sunday. Check who can work.', ['Asked the supervisors for names.', 'Saturday is covered, Sunday needs two more.', 'All three shifts are filled.'], ['Remember the rest day rule.', 'Send me the list when it is final.'], '', ''],
+    ['Confirm the truck schedule for {mon}', 'Confirm days, pickup times and the extra truck for peak weeks.', ['Called the transporter.', 'They can add a Friday truck.', 'Schedule is confirmed and attached.'], ['Get it in writing please.', 'Ask for a backup truck on peak days.'], 'trucks-pdf', ''],
+    ['Reconcile the packaging stock', 'Count punnets, labels and cartons and match them with the sheet.', ['Counted punnets and labels.', 'Two carton sizes are still missing from the count.', 'Counts match the sheet except small cartons.'], ['Please photograph the shelves.', 'Update the sheet when you are done.'], 'stock-csv', 'sheet'],
+    ['Prepare the documents for export order {n}', 'Invoice, packing list and certificates for the shipment.', ['Invoice and packing list are ready.', 'Waiting for the phytosanitary certificate.', 'Full set of documents is ready.'], ['The buyer wants the originals by courier.', 'Double check the weights.'], 'compliance-pdf', ''],
+    ['Service the cold room compressor', 'Book the technician and keep the room cold while the work is done.', ['Technician comes on Thursday.', 'Moved the stock to room 1.', 'Service done, room is back at 2 degrees.'], ['Log the temperature every hour.', 'Ask for a service report.'], '', 'cold'],
+    ['Review the weekly labour cost', 'Compare labour hours and cost per kilo with last week and flag anything odd.', ['Pulled the hours from the sheet.', 'Block C was above normal.', 'Report is ready with notes.'], ['Why is Block C higher?', 'Add the cost per kilo.'], 'totals-csv', ''],
+    ['Compare the packaging quotes', 'Three suppliers, compare price, delivery time and minimum order.', ['Two quotes received.', 'Third supplier replied this morning.', 'Comparison is attached with my pick.'], ['Delivery time matters more than price now.', 'Ask about a smaller minimum order.'], 'quotes-pdf', ''],
+    ['Fix the leak at the water tank', 'Find the leak, repair it and check the pressure again.', ['Found the leak at the outlet valve.', 'Replaced the valve.', 'No leak and pressure is normal.'], ['Send a photo of the repair.', 'Check the other valves while you are there.'], '', 'leak'],
+    ['Submit the compliance checklist to the exporter', 'Finalise the checklist, attach the certificates and submit through the portal.', ['Checklist is mostly done.', 'Certificates attached.', 'Submitted through the portal.'], ['The exporter wants it before Friday.', 'Keep the confirmation email.'], 'compliance-pdf', ''],
+    ['Count the crates after the dispatch', 'Count returned crates and report what is missing.', ['Counted at the gate.', 'Forty crates are not back yet.', 'Final count is in the sheet.'], ['Follow up on the missing ones.', 'Photo of the stack please.'], 'stock-csv', 'crates']
+  ],
+  field: [
+    ['Pest scouting in Block {blk}', 'Check 20 plants for mites and aphids and photograph anything suspicious.', ['Started at the north rows.', 'Light mite damage on the lower leaves.', 'Finished, details in the photos.'], ['Photograph the worst plants.', 'Tell me if we need to spray.'], '', 'field'],
+    ['Replace the blocked drippers in Block {blk}', 'Walk the rows, replace blocked emitters and note how many were changed.', ['Started at row 1.', 'Many emitters are blocked with algae.', 'All replaced, total is in my note.'], ['Flush the lines after the change.', 'Count them please.'], '', 'drip'],
+    ['Repair the fence near the Block {blk} gate', 'The lower wire is broken. Repair and add two posts.', ['Bought wire and posts.', 'First post is in.', 'Fence repaired.'], ['Wild boar come at night, make it strong.', 'Photo when done.'], '', ''],
+    ['Calibrate the Brix meter and log the readings', 'Use the reference solution and record three readings per batch.', ['Calibrated with the reference solution.', 'Readings are within 0.1.', 'Log is complete.'], ['Keep the log in the shared sheet.', 'Recalibrate if the room changes.'], 'lab-pdf', 'chart'],
+    ['Update the spray records for {mon}', 'Add every spray with product, dose, date and block.', ['Collected the sheets from the sprayers.', 'Two dates are missing.', 'Records are complete.'], ['The auditors check these first.', 'No empty cells please.'], 'audit-pdf', ''],
+    ['Set up the packing line for export order {n}', 'Line 2 with labels, punnets and the metal detector tested.', ['Labels and punnets are in.', 'Metal detector test is booked.', 'Line is ready.'], ['Test the detector before the first pallet.', 'Keep the spare labels close.'], 'packing-pdf', 'crates'],
+    ['Train the new pickers on the picking standard', 'Show ripeness, handling and the rejection rules to the new group.', ['Group of eight arrived.', 'Did the field demonstration.', 'All eight passed the check.'], ['Use the colour chart.', 'Write down who needs a second session.'], '', 'field'],
+    ['Inspect the filters and the water tank', 'Clean the filters and check the tank level and the float valve.', ['Filters are blocked with sand.', 'Cleaned and refitted.', 'Tank and float valve are fine.'], ['Do it before the next irrigation.', 'Photo of the filters please.'], '', 'leak'],
+    ['Weekly harvest totals for week {wk}', 'Collect the picking totals for every block and send one summary.', ['Blocks A and B are counted.', 'Waiting for the C totals.', 'Totals sent in the sheet.'], ['Include the rejected kilos.', 'Send it before the Friday review.'], 'totals-csv', ''],
+    ['Fire drill and extinguisher check', 'Run the drill with the packing house team and check every extinguisher tag.', ['Drill planned for Tuesday.', 'Two extinguishers are overdue for service.', 'Drill done, tags updated.'], ['Time the evacuation.', 'Send me the list of overdue ones.'], '', 'extinguisher'],
+    ['Stock take of the fertiliser store', 'Count every bag, compare with the sheet and report differences.', ['Counted the first shelf.', 'Eight bags differ from the sheet.', 'Sheet corrected.'], ['Check the dates on the bags.', 'Keep the store locked after counting.'], 'stock-csv', 'sheet'],
+    ['Clean and sanitise the packing house', 'Deep clean before the audit week and keep the checklist signed.', ['Started with the floors.', 'Tables and tools sanitised.', 'Checklist signed for every area.'], ['Use the approved cleaner only.', 'Photo of the finished area.'], '', 'crates']
+  ]
+};
+const SIM_NUDGE_ = ['This is overdue now. Please close it by tomorrow.', 'Management needs this closed this week. Any blockers?', 'Please give me an update today, this is already late.'];
+const SIM_THANKS_ = ['Thanks, well done.', 'Good work, approving now.', 'Received. Thank you.'];
+const SIM_BACK_ = ['Some parts are missing. Please check and send it again.', 'The numbers do not match the sheet. Please correct and update.', 'Please add the missing details and finish it again.'];
+const SIM_FIX_ = ['Understood, fixing it now.', 'Corrected and checked again.', 'Updated as you asked.'];
+const SIM_START_ = ['Started on this today.', 'Got it, starting now.', 'On it. I will update you as I go.'];
+const SIM_DONE_ = ['Finished. Please check.', 'All done, ready for your review.', 'Completed and uploaded.'];
+const SIM_MONTHS_ = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function simRng_(seed) {
+  let a = seed >>> 0;
+  return function () { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+// The plan: a list of tasks, each with its timeline of events (time in ms, who, what). roster = [{id, level, targets:[ids]}] (people who can assign),
+// anchor = {m0: midnight today, now}, cal = {ymd(ms), weekday(ms) (1 = Monday ... 7 = Sunday)}. Same input, same plan (a fixed seed).
+function simPlan_(roster, anchor, cal) {
+  const rnd = simRng_(20261114), DAY = 86400000, H = 3600000, M = 60000, limit = anchor.now - 3 * M;
+  const pick = function (a) { return a[Math.floor(rnd() * a.length)]; };
+  const kindOf = function (lvl) { return lvl <= 1 ? 'exec' : lvl === 2 ? 'ops' : 'field'; };
+  const perWeek = { exec: 1.3, ops: 2.8, field: 3.7 }, maxPeople = { exec: 1, ops: 2, field: 3 };
+  const backOffSunday = function (ms) { return cal.weekday(ms + 12 * H) === 7 ? ms - DAY : ms; };
+  const specs = [];
+  roster.forEach(function (a) {
+    const kind = kindOf(a.level), count = Math.round(perWeek[kind] * 13 * (0.9 + rnd() * 0.2));
+    for (let k = 0; k < count; k++) {
+      const tpl = pick(SIM_TEMPLATES_[kind]);
+      const reach = rnd() < 0.35 ? 10 : 88;                                                 // over a third of the work is from the last ten days (what is on the desks now)
+      let day0 = anchor.m0 - (1 + Math.floor(rnd() * reach)) * DAY;
+      while (cal.weekday(day0 + 12 * H) >= 6) day0 -= DAY;                                   // assigned on a working day
+      const created = day0 + (8 + rnd() * 7) * H, gap = 3 + Math.floor(rnd() * 5);          // due 3 to 7 days later
+      let dueMs = day0 + gap * DAY; if (cal.weekday(dueMs + 12 * H) === 7) dueMs += DAY;
+      const r = rnd();
+      // management pushes: 60% finish on time, 28% finish 1-3 days late, 12% finish 4-7 days late. Never later than 7 days.
+      let finishDay = r < 0.6 ? day0 + (1 + Math.floor(rnd() * gap)) * DAY : r < 0.88 ? dueMs + (1 + Math.floor(rnd() * 3)) * DAY : dueMs + (4 + Math.floor(rnd() * 4)) * DAY;
+      finishDay = backOffSunday(finishDay);
+      let finish = finishDay + (9 + rnd() * 8) * H;
+      const pool = a.targets.slice(), who = [];
+      for (let n = 1 + Math.floor(rnd() * Math.min(maxPeople[kind], pool.length)); n > 0; n--) who.push(pool.splice(Math.floor(rnd() * pool.length), 1)[0]);
+      const lead = who[0], other = function () { return pick(who); };
+      const fill = function (s) { return s.replace('{blk}', 'ABCDE'.charAt(Math.floor(rnd() * 5))).replace('{n}', String(100 + Math.floor(rnd() * 45))).replace('{mon}', SIM_MONTHS_[Number(cal.ymd(created + 12 * H).slice(5, 7)) - 1]).replace('{wk}', String(1 + Math.floor(rnd() * 51))); };
+      const ev = [], startT = created + (1 + rnd() * 3) * H;
+      ev.push(['s', startT, lead, pick(SIM_START_)]);
+      const steps = 1 + Math.floor(rnd() * 3), pcts = [20, 30, 40, 50, 60, 70, 80].sort(function () { return rnd() - 0.5; }).slice(0, steps).sort(function (x, y) { return x - y; }), span = finish - startT;
+      pcts.forEach(function (p, i) {
+        const at = startT + span * (i + 1) / (steps + 1);
+        ev.push(['p', at, lead, p]); ev.push(['s', at + 15 * M, other(), tpl[2][i]]);
+      });
+      const mid = startT + span * 0.5;
+      if (rnd() < 0.10) ev.push(['v', mid + 40 * M, other(), 8 + Math.floor(rnd() * 18), tpl[2][1]]);
+      if (tpl[4] && rnd() < 0.30) ev.push(['f', mid + 30 * M, other(), tpl[4], pick(['For your review', 'Latest version', 'Working copy'])]);
+      if (tpl[5] && rnd() < 0.22) ev.push(['i', mid + 50 * M, other(), tpl[5], pick(['Photo from the site', 'How it looks now', 'As discussed'])]);
+      if (rnd() < 0.55) ev.push(['s', startT + span * 0.4, a.id, pick(tpl[3])]);
+      if (finishDay > dueMs) ev.push(['s', dueMs + DAY + 9 * H, a.id, pick(SIM_NUDGE_)]);    // it is late: the manager pushes
+      ev.push(['s', finish - 10 * M, lead, pick(SIM_DONE_)]);
+      ev.push(['p', finish, lead, 100]);
+      if (rnd() < 0.08 && finishDay + DAY <= dueMs + 7 * DAY) {                              // sent back once, then fixed
+        let fixDay = finishDay + DAY; if (cal.weekday(fixDay + 12 * H) === 7) fixDay += DAY;
+        if (fixDay <= dueMs + 7 * DAY) {
+          ev.push(['back', finish + 3 * H, a.id, pick(SIM_BACK_)]);
+          const fixT = fixDay + 10 * H; ev.push(['s', fixT, lead, pick(SIM_FIX_)]); ev.push(['p', fixT + 20 * M, lead, 100]); finish = fixT + 20 * M;
+        }
+      }
+      let okT = finish + (rnd() < 0.25 ? 24 + rnd() * 48 : 2 + rnd() * 26) * H; if (cal.weekday(okT) === 7) okT += DAY;   // most are approved the same or next day, some wait 1-3 days
+      if (rnd() < 0.45) ev.push(['s', okT - 20 * M, a.id, pick(SIM_THANKS_)]);
+      ev.push(['ok', okT, a.id]);
+      // what has not happened yet at the moment of the simulation is not part of it: such tasks are still open, late or waiting for approval
+      const kept = ev.map(function (e, i) { return { e: e, i: i }; }).filter(function (x) { return x.e[1] <= limit; }).sort(function (x, y) { return x.e[1] - y.e[1] || x.i - y.i; }).map(function (x) { return x.e; });
+      specs.push({ by: a.id, to: who, title: fill(tpl[0]), desc: fill(tpl[1]), created: created, due: cal.ymd(dueMs + 12 * H), ev: kept, unread: rnd() < 0.3 });
+    }
+  });
+  return specs.sort(function (x, y) { return x.created - y.created; });
+}
+
+function simSchedule_(ms) { ScriptApp.newTrigger('simulateCompany').timeBased().after(ms).create(); }
+function simUnschedule_() { ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'simulateCompany') ScriptApp.deleteTrigger(t); }); }
+
+function simulateCompany(mockBaseUrl) {
+  const props = PropertiesService.getScriptProperties(), started = Date.now();
+  const busy = Number(props.getProperty('SIM_RUN') || 0);
+  if (busy && started - busy < 7 * 60000) { Logger.log('Another run is still going (started ' + Math.round((started - busy) / 1000) + ' s ago). Nothing was done.'); return; }
+  props.setProperty('SIM_RUN', String(started));
+  simUnschedule_();
+  let again = false;
+  try {
+    const mid = new Date(); mid.setHours(0, 0, 0, 0);
+    let state = JSON.parse(props.getProperty('SIM_STATE') || 'null');
+    if (!state) state = { anchor: { m0: mid.getTime(), now: Date.now() }, next: 0, ids: [], failed: [], done: false, runs: 0, base: typeof mockBaseUrl === 'string' ? mockBaseUrl : '' };
+    if (state.done) { Logger.log('The simulation is already finished. Run simulationClean to remove it first if you want to start again.'); return; }
+    state.runs++;
+    if (state.runs > 16) { Logger.log('Stopping: too many runs. Look at simulationStatus().'); return; }
+    const save = function () { props.setProperty('SIM_STATE', JSON.stringify(state)); };
+    const tz = Session.getScriptTimeZone(), anchor = state.anchor;
+    let clock = anchor.now;
+    const ai = {
+      transcribe: function () { return { english: said, language: 'English', key_points: '' }; },
+      // stands in for the AI so no free quota is used: a plain, true summary built from the task itself
+      summarize: function (input) {
+        const t = input.task, mine = input.messages.filter(function (m) { return m.role === 'assignee'; }), last = mine.length ? String(mine[mine.length - 1].text) : '';
+        const ymd = Utilities.formatDate(new Date(clock), tz, 'yyyy-MM-dd'), late = t.dueDate && ymd > t.dueDate ? Math.round((new Date(ymd).getTime() - new Date(t.dueDate).getTime()) / 86400000) : 0;
+        const done = t.progress >= 100 || t.status === 'pending';
+        return { summary_en: (done ? 'Completed' : 'In progress') + ': ' + t.title + '. ' + input.messages.length + ' messages between ' + t.manager + ' and ' + t.assignees.join(', ') + (done ? (late > 0 ? ', finished ' + late + (late === 1 ? ' day' : ' days') + ' after the due date.' : ', finished on time.') : '.'),
+          health: done ? 'done' : (late > 0 ? 'at_risk' : 'on_track'), blockers: late > 3 ? ['Finished late: ' + late + ' days after the due date'] : [], next_steps: done ? [] : ['Finish the remaining work'], progress_note: last.slice(0, 160) };
+      },
+      assistant: function () { throw new Error('AI is off during the simulation'); }, briefing: function () { throw new Error('AI is off during the simulation'); }
+    };
+    let said = '';
+    const env = makeEnv_({ ai: ai }), core = createCore(env);
+    env.store.init(core.TABLES);
+    const realAll = env.store.all.bind(env.store);
+    // the real accounts, borrowed in memory only: nothing is written to Users or Sessions and no password is needed
+    const users = realAll('Users').filter(function (u) { return u.active && !u.isAdmin; }).sort(function (x, y) { return x.id < y.id ? -1 : 1; });
+    const byId = {}, tok = {}, virtual = [], level = {};
+    realAll('JobTitles').forEach(function (t) { level[t.id] = t.level; });
+    users.forEach(function (u) { byId[u.id] = u; tok[u.id] = 'sim-' + Utilities.getUuid(); virtual.push({ tokenHash: env.sha256Hex('token:' + tok[u.id]), userId: u.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 }); });
+    env.store.all = function (name) {
+      const rows = realAll(name);
+      if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); });
+      if (name === 'Sessions') return rows.concat(virtual);
+      return rows;
+    };
+    env.now = function () { return clock; };
+    const out = {}; realAll('Links').forEach(function (l) { if (byId[l.fromId] && byId[l.toId]) (out[l.fromId] = out[l.fromId] || []).push(l.toId); });
+    const roster = users.filter(function (u) { return out[u.id]; }).map(function (u) { return { id: u.id, level: level[u.jobTitleId] || 9, targets: out[u.id].slice().sort() }; });
+    if (!roster.length) throw new Error('Nobody can assign tasks yet (no arrows in the org chart).');
+    const cal = { ymd: function (ms) { return Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd'); }, weekday: function (ms) { return Number(Utilities.formatDate(new Date(ms), tz, 'u')); } };
+    const specs = simPlan_(roster, anchor, cal);
+    state.total = specs.length; save();
+    const call = function (action, who, params) {
+      const r = core.handle(Object.assign({ action: action, token: tok[who] }, params || {}));
+      if (!r.ok) throw new Error(action + ' failed: ' + r.error);
+      return r.data;
+    };
+    const base = (state.base || mockBase_()).replace(/\/?$/, '/');
+    const imgs = {}, img = function (kind) {
+      if (!imgs[kind]) {
+        const f = UrlFetchApp.fetch(base + kind + '.jpg'), t = UrlFetchApp.fetch(base + kind + '.thumb.jpg');
+        imgs[kind] = { b64: Utilities.base64Encode(f.getContent()), thumb: 'data:image/jpeg;base64,' + Utilities.base64Encode(t.getContent()) };
+      }
+      return imgs[kind];
+    };
+    const wav = mockWavB64_();
+    let n = 0;
+    for (let i = state.next; i < specs.length; i++) {
+      if (Date.now() - started > 200000) { again = true; break; }
+      const s = specs[i];
+      try {
+        clock = s.created;
+        const task = call('createTask', s.by, { title: s.title, description: s.desc, assigneeIds: s.to, dueDate: s.due }).task;
+        state.ids.push(task.id); save();
+        let closed = false;
+        s.ev.forEach(function (e) {
+          clock = e[1];
+          if (e[0] === 's') call('postMessage', e[2], { taskId: task.id, text: e[3] });
+          else if (e[0] === 'p') call('setProgress', e[2], { taskId: task.id, progress: e[3] });
+          else if (e[0] === 'v') { said = e[4]; call('postVoice', e[2], { taskId: task.id, audioB64: wav, wavB64: wav, mime: 'audio/wav', secs: e[3] }); }
+          else if (e[0] === 'f') { const d = mockDoc_(e[3]); call('postFile', e[2], { taskId: task.id, name: d.name, b64: d.b64, caption: e[4] }); }
+          else if (e[0] === 'i') { const im = img(e[3]); n++; call('postFile', e[2], { taskId: task.id, name: e[3] + '-' + (i + 1) + '-' + n + '.jpg', b64: im.b64, thumb: im.thumb, w: 720, h: 500, caption: e[4] }); }
+          else if (e[0] === 'back') call('rejectTask', e[2], { taskId: task.id, note: e[3] });
+          else if (e[0] === 'ok') { call('approveTask', e[2], { taskId: task.id }); closed = true; }
+        });
+        if (!closed && !s.unread) { clock = anchor.now; [s.by].concat(s.to).forEach(function (who) { call('getTask', who, { taskId: task.id }); }); }   // opening a task marks it read
+        state.next = i + 1; save();
+        Logger.log('SIM ' + (i + 1) + '/' + specs.length + ' ' + (closed ? 'archived' : 'open') + '  ' + s.title);
+      } catch (e) {
+        state.failed.push({ i: i, title: s.title, error: String(e).slice(0, 200) }); state.next = i + 1; save();
+        Logger.log('SIM FAILED at task ' + (i + 1) + ' (' + s.title + '): ' + e + ' - skipped.');
+      }
+    }
+    if (!again) {
+      state.done = true; save();
+      Logger.log('SIM ALL DONE. ' + state.ids.length + ' tasks made' + (state.failed.length ? ', ' + state.failed.length + ' failed (see simulationStatus)' : '') + '. Remove them later with simulationClean("REMOVE THE SIMULATION").');
+    } else { save(); simSchedule_(60000); Logger.log('SIM chunk finished at ' + state.next + ' of ' + specs.length + '; the next chunk starts by itself in about a minute.'); }
+  } finally {
+    props.deleteProperty('SIM_RUN');
+  }
+}
+
+function simulationStatus() {
+  const props = PropertiesService.getScriptProperties(), s = JSON.parse(props.getProperty('SIM_STATE') || 'null');
+  if (!s) { Logger.log('SIM STATUS: not started.'); return; }
+  const env = makeEnv_({});
+  Logger.log('SIM STATUS: ' + s.next + ' of ' + (s.total || '?') + ' tasks done' + (s.done ? ', FINISHED' : ', still running or waiting for the next chunk') + ', runs ' + s.runs + ', failed ' + s.failed.length + (s.failed.length ? ' ' + JSON.stringify(s.failed) : ''));
+  Logger.log('SIM STATUS: sheet rows now - open tasks ' + env.store.all('Tasks').length + ', History ' + env.store.all('ArchiveIndex').length + ', messages ' + env.store.all('Messages').length + ', shared files ' + env.store.all('Attachments').length + ', audit ' + env.store.all('AuditLog').length);
+  const epp = env.archive.eppFolder(), parts = [], folders = epp.getFolders();
+  while (folders.hasNext()) { const f = folders.next(), it = f.getFiles(); let c = 0; while (it.hasNext()) { it.next(); c++; } parts.push(c + ' zips'); }
+  Logger.log('SIM STATUS: EPP person folders ' + parts.length + ' (' + parts.join(', ') + ')');
+}
+
+// Removes exactly what the simulation made (its tasks, messages, files, History rows and zips); everything else is left alone.
+function simulationClean(confirmText) {
+  if (confirmText !== 'REMOVE THE SIMULATION') throw new Error('Nothing was deleted. Call simulationClean("REMOVE THE SIMULATION").');
+  const props = PropertiesService.getScriptProperties(), state = JSON.parse(props.getProperty('SIM_STATE') || 'null');
+  if (!state || !state.ids.length) { Logger.log('There is no simulation data to remove.'); return; }
+  simUnschedule_();
+  const env = makeEnv_({}), ids = {}; state.ids.forEach(function (id) { ids[id] = 1; });
+  let files = 0;
+  const trash = function (id) { if (id) { try { DriveApp.getFileById(id).setTrashed(true); files++; } catch (e) { /* already gone */ } } };
+  env.store.all('Messages').filter(function (m) { return ids[m.taskId]; }).forEach(function (m) { trash(m.audioFileId); });
+  env.store.all('Attachments').filter(function (a) { return ids[a.taskId]; }).forEach(function (a) { trash(a.fileId); });
+  env.store.all('ArchiveIndex').filter(function (x) { return ids[x.id]; }).forEach(function (x) { trash(x.fileId); });
+  const rows = {
+    messages: env.store.removeWhere('Messages', function (m) { return ids[m.taskId]; }), attachments: env.store.removeWhere('Attachments', function (a) { return ids[a.taskId]; }),
+    reads: env.store.removeWhere('Reads', function (r) { return ids[r.taskId]; }), tasks: env.store.removeWhere('Tasks', function (t) { return ids[t.id]; }),
+    history: env.store.removeWhere('ArchiveIndex', function (x) { return ids[x.id]; }), audit: env.store.removeWhere('AuditLog', function (a) { return ids[a.detail]; }), overviews: env.store.removeWhere('Briefings', function () { return true; })
+  };
+  props.deleteProperty('SIM_STATE');
+  Logger.log('Simulation removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '.');
+}
+
 /* ------------------------------ AI helpers ------------------------------ */
 
 // Run once by hand: asks the REAL Gemini model the assistant questions (uses a little of the free quota) and logs the answers.

@@ -120,6 +120,10 @@ python -m http.server 8765 --directory docs   # then http://localhost:8765/?demo
   Never put company names, usernames, URLs, keys or data in `main`. `HANDOVER.md` is deliberately git-ignored.
 - Editing tips for AI assistants on Windows: write large files with the file-write tool; do not build JS/regex with backslashes inside shell heredocs (they get mangled).
 
+## Simulation (Setup.gs)
+
+`simulateCompany` makes ~100 tasks over 13 weeks for the real accounts: the plan `simPlan_` (pure, seeded, tested in `tests/simulation.test.js`, including a run through Core's real rules) is executed through `core.handle` with the clock set back (`env.now` override), virtual in-memory sessions and a stub AI; it runs in ~3-minute chunks, stores progress in script property `SIM_STATE`, and re-schedules itself with a one-off trigger until done. `simulationClean('REMOVE THE SIMULATION')` removes only its ids. Never run `setup()` to "start over": use `wipeWorkData(...)`.
+
 ## Look and feel
 
 - **Logo:** a berry with leaves and a tick (`docs/icon.svg`; `icon-maskable.svg` has extra safe margin). The PNGs (`icon-192/512`, `icon-maskable-512`, `apple-touch-icon`) are rendered from them
