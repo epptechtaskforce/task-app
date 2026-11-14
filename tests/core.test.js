@@ -417,6 +417,37 @@ test('drive access: only people who assign ask; the admin allows or withdraws; o
   for (const a of ['drive.request', 'drive.grant', 'drive.revoke', 'drive.refuse']) assert.ok(log.includes(a), a);
 });
 
+test('history: grouped like the task list (all / assigned to me / assigned by me) and by the day it was completed', () => {
+  const app = makeApp(); const s = seed(app);
+  const finish = (by, to, title) => { const t = app.ok('createTask', s.tok[by], { title, assigneeIds: [s.users[to].id] }).task; app.ok('setProgress', s.tok[to], { taskId: t.id, progress: 100 }); app.ok('approveTask', s.tok[by], { taskId: t.id }); return t; };
+  finish('ceo', 'mgr', 'Budget review');                     // 12 Nov: the manager received it
+  app.tick(2 * 86400000); finish('mgr', 'wk1', 'Pump check');     // 14 Nov: the manager assigned it
+  app.tick(3 * 86400000); finish('mgr', 'wk2', 'Fence repair');   // 17 Nov: the manager assigned it
+  const list = (u, p) => app.ok('listHistory', s.tok[u], p || {});
+  const titles = (r) => r.items.map((i) => i.title);
+  // the manager sees all three, newest first, with the numbers for each group
+  let r = list('mgr');
+  assert.deepEqual(titles(r), ['Fence repair', 'Pump check', 'Budget review']); assert.deepEqual(r.counts, { all: 3, mine: 1, byme: 2 }); assert.equal(r.total, 3);
+  assert.deepEqual(titles(list('mgr', { role: 'mine' })), ['Budget review']); assert.deepEqual(titles(list('mgr', { role: 'byme' })), ['Fence repair', 'Pump check']);
+  assert.equal(list('mgr', { role: 'byme' }).total, 2); assert.deepEqual(list('mgr', { role: 'byme' }).counts, { all: 3, mine: 1, byme: 2 });   // the numbers stay those of the groups
+  assert.equal(list('mgr', { role: 'nonsense' }).total, 3);                                   // an unknown group means all
+  // people only ever see their own: a worker is on one task, a person on none sees nothing
+  assert.deepEqual(titles(list('wk1')), ['Pump check']); assert.deepEqual(list('wk1').counts, { all: 1, mine: 1, byme: 0 }); assert.equal(list('wk3').total, 0);
+  // a chosen day or range of days (the day of completion, both ends included)
+  assert.deepEqual(titles(list('mgr', { from: '2026-11-14', to: '2026-11-14' })), ['Pump check']);
+  assert.deepEqual(titles(list('mgr', { from: '2026-11-14' })), ['Fence repair', 'Pump check']);
+  assert.deepEqual(titles(list('mgr', { to: '2026-11-13' })), ['Budget review']);
+  assert.deepEqual(titles(list('mgr', { from: '2026-11-17', to: '2026-11-12' })), ['Fence repair', 'Pump check', 'Budget review']);   // wrong way round: swapped
+  assert.equal(list('mgr', { from: '2026-12-01' }).total, 0);
+  // dates, group and search work together, and the numbers follow the dates and the search
+  r = list('mgr', { from: '2026-11-13', role: 'byme' }); assert.deepEqual(titles(r), ['Fence repair', 'Pump check']); assert.deepEqual(r.counts, { all: 2, mine: 0, byme: 2 });
+  assert.deepEqual(titles(list('mgr', { role: 'byme', q: 'fence' })), ['Fence repair']);
+  // paging
+  assert.deepEqual(titles(list('mgr', { limit: 2 })), ['Fence repair', 'Pump check']); assert.deepEqual(titles(list('mgr', { limit: 2, offset: 2 })), ['Budget review']);
+  // a malformed date is refused
+  app.err('listHistory', s.tok.mgr, { from: '14-11-2026' }, 'VALIDATION'); app.err('listHistory', s.tok.mgr, { to: 'yesterday' }, 'VALIDATION');
+});
+
 test('maintenance removes expired sessions', () => {
   const app = makeApp(); seed(app);
   const before = app.env.store.all('Sessions').length;
