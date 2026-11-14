@@ -101,6 +101,7 @@ test('simulation plan: a realistic mix - archived, open, late, waiting for appro
 test('simulation tools: guarded clean-up, resumable, and nothing in the generic code is company specific', () => {
   assert.ok(/simulationClean\(confirmText\)[\s\S]{0,200}REMOVE THE SIMULATION/.test(src));
   assert.ok(src.includes("'SIM_STATE'") && src.includes('simSchedule_(60000)') && src.includes('SIM_RUN'));
+  assert.ok(src.includes('simSchedule_(8 * 60000)') && src.includes('state.pending'));       // a killed run is resumed, and a half-made task is cleaned up
   assert.equal(/https?:\/\/[a-z0-9-]+\.github\.io/i.test(src), false);
 });
 

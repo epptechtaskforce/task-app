@@ -389,14 +389,15 @@ function simulateCompany(mockBaseUrl) {
   if (busy && started - busy < 7 * 60000) { Logger.log('Another run is still going (started ' + Math.round((started - busy) / 1000) + ' s ago). Nothing was done.'); return; }
   props.setProperty('SIM_RUN', String(started));
   simUnschedule_();
+  simSchedule_(8 * 60000);                      // safety net: if this run is killed by a Google server error, a later one picks up where it stopped
   let again = false;
   try {
     const mid = new Date(); mid.setHours(0, 0, 0, 0);
     let state = JSON.parse(props.getProperty('SIM_STATE') || 'null');
     if (!state) state = { anchor: { m0: mid.getTime(), now: Date.now() }, next: 0, ids: [], failed: [], done: false, runs: 0, base: typeof mockBaseUrl === 'string' ? mockBaseUrl : '' };
-    if (state.done) { Logger.log('The simulation is already finished. Run simulationClean to remove it first if you want to start again.'); return; }
+    if (state.done) { simUnschedule_(); Logger.log('The simulation is already finished. Run simulationClean to remove it first if you want to start again.'); return; }
     state.runs++;
-    if (state.runs > 40) { Logger.log('Stopping: too many runs. Look at simulationStatus().'); return; }
+    if (state.runs > 40) { simUnschedule_(); Logger.log('Stopping: too many runs. Look at simulationStatus().'); return; }
     const save = function () { props.setProperty('SIM_STATE', JSON.stringify(state)); };
     const tz = Session.getScriptTimeZone(), anchor = state.anchor;
     let clock = anchor.now;
@@ -449,13 +450,26 @@ function simulateCompany(mockBaseUrl) {
     };
     const wav = mockWavB64_();
     let n = 0;
+    if (state.pending) {                                                                    // the last run stopped in the middle of a task
+      const pid = state.pending, trashFile = function (id) { if (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } } };
+      if (env.store.all('ArchiveIndex').some(function (x) { return x.id === pid; })) { state.next++; Logger.log('SIM the task that was in progress had already been archived: counted as done.'); }
+      else {
+        env.store.all('Messages').filter(function (m) { return m.taskId === pid; }).forEach(function (m) { trashFile(m.audioFileId); });
+        env.store.all('Attachments').filter(function (a) { return a.taskId === pid; }).forEach(function (a) { trashFile(a.fileId); });
+        ['Messages', 'Attachments', 'Reads'].forEach(function (t) { env.store.removeWhere(t, function (r) { return r.taskId === pid; }); });
+        env.store.removeWhere('Tasks', function (t) { return t.id === pid; });
+        state.ids = state.ids.filter(function (id) { return id !== pid; });
+        Logger.log('SIM the half-made task from the stopped run was removed; it is made again from the start.');
+      }
+      state.pending = ''; save();
+    }
     for (let i = state.next; i < specs.length; i++) {
       if (Date.now() - started > 200000) { again = true; break; }
       const s = specs[i];
       try {
         clock = s.created;
         const task = call('createTask', s.by, { title: s.title, description: s.desc, assigneeIds: s.to, dueDate: s.due }).task;
-        state.ids.push(task.id); save();
+        state.ids.push(task.id); state.pending = task.id; save();
         let closed = false;
         s.ev.forEach(function (e) {
           clock = e[1];
@@ -468,17 +482,17 @@ function simulateCompany(mockBaseUrl) {
           else if (e[0] === 'ok') { call('approveTask', e[2], { taskId: task.id }); closed = true; }
         });
         if (!closed && !s.unread) { clock = anchor.now; [s.by].concat(s.to).forEach(function (who) { call('getTask', who, { taskId: task.id }); }); }   // opening a task marks it read
-        state.next = i + 1; save();
+        state.pending = ''; state.next = i + 1; save();
         Logger.log('SIM ' + (i + 1) + '/' + specs.length + ' ' + (closed ? 'archived' : 'open') + '  ' + s.title);
       } catch (e) {
-        state.failed.push({ i: i, title: s.title, error: String(e).slice(0, 200) }); state.next = i + 1; save();
+        state.failed.push({ i: i, title: s.title, error: String(e).slice(0, 200) }); state.pending = ''; state.next = i + 1; save();
         Logger.log('SIM FAILED at task ' + (i + 1) + ' (' + s.title + '): ' + e + ' - skipped.');
       }
     }
     if (!again) {
-      state.done = true; save();
+      state.done = true; save(); simUnschedule_();
       Logger.log('SIM ALL DONE. ' + state.ids.length + ' tasks made' + (state.failed.length ? ', ' + state.failed.length + ' failed (see simulationStatus)' : '') + '. Remove them later with simulationClean("REMOVE THE SIMULATION").');
-    } else { save(); simSchedule_(60000); Logger.log('SIM chunk finished at ' + state.next + ' of ' + specs.length + '; the next chunk starts by itself in about a minute.'); }
+    } else { save(); simUnschedule_(); simSchedule_(60000); Logger.log('SIM chunk finished at ' + state.next + ' of ' + specs.length + '; the next chunk starts by itself in about a minute.'); }
   } finally {
     props.deleteProperty('SIM_RUN');
   }
