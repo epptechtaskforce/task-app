@@ -782,6 +782,30 @@ function createCore(env) {
     return m.text;
   }
 
+  // The AI summary that sits at the top of a task page, as lines for the assistant. level: 'full' (every part, for the task on screen),
+  // 'short' (one line with the main parts), 'tiny' (the first sentences only, when the prompt has to stay small).
+  const HEALTH_WORDS = { on_track: 'on track', at_risk: 'at risk', blocked: 'blocked', done: 'looks complete', unknown: 'unclear' };
+  function summaryLines(s, level, newer, when) {
+    if (!s || !s.summary_en) return [];
+    const join = function (a) { return (Array.isArray(a) ? a : []).filter(Boolean).join('; '); };
+    const health = HEALTH_WORDS[s.health] || '';
+    if (level === 'tiny') return ['  AI summary' + (health ? ' (' + health + ')' : '') + ': ' + clip(s.summary_en, 220)];
+    if (level === 'short') {
+      const bits = [clip(s.summary_en, 420)];
+      if (s.progress_note) bits.push('so far: ' + clip(s.progress_note, 200));
+      if (join(s.blockers)) bits.push('blockers: ' + clip(join(s.blockers), 200));
+      if (join(s.next_steps)) bits.push('next steps: ' + clip(join(s.next_steps), 200));
+      return ['  AI summary' + (health ? ' (' + health + ')' : '') + ': ' + bits.join(' | ')];
+    }
+    const L = ['  AI SUMMARY (exactly what the task page shows at the top; this is what to give when asked for the summary):', '    summary: ' + clip(s.summary_en, 1200)];
+    if (health) L.push('    health: ' + health);
+    if (s.progress_note) L.push('    so far: ' + clip(s.progress_note, 600));
+    if (join(s.blockers)) L.push('    blockers: ' + join(s.blockers));
+    if (join(s.next_steps)) L.push('    next steps: ' + join(s.next_steps));
+    if (when) L.push('    (written ' + when + (newer > 0 ? '; ' + newer + ' newer message' + (newer === 1 ? '' : 's') + ' since: add anything important from them' : '') + ')');
+    return L;
+  }
+
   // Everything this person is allowed to see, as plain text for the model. perTask = how many recent messages per task.
   // focusId: the task the person is looking at gets its whole recent conversation; tight: fewer and shorter lines (the free AI services have small limits)
   function aiContext(ctx, user, perTask, withPeople, focusId, tight) {
@@ -813,6 +837,7 @@ function createCore(env) {
       L.push('TASK id=' + t.id + ' | "' + clip(t.title, 120) + '" | ' + (t.status === 'pending' ? 'WAITING FOR APPROVAL (100%)' : 'in progress, ' + t.progress + '%') + ' | ' + due + ' | my role: ' + (t.creatorId === user.id ? 'creator (I assigned it)' : 'assignee') +
         ' | from: ' + brief(ctx, t.creatorId).name + ' | to: ' + t.assigneeIds.map(function (id) { return brief(ctx, id).name; }).join(', ') + ' | last activity ' + env.formatDate(t.updatedAt));
       if (t.description) L.push('  details: ' + clip(t.description, t.id === focusId ? 500 : (tight ? 120 : 200)));
+      summaryLines(t.summary, t.id === focusId ? 'full' : (tight ? 'tiny' : 'short'), countContent(ids[t.id]) - (t.summaryMsgCount || 0), t.summaryAt ? env.formatDate(t.summaryAt).slice(0, 16) : '').forEach(function (l) { L.push(l); });
       if (filesOf[t.id]) L.push('  files shared: ' + filesOf[t.id].slice(0, 8).join(', '));
       ids[t.id].sort(function (a, b) { return a.createdAt - b.createdAt; }).slice(-(t.id === focusId ? 25 : perTask)).forEach(function (m) {
         L.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), t.id === focusId ? 300 : (tight ? 140 : 200)).replace(/\s+/g, ' '));
@@ -931,7 +956,9 @@ function createCore(env) {
     try { doc = JSON.parse(env.archive.read(ix)); } catch (e) { env.log('archive read failed: ' + e); return ''; }
     const L = ['THE PERSON IS LOOKING AT THIS COMPLETED TASK: "' + clip(ix.title, 120) + '" (id=' + ix.id + ') from ' + ix.creatorName + ' to ' + ix.assigneeNames + ', started ' + env.formatDate(ix.createdAt).slice(0, 10) + ', completed ' + env.formatDate(ix.closedAt).slice(0, 10) + '.'];
     if (doc.task && doc.task.description) L.push('details: ' + clip(doc.task.description, 300));
-    if (ix.summaryText) L.push('summary: ' + clip(ix.summaryText, 400));
+    const full = summaryLines(doc.task && doc.task.summary, 'full', 0, '');
+    if (full.length) full.forEach(function (l) { L.push(l.trim() === l ? l : l.slice(2)); });
+    else if (ix.summaryText) L.push('summary: ' + clip(ix.summaryText, 400));
     (doc.messages || []).slice(-60).forEach(function (m) {
       const what = m.type === 'voice' ? '(voice) ' + (m.transcript || 'not understood') : m.type === 'file' ? '(shared a file: ' + (m.file ? m.file.name : 'file') + ') ' + (m.text || '') : m.type === 'system' ? '(system) ' + m.text : m.text;
       L.push('  [' + (m.time || '').slice(5) + '] ' + (m.senderName || 'System') + ': ' + clip(what, 240).replace(/\s+/g, ' '));
@@ -960,7 +987,7 @@ function createCore(env) {
       L.push('The NEW TASK form (nothing is created yet). Filled in so far: title ' + (title ? q(title) : '(empty)') + '; assigned to ' + (who.length ? who.join(', ') : 'nobody yet') + '; due ' + (due ? niceDate(due) : 'not set') + '; details ' + (desc ? q(desc) : 'none') + '.');
       L.push('Help them finish it: use the fill_task action to fill in or change the form for them (they press the create button themselves), and tell them what is still missing (a title and at least one person). Only use create_task if they clearly tell you to create it now.');
     } else if (kind === 'task') {
-      L.push('The page of one open task (the task is named below), where they read its conversation and update progress.');
+      L.push('The page of one open task (the task is named below), where they read its conversation and update progress. Its AI summary is shown at the top of the page: when asked for the summary, give the AI SUMMARY from the CONTEXT.');
       const sl = Math.round(Number(s.slider));
       if (s.slider !== undefined && s.slider !== null && sl >= 0 && sl <= 100) L.push('Their progress slider currently shows ' + sl + '%.');
       const draft = clip(s.draft, 300).trim();

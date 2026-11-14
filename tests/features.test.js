@@ -413,3 +413,32 @@ test('confirmation: what the person says decides, not how the model words its an
   r = app.ok('assistant', s.tok.mgr, { text: 'yes' });
   assert.equal(r.confirm, ''); assert.equal(r.reply, 'Done, I noted that.');
 });
+
+test('assistant summaries: the AI summary shown at the top of a task is what the assistant is given (in full for the open task, compact for the others, and for completed tasks)', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  ai.summarize = (input) => ({ summary_en: 'Roof repair is under way (' + input.task.title + ').', health: 'at_risk', progress_note: 'Beams are fitted.', blockers: ['Waiting for the tiles'], next_steps: ['Fit the tiles', 'Inspect the leak'] });
+  const roof = app.ok('createTask', s.tok.mgr, { title: 'Pump house roof', assigneeIds: [s.users.wk1.id] }).task;
+  const gate = app.ok('createTask', s.tok.mgr, { title: 'Gate lock', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('postMessage', s.tok.wk1, { taskId: roof.id, text: 'Beams are fitted' });
+  app.ok('postMessage', s.tok.wk1, { taskId: gate.id, text: 'Lock ordered' });
+  app.ok('refreshSummary', s.tok.mgr, { taskId: roof.id }); app.ok('refreshSummary', s.tok.mgr, { taskId: gate.id });
+  const context = () => ai.calls.pop().context;
+  app.ok('assistant', s.tok.mgr, { text: 'give me the summary', taskId: roof.id });
+  let c = context();
+  assert.ok(c.includes('AI SUMMARY (exactly what the task page shows'), 'the open task carries its full summary');
+  ['summary: Roof repair is under way (Pump house roof).', 'health: at risk', 'so far: Beams are fitted.', 'blockers: Waiting for the tiles', 'next steps: Fit the tiles; Inspect the leak'].forEach((x) => assert.ok(c.includes(x), x));
+  assert.ok(/AI summary \(at risk\): Roof repair is under way \(Gate lock\)\. \| so far: Beams are fitted\. \| blockers: Waiting for the tiles/.test(c), 'other tasks carry a compact one');
+  assert.equal(c.includes('newer message'), false);
+  // something new is said after the summary: the assistant is told
+  app.ok('postMessage', s.tok.wk1, { taskId: roof.id, text: 'Tiles delivered' });
+  app.ok('assistant', s.tok.mgr, { text: 'summary please', taskId: roof.id });
+  assert.ok(/1 newer message since/.test(context()));
+  // no summary yet: nothing invented
+  const fresh = app.ok('createTask', s.tok.mgr, { title: 'New fence', assigneeIds: [s.users.wk2.id] }).task;
+  app.ok('assistant', s.tok.mgr, { text: 'x', taskId: fresh.id });
+  c = context(); assert.equal(c.split('\n').filter((l) => l.indexOf('New fence') >= 0 && l.indexOf('TASK id=') === 0).length, 1);
+  // a completed task keeps its whole summary for the History view
+  app.ok('setProgress', s.tok.wk1, { taskId: gate.id, progress: 100 }); app.ok('approveTask', s.tok.mgr, { taskId: gate.id });
+  app.ok('assistant', s.tok.mgr, { text: 'summary of the finished gate job', archivedId: gate.id });
+  c = context(); assert.ok(c.includes('AI SUMMARY (exactly what the task page shows') && c.includes('blockers: Waiting for the tiles'));
+});
