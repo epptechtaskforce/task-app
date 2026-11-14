@@ -60,7 +60,7 @@ Browser (docs/, plain HTML/CSS/JS, GitHub Pages)  --POST JSON-->  Google Apps Sc
 recipe, conventions) read [`CLAUDE.md`](CLAUDE.md): it is written for anyone, human or AI assistant, who continues the work.
 
 ### Rules the code enforces (see `tests/`)
-- Sign-in with own username/password (salted, iterated hashes; lock-out after 5 wrong attempts for 15 minutes; forced change of temporary passwords).
+- Sign-in with own username/password (salted, iterated hashes; lock-out after 5 wrong attempts for 15 minutes; every new account, and every admin password reset, starts with the default password `1111`, which only opens a forced "choose a new password" step; a chosen password must be at least 8 characters, so `1111` can never be kept).
 - A person can only assign tasks to people their **arrows** point to; arrows only point **down** the pyramid; skipping layers is allowed; a person can have several managers.
 - Admins manage accounts and the org chart but **cannot read other people's tasks**.
 - Only assignees move the slider; only the person who assigned the task can approve or send it back.
@@ -114,6 +114,10 @@ My Drive / EPP / <person who assigned the task> / EPP-0042 - Submit the complian
 - **History in the app** shows the main details: title, who assigned and who it was assigned to, dates, the names of the shared documents, a small summary (the AI summary is made when the task is approved, if the approver may use the AI and none exists yet), the archive ID and the Drive path with "Open in Google Drive" buttons. The full conversation and the files are read from the zip in Drive, by whoever has access to that Drive folder. (The assistant can still answer questions about a completed task you are looking at: it reads the zip's text files for that one task.)
 - Older archives (made before the zip format) are still readable in the app; they keep their own folder, `conversation.html` and voice audio.
 - Backups: the nightly job copies the database sheet to the backup folder (newest 14 kept). The `EPP` folder is plain files: copy it to another drive now and then for a second copy.
+
+## Clean start (hand-over or after testing)
+
+`wipeWorkData('DELETE ALL TASKS AND ARCHIVES')` in `Setup.gs` (run it from a small wrapper function in the Apps Script editor; called with anything else it does nothing) clears all tasks, messages, shared files, History, overviews and the audit log, and empties the `EPP` folder in Drive. It **keeps** job titles, user accounts, the org chart, profiles, settings and sign-ins. It first copies the whole database sheet into the Backups folder, and moves files to the Drive trash (30 days) instead of deleting them for good.
 
 ## Known limits
 - Google Sheets is the database: fine for dozens of users, not thousands. Closed tasks leave the sheet, which keeps it small.

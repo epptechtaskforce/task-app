@@ -343,6 +343,30 @@ test('archive zip: approving makes a last AI summary (before the lock), and it i
   assert.equal(doc.task.summary.summary_en, 'Finished well, one crate short');
 });
 
+test('default password: new accounts and admin resets start with 1111, which only opens the "choose a new password" step', () => {
+  const app = makeApp(); const s = seed(app);
+  const admin = { token: s.A };
+  // a new account: 1111, must change before anything else
+  const made = app.ok('adminSaveUser', admin.token, { name: 'New Person', username: 'newperson', jobTitleId: s.titles.Worker });
+  assert.equal(made.tempPassword, '1111');
+  const first = app.ok('login', null, { username: 'newperson', password: '1111' });
+  assert.equal(first.user.mustChange, true);
+  app.err('listTasks', first.token, {}, 'MUSTCHANGE');
+  app.err('changePassword', first.token, { oldPassword: '1111', newPassword: '1111' }, 'VALIDATION');          // 1111 is never accepted as a chosen password
+  app.ok('changePassword', first.token, { oldPassword: '1111', newPassword: 'My-own-pass-7' });
+  assert.equal(app.ok('login', null, { username: 'newperson', password: 'My-own-pass-7' }).user.mustChange, false);
+  // an admin reset: back to 1111, signed out, must choose again
+  const reset = app.ok('adminResetPassword', admin.token, { userId: made.user.id });
+  assert.equal(reset.tempPassword, '1111');
+  app.err('login', null, { username: 'newperson', password: 'My-own-pass-7' }, 'AUTH');
+  assert.equal(app.ok('login', null, { username: 'newperson', password: '1111' }).user.mustChange, true);
+  // a password typed by the admin still has to follow the rules
+  app.err('adminSaveUser', admin.token, { name: 'Weak', username: 'weak1', jobTitleId: s.titles.Worker, password: '1234' }, 'VALIDATION');
+  // wrong guesses of 1111 still lock the account like any other password
+  for (let i = 0; i < 5; i++) app.call('login', null, { username: 'newperson', password: '0000' });
+  app.err('login', null, { username: 'newperson', password: '1111' }, 'LOCKED');
+});
+
 test('maintenance removes expired sessions', () => {
   const app = makeApp(); seed(app);
   const before = app.env.store.all('Sessions').length;

@@ -201,9 +201,9 @@
         await Api.call('changePassword', { oldPassword: o.input.value, newPassword: n.input.value });
         S.user.mustChange = false; UI.toast('Password changed'); await loadMe(); Profiles.load(); Profiles.refresh(true); go(landing());
       } catch (e) { err.appendChild(errBox(e)); }
-    } }, h('label', null, 'Temporary password you were given', o.el), h('label', null, 'New password (at least 8 characters)', n.el), h('label', null, 'Repeat new password', r.el),
+    } }, h('label', null, 'Default password you were given', o.el), h('label', null, 'New password (at least 8 characters)', n.el), h('label', null, 'Repeat new password', r.el),
       h('button', { class: 'btn primary block', type: 'submit', style: 'margin-top:1.2rem' }, 'Save new password'), err);
-    authPage(h('h1', null, 'Choose a new password'), 'For your security, replace the temporary password before continuing.', [
+    authPage(h('h1', null, 'Choose a new password'), 'For your security, replace the default password before continuing.', [
       h('div', { class: 'card' }, form), h('p', { style: 'text-align:center;margin-top:.8rem' }, h('button', { class: 'btn ghost small', type: 'button', onclick: signOut }, 'Sign out'))]);
   }
 
@@ -1041,8 +1041,8 @@
     }
     function showTemp(title, u, temp) {
       const pw = h('div', { class: 'pw' }, temp);
-      UI.modal({ title: title, sticky: true, body: h('div', null, h('p', null, h('strong', null, u.name), ' (@' + u.username + ') must sign in with this temporary password and will be asked to choose a new one:'), pw,
-        h('p', { class: 'muted small', style: 'margin-top:.6rem' }, 'It is shown only once. Share it privately (not in a group chat).')),
+      UI.modal({ title: title, sticky: true, body: h('div', null, h('p', null, h('strong', null, u.name), ' (@' + u.username + ') must sign in with this default password and will be asked to choose a new one straight away:'), pw,
+        h('p', { class: 'muted small', style: 'margin-top:.6rem' }, 'Tell them privately. Until they sign in for the first time, anyone who knows it could use the account.')),
         actions: [{ label: 'Copy password', onClick: async function () { UI.toast((await UI.copyText(temp)) ? 'Copied' : 'Select the password and copy it manually'); return false; } }, { label: 'Done', kind: 'primary' }] });
     }
     function editUser(u) {
@@ -1055,7 +1055,7 @@
         h('label', { class: 'check-row' }, admin, 'Administrator (can manage users, job titles and the org chart)'),
         u ? h('label', { class: 'check-row' }, active, 'Account is active') : null,
         u ? h('p', { style: 'margin-top:1rem' }, h('button', { class: 'btn small', type: 'button', onclick: async function () {
-          if (!(await UI.confirm('Reset password?', u.name + ' will be signed out and must use a new temporary password.', 'Reset password'))) return;
+          if (!(await UI.confirm('Reset password?', u.name + ' will be signed out. The password becomes the default one (1111) and they must choose a new one when they sign in.', 'Reset password'))) return;
           await guarded(async function () { const r = await Api.call('adminResetPassword', { userId: u.id }); showTemp('Password reset', u, r.tempPassword); await load(); });
         } }, icon('lock', 15), 'Reset password…')) : null);
       UI.modal({ title: u ? 'Edit user' : 'Add user', body: body, actions: [{ label: 'Cancel' }, { label: u ? 'Save' : 'Create user', kind: 'primary', onClick: async function () {

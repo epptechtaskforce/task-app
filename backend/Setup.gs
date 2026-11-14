@@ -227,6 +227,40 @@ function createEppFolders() {
   Logger.log('Folders for ' + n + ' people who can assign tasks are ready.');
 }
 
+// ------------------------------ clean start ------------------------------
+// wipeWorkData('DELETE ALL TASKS AND ARCHIVES')   - a deliberate, guarded tool: called with anything else it does nothing.
+// Clears the work (tasks, messages, files, history, overviews, audit log) and empties the EPP folder in Drive, and KEEPS the job titles, the
+// user accounts, the org chart (arrows and its versions), profiles, settings and everybody's sign-in. Before anything is removed it makes a
+// full copy of the database sheet in the Backups folder. Files and folders are moved to the Drive trash (Drive empties it after 30 days), never
+// deleted for good. The EPP folder itself stays; person folders inside it are made again by the app when a task is archived.
+const WIPE_PHRASE_ = 'DELETE ALL TASKS AND ARCHIVES';
+const WIPE_TABLES_ = ['Tasks', 'Messages', 'Reads', 'Attachments', 'Briefings', 'ArchiveIndex', 'AuditLog'];
+function wipeWorkData(confirmText) {
+  if (confirmText !== WIPE_PHRASE_) throw new Error('Nothing was deleted. To clear all tasks, messages, files and history call wipeWorkData("' + WIPE_PHRASE_ + '"). Job titles, user accounts, the org chart, profiles and settings are kept.');
+  const props = PropertiesService.getScriptProperties(), env = makeEnv_({});
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
+  const backup = DriveApp.getFileById(props.getProperty('SPREADSHEET_ID')).makeCopy('TaskApp BEFORE CLEAN START ' + stamp, DriveApp.getFolderById(props.getProperty('BACKUP_FOLDER_ID')));
+  Logger.log('Safety copy of the whole database made first: "' + backup.getName() + '" (Backups folder).');
+  let files = 0;
+  const trash = function (id) { if (id) { try { DriveApp.getFileById(id).setTrashed(true); files++; } catch (e) { /* already gone */ } } };
+  env.store.all('Messages').forEach(function (m) { trash(m.audioFileId); });
+  env.store.all('Attachments').forEach(function (a) { trash(a.fileId); });
+  env.store.all('ArchiveIndex').forEach(function (x) {
+    if (x.storage === 'zip') trash(x.fileId);
+    else { try { const parents = DriveApp.getFileById(x.fileId).getParents(); while (parents.hasNext()) { parents.next().setTrashed(true); files++; } } catch (e) { /* already gone */ } }
+  });
+  const rows = {};
+  WIPE_TABLES_.forEach(function (name) { rows[name] = env.store.removeWhere(name, function () { return true; }); });
+  let eppItems = 0;
+  const epp = env.archive.eppFolder(), folders = epp.getFolders(), loose = epp.getFiles();
+  while (folders.hasNext()) { folders.next().setTrashed(true); eppItems++; }
+  while (loose.hasNext()) { loose.next().setTrashed(true); eppItems++; }
+  props.deleteProperty('MOCK_STATE');
+  env.store.insert('AuditLog', { id: 'Awipe' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), at: Date.now(), userId: '', action: 'data.wipe', detail: JSON.stringify(rows) });
+  Logger.log('Rows removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '. Items moved out of the EPP folder: ' + eppItems + '.');
+  Logger.log('Kept: job titles, user accounts, the org chart, profiles, settings and sign-ins.');
+}
+
 /* ------------------------------ AI helpers ------------------------------ */
 
 // Run once by hand: asks the REAL Gemini model the assistant questions (uses a little of the free quota) and logs the answers.

@@ -42,7 +42,7 @@ Browser (docs/, plain HTML/CSS/JS, GitHub Pages) --POST JSON, text/plain--> Goog
 
 ## Product rules (enforced on the server, never only in the UI)
 
-- Own username/password (salted iterated hash), lock-out after 5 wrong attempts for 15 minutes, forced change of temporary passwords.
+- Own username/password (salted iterated hash), lock-out after 5 wrong attempts for 15 minutes, forced change of the default password: new accounts and admin resets all get `DEFAULT_PASSWORD` (`1111`, Core.gs); it only opens the change-password step and `checkPasswordPolicy` (min 8) never accepts it as a chosen password.
 - **Org pyramid.** Job titles have a layer (1 = top). The admin draws directional "arrows" (tethers) from a person to people below;
   you can only assign tasks to people your arrows point to; layers may be skipped; one person can have several managers.
 - Admins manage accounts and the org chart but **cannot read other people's tasks**; a "pure admin" has no job title and no AI.

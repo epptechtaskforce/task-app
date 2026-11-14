@@ -144,16 +144,9 @@ function createCore(env) {
     for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
     return diff === 0;
   }
-  function generateTempPassword() {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-    const token = env.randomToken();
-    let out = '';
-    for (let i = 0; i < 12; i++) {
-      out += alphabet[parseInt(token.substr(i * 2, 2), 16) % alphabet.length];
-      if (i === 3 || i === 7) out += '-';
-    }
-    return out;
-  }
+  // The password every new account starts with, and the one an admin reset gives back. It is deliberately simple to hand over; it only
+  // opens the "choose a new password" screen (mustChange), and the rules for a NEW password (checkPasswordPolicy) do not accept it.
+  const DEFAULT_PASSWORD = '1111';
   function checkPasswordPolicy(password, username) {
     const p = String(password || '');
     if (p.length < MIN_PASSWORD) throw fail('VALIDATION', 'Password must be at least ' + MIN_PASSWORD + ' characters');
@@ -467,8 +460,8 @@ function createCore(env) {
         audit(ctx, user, 'user.update', username);
         return { user: publicUser(ctx, usersById(ctx)[req.id]) };
       }
-      const temp = req.password ? String(req.password) : generateTempPassword();
-      checkPasswordPolicy(temp, username);
+      const temp = req.password ? String(req.password) : DEFAULT_PASSWORD;
+      if (req.password) checkPasswordPolicy(temp, username);   // a password the admin typed must follow the rules; the default is allowed once
       const id = newId('U');
       insert(ctx, 'Users', { id: id, name: name, username: username, jobTitleId: jobTitleId, isAdmin: isAdmin, active: active, passSalt: '', passHash: '', mustChange: true, failCount: 0, lockedUntil: 0, createdAt: env.now(), lastLogin: 0 });
       setPassword(ctx, id, temp, true);
@@ -481,7 +474,7 @@ function createCore(env) {
     return ctx.write(function () {
       const u = usersById(ctx)[req.userId];
       if (!u) throw fail('NOT_FOUND', 'User not found');
-      const temp = generateTempPassword();
+      const temp = DEFAULT_PASSWORD;
       setPassword(ctx, u.id, temp, true);
       removeWhere(ctx, 'Sessions', function (s) { return s.userId === u.id; });
       audit(ctx, user, 'user.resetPassword', u.username);
