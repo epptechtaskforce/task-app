@@ -25,6 +25,7 @@ function makeEnv_(cfg) {
   const voiceId = cfg.voiceFolderId || prop_('VOICE_FOLDER_ID');
   const archiveId = cfg.archiveFolderId || prop_('ARCHIVE_FOLDER_ID');
   const tz = Session.getScriptTimeZone();
+  const archive = new DriveArchive_(archiveId, cfg.eppFolderId);
   return {
     hashRounds: PASSWORD_ROUNDS,
     now: function () { return Date.now(); },
@@ -36,7 +37,8 @@ function makeEnv_(cfg) {
     formatDate: function (ms) { return Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd HH:mm'); },
     store: new SheetsStore_(ssId),
     files: new DriveFiles_(voiceId),
-    archive: new DriveArchive_(archiveId, cfg.eppFolderId),
+    archive: archive,
+    history: new HistorySheet_(archive),
     ai: cfg.ai || makeAi_(),
     setting: function (name) { return prop_(name) || ''; },
     // how many times this has been asked in the current window (fixed windows of `seconds`), counting this call
@@ -446,6 +448,60 @@ DriveArchive_.prototype.read = function (idx) {
   if (!it || !it.hasNext()) throw new Error('Archived task not found in Drive');
   return it.next().getBlob().getDataAsString('UTF-8');
 };
+
+/* ============================== Drive: the full history sheet ============================== */
+// "EPP History" is a Google Sheet in the EPP folder with one readable row per completed task, for good. The live database keeps only the last year of
+// History; this sheet keeps everything (it is far below Google's 10 million cell limit for decades). Text typed by people can never run as a formula.
+const HISTORY_SHEET_NAME_ = 'EPP History (all completed tasks)';
+function safeCell_(v) { if (typeof v === 'number') return v; const t = String(v == null ? '' : v); return /^[=+\-@']/.test(t) ? "'" + t : t; }
+function HistorySheet_(archive) { this.archive = archive; }
+HistorySheet_.prototype.find = function () {
+  const props = PropertiesService.getScriptProperties(), own = !this.archive.eppId;   // a test with its own EPP folder never touches the real property
+  if (own) { const id = props.getProperty('HISTORY_SHEET_ID'); if (id) { try { return SpreadsheetApp.openById(id); } catch (e) { /* deleted: look again */ } } }
+  const it = this.archive.eppFolder().getFilesByName(HISTORY_SHEET_NAME_);
+  if (!it.hasNext()) return null;
+  const ss = SpreadsheetApp.open(it.next());
+  if (own) props.setProperty('HISTORY_SHEET_ID', ss.getId());
+  return ss;
+};
+HistorySheet_.prototype.open = function () {
+  let ss = this.find();
+  if (!ss) {
+    ss = SpreadsheetApp.create(HISTORY_SHEET_NAME_);
+    DriveApp.getFileById(ss.getId()).moveTo(this.archive.eppFolder());
+    const sh = ss.getSheets()[0]; sh.setName('History');
+    sh.getRange(1, 1, 1, HISTORY_COLUMNS.length).setValues([HISTORY_COLUMNS]).setFontWeight('bold'); sh.setFrozenRows(1);
+    if (!this.archive.eppId) PropertiesService.getScriptProperties().setProperty('HISTORY_SHEET_ID', ss.getId());
+  }
+  return ss;
+};
+HistorySheet_.prototype.sheet = function () { return this.open().getSheets()[0]; };
+// text columns stay text (a title like "1-2" must not turn into a date), numbers stay numbers
+function historyFormats_() { return HISTORY_COLUMNS.map(function (c) { return /^(Days taken|Days late|Messages)$/.test(c) ? '0' : '@'; }); }
+HistorySheet_.prototype.append = function (rows) {
+  if (!rows.length) return;
+  const sh = this.sheet(), start = sh.getLastRow() + 1, range = sh.getRange(start, 1, rows.length, HISTORY_COLUMNS.length), fm = historyFormats_();
+  range.setNumberFormats(rows.map(function () { return fm; })).setValues(rows.map(function (r) { return r.map(safeCell_); }));
+};
+HistorySheet_.prototype.ids = function () {
+  const sh = this.sheet(), last = sh.getLastRow(), out = {};
+  if (last > 1) sh.getRange(2, 1, last - 1, 1).getValues().forEach(function (r) { if (r[0] !== '') out[String(r[0])] = 1; });
+  return out;
+};
+HistorySheet_.prototype.removeTasks = function (taskIds) {
+  const ss = this.find(); if (!ss) return 0;
+  const sh = ss.getSheets()[0], last = sh.getLastRow(), n = HISTORY_COLUMNS.length;
+  if (last < 2) return 0;
+  const rows = sh.getRange(2, 1, last - 1, n).getValues(), keep = rows.filter(function (r) { return !taskIds[String(r[n - 1])]; });
+  if (keep.length === rows.length) return 0;
+  sh.getRange(2, 1, last - 1, n).clearContent();
+  const fm = historyFormats_();
+  if (keep.length) sh.getRange(2, 1, keep.length, n).setNumberFormats(keep.map(function () { return fm; })).setValues(keep);
+  return rows.length - keep.length;
+};
+HistorySheet_.prototype.clear = function () { const ss = this.find(); if (!ss) return 0; const sh = ss.getSheets()[0], last = sh.getLastRow(); if (last > 1) sh.getRange(2, 1, last - 1, HISTORY_COLUMNS.length).clearContent(); return Math.max(0, last - 1); };
+HistorySheet_.prototype.url = function () { return this.open().getUrl(); };
+HistorySheet_.prototype.fileId = function () { const ss = this.find(); return ss ? ss.getId() : ''; };
 
 /* ============================== Gemini (speech-to-text + summaries) ============================== */
 

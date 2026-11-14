@@ -116,3 +116,13 @@ test('the History page has the same groups as the task list and a date range (so
   const v = app.slice(app.indexOf('function viewHistory()'), app.indexOf('// A task archived as a zip file:'));
   for (const bit of ["'All'", "'Assigned to me'", "'Assigned by me'", 'Choose date', 'Completed from', 'Show more', 'listHistory']) assert.ok(v.includes(bit), bit);
 });
+
+test('full history sheet code: text never runs as a formula, and the History page and the admin page tell about it (source check)', () => {
+  const ctx = {}; vm.createContext(ctx); vm.runInContext(src + '\n;this.safeCell_ = safeCell_;', ctx);
+  for (const bad of ['=1+1', '+SUM(1)', '-5', '@x', "'quoted"]) assert.equal(ctx.safeCell_(bad), "'" + bad);
+  assert.equal(ctx.safeCell_('normal text'), 'normal text'); assert.equal(ctx.safeCell_(7), 7); assert.equal(ctx.safeCell_(null), '');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'app.js'), 'utf8');
+  assert.ok(app.includes('The app shows the last 12 months') && app.includes('Open the full history sheet') && app.includes("'adminHistorySheet'"));
+  // Core.gs is loaded before Adapters.gs in Apps Script, but Adapters.gs must also load on its own
+  assert.equal(/^const HISTORY_[A-Z_]+ = HISTORY_COLUMNS/m.test(src), false);
+});

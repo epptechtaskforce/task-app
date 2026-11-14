@@ -193,10 +193,10 @@ function smokeTest() {
     check(must('speak', boss1, { text: 'Hello there' }).mime.indexOf('audio/') === 0, 'the speak action returns audio');
     check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
     const idxSheet = SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex');
-    idxSheet.getRange(1, 14, 1, 5).clearContent();            // pretend this sheet was made before the newest columns existed
+    idxSheet.getRange(1, 14, 1, 6).clearContent();            // pretend this sheet was made before the newest columns existed
     must('setProgress', staff1, { taskId: t2.id, progress: 100 });
     must('approveTask', boss1, { taskId: t2.id });
-    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 5).getValues()[0].join('|') === 'folderId|purpose|fileCount|archiveNo|docs', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
+    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 6).getValues()[0].join('|') === 'folderId|purpose|fileCount|archiveNo|docs|dueDate', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
     const doc2 = must('getArchived', staff1, { taskId: t2.id });
     const z2 = zipOf(doc2), e2 = z2 ? entries(z2) : {}, docName = Object.keys(e2).filter(function (n) { return n.indexOf('Files/') === 0; });
     check(doc2.archive.code === 'EPP-0002', 'the second archived task gets the next number: ' + doc2.archive.code);
@@ -204,6 +204,27 @@ function smokeTest() {
     check(docName.length === 1 && (e2['Conversation.txt'] || '').indexOf(docName[0]) >= 0 && (e2['Summary.txt'] || '').indexOf('1 shared document and picture') >= 0, 'the text files point to the document');
     check(doc2.documents.length === 1 && doc2.documents[0].name === 'Smoke report.pdf', 'the History details list the shared document by name');
     check(!voice.getFiles().hasNext(), 'the loose copy of the shared document was thrown away after the zip was written');
+    // the FULL history sheet in Drive: a readable row per completed task, formula-safe, repaired by the nightly job, and the live sheet lets go of History older than a year
+    const hFind = function () { const it = epp.getFilesByName('EPP History (all completed tasks)'); return it.hasNext() ? SpreadsheetApp.open(it.next()) : null; };
+    const hSheet = function () { return hFind().getSheets()[0]; };
+    const hv = function () { const sh = hSheet(), last = sh.getLastRow(); return last > 1 ? sh.getRange(2, 1, last - 1, HISTORY_COLUMNS.length).getValues().filter(function (r) { return r[0] !== ''; }) : []; };
+    check(!!hFind(), 'the full history sheet was made in the EPP folder');
+    check(hSheet().getRange(1, 1, 1, HISTORY_COLUMNS.length).getValues()[0].join('|') === HISTORY_COLUMNS.join('|'), 'the full history sheet has readable column headings');
+    check(hv().length === 2 && hv()[0][0] === 'EPP-0001' && hv()[1][0] === 'EPP-0002' && hv()[0][6] === 'Smoke task', 'both completed tasks are in the full history sheet with their archive numbers: ' + hv().map(function (r) { return r[0]; }).join(','));
+    const t3 = must('createTask', boss1, { title: '=1+1 formula title', description: '+SUM(1)', assigneeIds: [u2.user.id] }).task;
+    must('setProgress', staff1, { taskId: t3.id, progress: 100 }); must('approveTask', boss1, { taskId: t3.id });
+    const lastCell = hSheet().getRange(hSheet().getLastRow(), 7);
+    check(lastCell.getFormula() === '' && lastCell.getValue() === '=1+1 formula title', 'a title that looks like a formula is stored as plain text in the full history sheet');
+    const env2 = makeEnv_({ ssId: ss.getId(), eppFolderId: epp.getId() });
+    env2.store.all('ArchiveIndex').forEach(function (r) { env2.store.update('ArchiveIndex', r.id, { closedAt: Date.now() - 400 * 86400000 }); });   // pretend all three are 400 days old
+    hSheet().getRange(2, 1, 1, HISTORY_COLUMNS.length).clearContent();                                                                              // and one row is missing from the full sheet
+    const mres = core.maintenance();
+    check(mres.history && mres.history.added === 1 && mres.history.pruned === 3, 'the nightly job puts back the missing row, then lets the live sheet go of History older than a year: ' + JSON.stringify(mres.history));
+    check(hv().length === 3 && env2.store.all('ArchiveIndex').length === 0, 'the full history sheet keeps all three, the live sheet keeps none');
+    check(must('listHistory', staff1, {}).total === 0, 'the app History shows only the last year');
+    const t4 = must('createTask', boss1, { title: 'Fourth task', assigneeIds: [u2.user.id] }).task;
+    must('setProgress', staff1, { taskId: t4.id, progress: 100 }); must('approveTask', boss1, { taskId: t4.id });
+    check(must('getArchived', staff1, { taskId: t4.id }).archive.code === 'EPP-0004' && hv().length === 4, 'archive numbers keep counting after old rows left the live sheet, and the new task is in the full history sheet');
     // sharing a folder WITHOUT any email: the call to the Drive web service must be well formed and authorised. A made-up address has no Google
     // account, so Google refuses it in plain words (and sends nothing); nothing may be left shared.
     const probe = makeEnv_({ eppFolderId: epp.getId() }).archive;
@@ -259,10 +280,11 @@ function wipeWorkData(confirmText) {
   });
   const rows = {};
   WIPE_TABLES_.forEach(function (name) { rows[name] = env.store.removeWhere(name, function () { return true; }); });
+  rows.FullHistorySheet = env.history.clear();                                   // the rows of the full history sheet; the sheet itself stays
   let eppItems = 0;
-  const epp = env.archive.eppFolder(), folders = epp.getFolders(), loose = epp.getFiles();
+  const epp = env.archive.eppFolder(), folders = epp.getFolders(), loose = epp.getFiles(), keepId = env.history.fileId();
   while (folders.hasNext()) { folders.next().setTrashed(true); eppItems++; }
-  while (loose.hasNext()) { loose.next().setTrashed(true); eppItems++; }
+  while (loose.hasNext()) { const f = loose.next(); if (f.getId() !== keepId) { f.setTrashed(true); eppItems++; } }   // the full history sheet is not thrown away
   props.deleteProperty('MOCK_STATE');
   env.store.insert('AuditLog', { id: 'Awipe' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), at: Date.now(), userId: '', action: 'data.wipe', detail: JSON.stringify(rows) });
   Logger.log('Rows removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '. Items moved out of the EPP folder: ' + eppItems + '.');
@@ -534,6 +556,7 @@ function simulationClean(confirmText) {
     reads: env.store.removeWhere('Reads', function (r) { return ids[r.taskId]; }), tasks: env.store.removeWhere('Tasks', function (t) { return ids[t.id]; }),
     history: env.store.removeWhere('ArchiveIndex', function (x) { return ids[x.id]; }), audit: env.store.removeWhere('AuditLog', function (a) { return ids[a.detail]; }), overviews: env.store.removeWhere('Briefings', function () { return true; })
   };
+  try { rows.fullHistorySheet = env.history.removeTasks(ids); } catch (e) { Logger.log('Could not remove the simulation rows from the full history sheet: ' + e); }
   props.deleteProperty('SIM_STATE');
   Logger.log('Simulation removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '.');
 }

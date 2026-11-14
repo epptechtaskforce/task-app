@@ -448,6 +448,46 @@ test('history: grouped like the task list (all / assigned to me / assigned by me
   app.err('listHistory', s.tok.mgr, { from: '14-11-2026' }, 'VALIDATION'); app.err('listHistory', s.tok.mgr, { to: 'yesterday' }, 'VALIDATION');
 });
 
+test('full history: every completed task is written to the full history sheet; the live sheet keeps one year; numbers keep counting; a failing sheet never blocks anything', () => {
+  const app = makeApp(); const s = seed(app);
+  const H = app.env._history, DAY = 86400000;
+  const finish = (by, to, title, extra, wait) => { const t = app.ok('createTask', s.tok[by], Object.assign({ title, assigneeIds: [s.users[to].id], description: 'Why: ' + title }, extra || {})).task; app.ok('postMessage', s.tok[to], { taskId: t.id, text: 'working' }); if (wait) app.tick(wait); app.ok('setProgress', s.tok[to], { taskId: t.id, progress: 100 }); return app.ok('approveTask', s.tok[by], { taskId: t.id }); };
+  // 1. the row is written when the task is approved, readable, in the order of the headings
+  const { HISTORY_COLUMNS } = require('../backend/Core.gs');
+  assert.equal(HISTORY_COLUMNS[0], 'Archive ID'); assert.equal(HISTORY_COLUMNS[HISTORY_COLUMNS.length - 1], 'Task id');
+  finish('mgr', 'wk1', 'Pump check', { dueDate: '2026-11-12' }, DAY);                         // started 12 Nov, due 12 Nov, completed 13 Nov
+  assert.equal(H.rows.length, 1); const r = H.rows[0];
+  assert.equal(r.length, HISTORY_COLUMNS.length);
+  const col = (n) => r[HISTORY_COLUMNS.indexOf(n)];
+  assert.deepEqual([col('Archive ID'), col('Completed'), col('Started'), col('Due date'), col('Days taken'), col('Days late')], ['EPP-0001', '2026-11-13', '2026-11-12', '2026-11-12', 1, 1]);
+  assert.deepEqual([col('Title'), col('Assigned by'), col('Assigned to'), col('Purpose'), col('Messages'), col('Zip file'), col('Folder')], ['Pump check', 'MGR', 'WK1', 'Why: Pump check', 1, 'EPP-0001 - Pump check - 2026-11-13.zip', 'EPP / MGR']);
+  assert.ok(col('Zip link').startsWith('https://drive.google.com/file/d/') && col('Folder link').startsWith('https://drive.google.com/drive/folders/') && /^T[a-z0-9]+$/i.test(col('Task id')));
+  // 2. nothing to repair and nothing old: the nightly job changes nothing, and does it twice without duplicates
+  assert.deepEqual(app.core.maintenance().history, { added: 0, pruned: 0 }); assert.deepEqual(app.core.maintenance().history, { added: 0, pruned: 0 }); assert.equal(H.rows.length, 1);
+  // (only the admin can ask for the link to the full sheet)
+  assert.ok(app.ok('adminHistorySheet', s.A, {}).url.startsWith('https://docs.google.com/spreadsheets/')); app.err('adminHistorySheet', s.tok.mgr, {}, 'FORBIDDEN');
+  // 3. a failing full sheet never blocks an approval: the task is archived, and the nightly job writes the row later
+  H.failAppend = true; finish('mgr', 'wk2', 'Fence repair'); H.failAppend = false;
+  assert.equal(H.rows.length, 1); assert.equal(app.ok('listHistory', s.tok.mgr, {}).total, 2);
+  assert.deepEqual(app.core.maintenance().history, { added: 1, pruned: 0 }); assert.equal(H.rows.length, 2); assert.equal(H.rows[1][0], 'EPP-0002');
+  // 4. a full sheet that cannot be read removes nothing from the live sheet
+  app.tick(400 * DAY); H.failIds = true;
+  assert.deepEqual(app.core.maintenance().history, { added: 0, pruned: 0 }); H.failIds = false;
+  assert.equal(app.env.store.all('ArchiveIndex').length, 2);
+  // 5. after a year the live sheet lets go of the rows, but only rows that are in the full sheet: a row missing there is added first
+  H.rows = H.rows.filter((x) => x[0] !== 'EPP-0001');
+  assert.deepEqual(app.core.maintenance().history, { added: 1, pruned: 2 });
+  assert.equal(app.env.store.all('ArchiveIndex').length, 0); assert.deepEqual(H.rows.map((x) => x[0]).sort(), ['EPP-0001', 'EPP-0002']);
+  // 6. the app History shows only what is in the live sheet; the old ones are in the full sheet
+  const m = app.ok('login', null, { username: 'mgr', password: 'Changed-mgr-1' }).token, w = app.ok('login', null, { username: 'wk1', password: 'Changed-wk1-1' }).token;
+  assert.equal(app.ok('listHistory', m, {}).total, 0);
+  app.err('getArchived', m, { taskId: H.rows[0][HISTORY_COLUMNS.length - 1] }, 'NOT_FOUND');
+  // 7. numbers never repeat, even though the live sheet is empty
+  const t = app.ok('createTask', m, { title: 'Next job', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('setProgress', w, { taskId: t.id, progress: 100 }); const done = app.ok('approveTask', m, { taskId: t.id });
+  assert.equal(done.archiveCode, 'EPP-0003'); assert.equal(H.rows.length, 3);
+});
+
 test('maintenance removes expired sessions', () => {
   const app = makeApp(); seed(app);
   const before = app.env.store.all('Sessions').length;

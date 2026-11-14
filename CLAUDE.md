@@ -120,6 +120,10 @@ python -m http.server 8765 --directory docs   # then http://localhost:8765/?demo
   Never put company names, usernames, URLs, keys or data in `main`. `HANDOVER.md` is deliberately git-ignored.
 - Editing tips for AI assistants on Windows: write large files with the file-write tool; do not build JS/regex with backslashes inside shell heredocs (they get mangled).
 
+## Full history sheet and the one-year live History
+
+`HISTORY_COLUMNS` / `HISTORY_KEEP_DAYS` (365) in Core.gs; `historyRow(idxRow)` builds a row; `archiveTask` appends it through `env.history.append` right after inserting the `ArchiveIndex` row (a failure is logged and never blocks the approval); `maintenance()` (nightly) adds any live row that is missing from the full sheet (by Archive ID), then removes `ArchiveIndex` rows older than a year that are certainly in it (no Archive ID or an unreadable full sheet = nothing removed). `ArchiveIndex.dueDate` feeds "Days late". Archive numbers: `nextArchiveNo` = max(Settings `archiveCounter`, live max) + 1, `saveArchiveNo` stores it, so numbers survive pruning. Adapters: `HistorySheet_` (Sheet "EPP History (all completed tasks)" in the EPP folder, id in script property `HISTORY_SHEET_ID`; text columns are text, `safeCell_` stops formulas). `wipeWorkData` clears its rows (the file stays), `simulationClean` removes the simulation's rows. Nothing in Adapters.gs may touch `HISTORY_COLUMNS` while loading (tests load it alone).
+
 ## History groups
 
 `listHistory` takes `q`, `role` (all|mine|byme: assigned to me = I am an assignee, assigned by me = I created it), `from`/`to` (yyyy-MM-dd, the day of completion in company time, both ends included, swapped if the wrong way round, anything else is a VALIDATION error), `limit`/`offset`, and returns `total`, `counts` {all, mine, byme} (after search and dates, before the group) and `items`. The History page (`viewHistory`) mirrors the task list chips and keeps the choice in `S.hist` (fresh for each person).
