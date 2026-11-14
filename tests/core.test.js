@@ -262,6 +262,34 @@ test('voice messages: stored, transcribed, and a failing AI does not lose the au
   assert.equal(JSON.stringify(doc).includes('The work is finished'), false);
 });
 
+test('archive completeness: every shared file and every voice recording without words is in the zip, under its own name, whatever the names and times', () => {
+  const ai = { transcribe: () => { throw new Error('503 overloaded'); }, summarize: () => ({}) };     // no voice message gets a transcript, so all audio must be kept
+  const app = makeApp({ ai }); const s = seed(app);
+  const t = app.ok('createTask', s.tok.mgr, { title: 'Everything must be kept', assigneeIds: [s.users.wk1.id, s.users.wk2.id] }).task;
+  const pdf = (n) => Buffer.from('%PDF-1.4 document ' + n).toString('base64');            // different bytes each time (the demo storage keeps identical bytes once)
+  const longName = 'L'.repeat(95) + '.pdf';
+  const audio = (n) => Buffer.from('audio-bytes-' + n).toString('base64');
+  app.tick(60000);
+  // all of this happens inside one minute: the readable names must still all be different
+  for (let i = 1; i <= 3; i++) app.ok('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio(i), wavB64: audio(i), mime: 'audio/webm', secs: 4 });
+  app.ok('postFile', s.tok.wk1, { taskId: t.id, name: 'Contract.pdf', b64: pdf(1) });
+  app.ok('postFile', s.tok.wk1, { taskId: t.id, name: 'Contract.pdf', b64: pdf(2) });
+  app.ok('postFile', s.tok.wk1, { taskId: t.id, name: longName, b64: pdf(3) });
+  app.ok('postFile', s.tok.wk2, { taskId: t.id, name: 'Contract.pdf', b64: pdf(4) });
+  app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 });
+  app.ok('approveTask', s.tok.mgr, { taskId: t.id });
+  const doc = app.ok('getArchived', s.tok.mgr, { taskId: t.id });
+  const zip = app.env._folders[doc.archive.path], names = zip.moved.map(m => m.name);
+  assert.equal(names.length, 7, 'three voice recordings and four documents: ' + names.join(' | '));
+  assert.equal(new Set(names.map(n => n.toLowerCase())).size, 7, 'no name is used twice: ' + names.join(' | '));
+  assert.equal(new Set(zip.moved.map(m => m.id)).size, 7, 'seven different stored files');
+  assert.equal(names.filter(n => /^Voice \(no transcript\)\/.*\.webm$/.test(n)).length, 3);
+  const docs = names.filter(n => n.indexOf('Files/') === 0);
+  assert.equal(docs.length, 4); assert.ok(docs.every(n => /\.pdf$/.test(n)), 'a long file name keeps its ending: ' + docs.join(' | '));
+  assert.equal(zip.trashed.length, 7);
+  docs.forEach(n => assert.ok(zip.files['Conversation.txt'].includes(n), 'Conversation.txt names ' + n));
+});
+
 test('AI summary: cached until new messages arrive; failures are reported cleanly', () => {
   let calls = 0, failing = false, lastInput = null;
   const ai = { transcribe: () => ({}), summarize: (input) => { calls++; lastInput = input; if (failing) throw new Error('boom'); return { summary_en: 'Going well', health: 'on_track', blockers: ['x'], next_steps: ['y'], progress_note: 'half' }; } };

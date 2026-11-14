@@ -383,18 +383,64 @@ DriveArchive_.prototype.personFolder = function (name) {
   const epp = this.eppFolder(), it = epp.getFoldersByName(name);
   return it.hasNext() ? it.next() : epp.createFolder(name);
 };
-// Makes the zip from the text files and the stored files, puts it in the person's folder and checks that it opens and holds everything.
-// Only then are the loose originals thrown away (Drive trash, emptied by Drive after 30 days). If anything fails, nothing is lost.
+// Makes the zip from the text files and the stored files, puts it in the person's folder and checks it: the zip is opened again and EVERY entry must be
+// there under its name with exactly the same size and content (a fingerprint of the bytes) as what went in. Only then are the loose originals thrown
+// away (Drive trash, emptied by Drive after 30 days). If anything differs or fails, the zip is removed, the originals stay and the task stays open.
+// Google Drive refuses a single file of about 50 MB or more (measured with archiveSizeTest10: ten 5 MB documents did not fit). So documents are split into
+// parts of at most ZIP_PART_BYTES_: "EPP-0042 - Title - date.zip" (Summary.txt, Conversation.txt and the first documents) and, only for a very big task,
+// "EPP-0042 - Title - date (part 2 of 3).zip" ... in the same folder. Summary.txt says which part holds which document. Originals go only after ALL parts were checked.
+const ZIP_PART_BYTES_ = 30 * 1000 * 1000;
+function zipPrint_(b) {      // a fingerprint of a file's bytes: its length and two different checksums
+  // The file is read as text one byte per character (ISO-8859-1) in ONE step: getBytes() would hand over a 5 MB file element by element and take seconds.
+  const t = b.getDataAsString('ISO-8859-1');
+  let h1 = 2166136261, h2 = 0;
+  for (let i = 0; i < t.length; i++) { const c = t.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619) >>> 0; h2 = (Math.imul(h2, 31) + c) | 0; }
+  return t.length + ':' + h1 + ':' + h2;
+}
+// One zip into the folder, opened again and compared with what went in. Returns the Drive file; on any difference the zip is removed and an error thrown.
+function zipPart_(folder, zipName, blobs) {
+  const want = {};
+  blobs.forEach(function (b) { if (want[b.getName()]) throw new Error('Two files would have the same name in the archive (' + b.getName() + '), so the task was not archived.'); want[b.getName()] = zipPrint_(b); });
+  const file = folder.createFile(Utilities.zip(blobs, zipName));
+  let problem = '';
+  try {
+    const back = Utilities.unzip(file.getBlob());
+    if (file.getSize() <= 0 || back.length !== blobs.length) problem = 'the zip holds ' + back.length + ' items instead of ' + blobs.length;
+    back.forEach(function (b) { const nm = b.getName(); if (want[nm] === undefined) problem = 'unexpected item ' + nm; else if (want[nm] !== zipPrint_(b)) problem = 'the content of ' + nm + ' differs'; else delete want[nm]; });
+    if (!problem && Object.keys(want).length) problem = 'missing: ' + Object.keys(want).join(', ');
+  } catch (e) { problem = String(e && e.message || e); }
+  if (problem) { file.setTrashed(true); throw new Error('The archive zip could not be checked (' + problem + '), so the task was not archived. Nothing was deleted.'); }
+  return file;
+}
 DriveArchive_.prototype.saveZip = function (o) {
-  const person = this.personFolder(o.person);
-  const blobs = o.files.map(function (f) { return Utilities.newBlob(f.content, f.mime, f.name); });
-  (o.moves || []).forEach(function (mv) { blobs.push(DriveApp.getFileById(mv.id).getBlob().copyBlob().setName(mv.name)); });
-  const file = person.createFile(Utilities.zip(blobs, o.zipName));
-  let ok = false;
-  try { ok = file.getSize() > 0 && Utilities.unzip(file.getBlob()).length === blobs.length; } catch (e) { ok = false; }
-  if (!ok) { file.setTrashed(true); throw new Error('The archive zip could not be checked, so the task was not archived.'); }
+  const person = this.personFolder(o.person), moves = o.moves || [], t0 = Date.now();
+  // which document goes into which part (by the real size of the stored files)
+  const parts = [[]]; let used = 0;
+  moves.forEach(function (mv) {
+    const n = DriveApp.getFileById(mv.id).getSize();
+    if (used + n > ZIP_PART_BYTES_ && parts[parts.length - 1].length) { parts.push([]); used = 0; }
+    parts[parts.length - 1].push(mv); used += n;
+  });
+  const partName = function (i) { return i === 0 ? o.zipName : o.zipName.replace(/\.zip$/, '') + ' (part ' + (i + 1) + ' of ' + parts.length + ').zip'; };
+  let note = '';
+  if (parts.length > 1) {
+    note = '\n\nTHIS ARCHIVE IS IN ' + parts.length + ' ZIP FILES (one file would be too big for Google Drive). All of them are in this same folder:\n' +
+      parts.map(function (list, i) { return '  ' + partName(i) + (i === 0 ? '  (Summary.txt, Conversation.txt and ' : '  (') + list.length + ' shared file' + (list.length === 1 ? '' : 's') + ')\n' + list.map(function (mv) { return '      - ' + mv.name; }).join('\n'); }).join('\n') + '\n';
+  }
+  const made = [];
+  try {
+    parts.forEach(function (list, i) {
+      const blobs = i === 0 ? o.files.map(function (f) { return Utilities.newBlob(f.name === 'Summary.txt' ? f.content + note : f.content, f.mime, f.name); }) : [];
+      list.forEach(function (mv) { blobs.push(DriveApp.getFileById(mv.id).getBlob().copyBlob().setName(mv.name)); });
+      made.push(zipPart_(person, partName(i), blobs));
+    });
+  } catch (e) {
+    made.forEach(function (f) { try { f.setTrashed(true); } catch (x) { /* nothing more to undo */ } });
+    throw e;
+  }
+  try { Logger.log('saveZip: ' + parts.length + ' zip file(s), ' + moves.length + ' documents, ' + Math.round((Date.now() - t0) / 1000) + ' s'); } catch (e) { /* logging never matters */ }
   (o.trashIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
-  return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + file.getName(), fileId: file.getId(), folderId: person.getId() };
+  return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + made[0].getName(), fileId: made[0].getId(), folderId: person.getId(), parts: parts.length };
 };
 // One call to the Google Drive web service (v3) with the script's own permission. DriveApp cannot share WITHOUT Google emailing the person, so the
 // permission itself is made through this call with sendNotificationEmail=false: nobody receives any message, the person simply opens the folder from the app.
