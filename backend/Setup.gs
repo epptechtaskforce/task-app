@@ -396,7 +396,7 @@ function simulateCompany(mockBaseUrl) {
     if (!state) state = { anchor: { m0: mid.getTime(), now: Date.now() }, next: 0, ids: [], failed: [], done: false, runs: 0, base: typeof mockBaseUrl === 'string' ? mockBaseUrl : '' };
     if (state.done) { Logger.log('The simulation is already finished. Run simulationClean to remove it first if you want to start again.'); return; }
     state.runs++;
-    if (state.runs > 16) { Logger.log('Stopping: too many runs. Look at simulationStatus().'); return; }
+    if (state.runs > 40) { Logger.log('Stopping: too many runs. Look at simulationStatus().'); return; }
     const save = function () { props.setProperty('SIM_STATE', JSON.stringify(state)); };
     const tz = Session.getScriptTimeZone(), anchor = state.anchor;
     let clock = anchor.now;
