@@ -88,6 +88,14 @@ close the tab). Already running as the installed app: goes straight to the app. 
 close a tab it opened itself. Needs `manifest.webmanifest` (PNG icons, `related_applications` naming itself) and `sw.js` (a worker that caches nothing). The QR image itself contains the real
 address, so it lives only in the company branch (`docs/install-qr.svg`, printable `docs/qr.html`); make one with `pip install segno` then `segno.make('<url>/install.html', error='q').save('install-qr.svg', scale=12)`.
 
+## Updates reach installed phones (update.js)
+
+An installed app is one long-lived window and GitHub Pages lets phones keep a page for 10 minutes (`max-age=600`), so a release does not reach it by itself. `docs/js/update.js` (loaded before
+`app.js`, its own `?v=` is the running version) fetches the page the app opens from with `cache: 'reload'` at start, when the app returns to the foreground, when it goes online and every 5 minutes, and
+compares the `app.js?v=` number. Newer: it reloads itself if nothing is typed / no popup / not listening / nothing sending (at most twice per version), else shows an "Update" button. The Account page shows the
+version with a "Check for updates" button. `sw.js` asks the server `cache: 'no-cache'` for every page. **Bumping the `?v=` number in `docs/index.html` is what triggers all of this: forget it and nobody updates.**
+First-time catch-up for a phone that still runs a copy from before update.js existed: close the app from the recent-apps list and open it again (after the 10 minutes).
+
 ## Performance and reliability facts (Apps Script)
 
 - Every request costs about 2-3 s even for trivial calls; roughly 1 in 10 requests is lost entirely. So `api.js` re-sends reads and sign-in after 4.5 s / 9.5 s

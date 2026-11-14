@@ -4,7 +4,7 @@
   "private": true,
   "description": "Task assignment and monitoring app with voice updates (Google Apps Script + GitHub Pages)",
   "scripts": {
-    "test": "node --test tests/core.test.js tests/features.test.js tests/sync.test.js tests/adapters-cache.test.js tests/ai-providers.test.js tests/api-client.test.js tests/theme.test.js",
+    "test": "node --test tests/core.test.js tests/features.test.js tests/sync.test.js tests/adapters-cache.test.js tests/ai-providers.test.js tests/api-client.test.js tests/theme.test.js tests/update.test.js",
     "sync": "node tools/sync-core.js"
   },
   "engines": { "node": ">=20" }

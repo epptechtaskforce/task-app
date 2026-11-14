@@ -1157,6 +1157,11 @@
         })()),
       isPureAdmin() || !S.canUseAi ? null : Assistant.settingsCard(),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
+      h('div', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('strong', null, 'App version'), h('div', { class: 'muted small' }, (window.Updater && window.Updater.version) || 'demo')),
+        h('button', { class: 'btn small', type: 'button', onclick: async function () {
+          const r = window.Updater ? await window.Updater.check(false) : 'unknown';
+          UI.toast(r === 'current' ? 'You have the latest version' : r === 'available' || r === 'reloading' ? 'A new version is ready' : 'Could not check right now', r === 'current' || r === 'available' || r === 'reloading' ? undefined : 'bad');
+        } }, icon('refresh', 16), 'Check for updates'))),
       h('div', { class: 'card tip' }, icon('phone', 22), h('div', null, h('h3', null, 'Add to your home screen'), h('p', { class: 'muted small', style: 'margin:0' }, 'Open this page on your phone, then in Chrome use the ⋮ menu → "Add to Home screen". On iPhone (Safari) use Share → "Add to Home Screen". It then opens like an app.'))),
       h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: signOut }, icon('logout', 18), 'Sign out'), Api.demo ? h('button', { class: 'btn', type: 'button', onclick: function () { Demo.reset(); } }, 'Reset demo data') : null)), 'account');
     Profiles.refresh(true);

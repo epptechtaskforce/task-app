@@ -978,3 +978,7 @@ h1 { letter-spacing: -.025em; }
 @keyframes aibgrow { from { transform: scaleX(0); } }
 @media (prefers-reduced-motion: reduce) { .aib-pct { animation: none; opacity: 1; } .aib-pct .bar i { animation: none; } }
 .aib-line.li .aib-pct { display: flex; margin: .22rem 0 .1rem; }
+
+/* "New version ready": shown only when the app could not reload itself without disturbing something */
+.upd-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-b) + 14px); z-index: 90; display: flex; align-items: center; gap: .8rem; padding: .5rem .55rem .5rem 1.1rem; border-radius: 999px; color: #fff; font-weight: 700; background: linear-gradient(135deg, var(--accent-strong), var(--accent-2)); box-shadow: 0 14px 30px -8px color-mix(in srgb, var(--accent) 60%, transparent); animation: pop .4s var(--spring) both; }
+.upd-bar button { border: 0; border-radius: 999px; padding: .4rem .95rem; font: inherit; font-weight: 800; color: var(--accent-strong); background: #fff; cursor: pointer; }
