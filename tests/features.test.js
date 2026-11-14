@@ -88,10 +88,11 @@ test('files: documents and photos are checked by type and content, and only task
   app.ok('approveTask', s.tok.mgr, { taskId: task.id });
   assert.equal(app.env.store.all('Attachments').length, 0);
   const doc = app.ok('getArchived', s.tok.wk1, { taskId: task.id });
-  const fm = doc.messages.find((m) => m.type === 'file' && m.file.name === 'Report v2.pdf');
-  assert.ok(fm);
-  assert.equal(app.ok('getFile', s.tok.wk1, { archived: true, taskId: task.id, messageId: fm.id }).b64, PDF_B64);
-  app.err('getFile', s.tok.wk2, { archived: true, taskId: task.id, messageId: fm.id }, 'NOT_FOUND');
+  assert.ok(doc.documents.map(d => d.name).includes('Report v2.pdf'));                                  // the History page lists the documents' names
+  const zip = app.env._folders[doc.archive.path];
+  assert.ok(zip.moved.some(m => /^Files\/.* Report v2\.pdf$/.test(m.name)));                              // the document is inside the zip
+  assert.equal(zip.trashed.length, zip.moved.length);                                                    // and the loose copies are gone
+  app.err('getFile', s.tok.wk1, { archived: true, taskId: task.id, messageId: good.data.message.id }, 'NOT_FOUND');   // the app no longer serves it: open it from Drive
 });
 
 test('updateTask: only the person who gave the task can change it, and everyone sees what changed', () => {
@@ -437,10 +438,10 @@ test('assistant summaries: the AI summary shown at the top of a task is what the
   const fresh = app.ok('createTask', s.tok.mgr, { title: 'New fence', assigneeIds: [s.users.wk2.id] }).task;
   app.ok('assistant', s.tok.mgr, { text: 'x', taskId: fresh.id });
   c = context(); assert.equal(c.split('\n').filter((l) => l.indexOf('New fence') >= 0 && l.indexOf('TASK id=') === 0).length, 1);
-  // a completed task keeps its whole summary for the History view
+  // a completed task keeps its whole summary in its zip; the assistant reads it from there while the person looks at that task
   app.ok('setProgress', s.tok.wk1, { taskId: gate.id, progress: 100 }); app.ok('approveTask', s.tok.mgr, { taskId: gate.id });
   app.ok('assistant', s.tok.mgr, { text: 'summary of the finished gate job', archivedId: gate.id });
-  c = context(); assert.ok(c.includes('AI SUMMARY (exactly what the task page shows') && c.includes('blockers: Waiting for the tiles'));
+  c = context(); assert.ok(c.includes('ARCHIVED SUMMARY') && c.includes('Blockers: Waiting for the tiles'));
 });
 
 test('points and pictures: the reply keeps its tags for the screen, the spoken version never reads them', () => {

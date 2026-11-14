@@ -240,17 +240,19 @@
         readFile: function (id) { if (!files[id]) throw new Error('This file is not available in demo mode after a page reload'); return files[id]; }
       },
       archive: {
-        save: function (o) {
-          const json = o.files.filter(function (f) { return f.name === 'task.json'; })[0];
-          const id = 'AR' + randomHex(6);
-          archives[id] = json.content;
-          // like Drive: the text files are written, shared files move (and are renamed), written-down voice audio is thrown away
-          const folder = { files: {}, moved: [], trashed: [] };
-          o.files.forEach(function (f) { folder.files[f.name] = f.content; });
-          (o.moves || []).forEach(function (mv) { folder.moved.push({ id: mv.id, name: mv.name || '', sub: mv.sub || '' }); });
-          (o.discardIds || []).forEach(function (fid) { folder.trashed.push(fid); delete files[fid]; });
-          folders[o.folder] = folder;
-          return { storage: 'memory', path: o.folder, fileId: id, folderId: 'FD' + randomHex(6) };
+        // like Drive: one zip per task in the folder of the person who assigned it; the loose files are thrown away afterwards
+        saveZip: function (o) {
+          const id = 'ZP' + randomHex(6), zip = { files: {}, moved: [], trashed: [] };
+          o.files.forEach(function (f) { zip.files[f.name] = f.content; });
+          (o.moves || []).forEach(function (mv) { zip.moved.push({ id: mv.id, name: mv.name }); });
+          (o.trashIds || []).forEach(function (fid) { zip.trashed.push(fid); delete files[fid]; });
+          folders['EPP/' + o.person + '/' + o.zipName] = zip;
+          return { storage: 'zip', path: 'EPP/' + o.person + '/' + o.zipName, fileId: id, folderId: 'FD' + randomHex(6) };
+        },
+        readZip: function (idx, wanted) {
+          const z = folders[idx.path]; if (!z) throw new Error('Archive not found');
+          const out = {}; wanted.forEach(function (n) { if (z.files[n] !== undefined) out[n] = z.files[n]; });
+          return out;
         },
         read: function (idx) { if (!archives[idx.fileId]) throw new Error('Archive not found'); return archives[idx.fileId]; }
       },

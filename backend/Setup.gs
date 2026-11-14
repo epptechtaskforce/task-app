@@ -90,7 +90,7 @@ function smokeTest() {
   const check = function (cond, msg) { if (!cond) problems.push(msg); Logger.log((cond ? 'PASS  ' : 'FAIL  ') + msg); };
   const ss = SpreadsheetApp.create('TaskApp SMOKETEST (safe to delete)');
   const root = DriveApp.createFolder('TaskApp SMOKETEST (safe to delete)');
-  const voice = root.createFolder('Voice'), archive = root.createFolder('Archive');
+  const voice = root.createFolder('Voice'), archive = root.createFolder('Archive'), epp = root.createFolder('EPP');
   const stubAi = {
     transcribe: function () { return { english: 'The work is finished', language: 'Sinhala', key_points: 'Work reported finished.' }; },
     summarize: function () { return { summary_en: 'ok', health: 'on_track', blockers: [], next_steps: [], progress_note: 'x' }; },
@@ -99,7 +99,7 @@ function smokeTest() {
     briefing: function () { return { headline: 'All good', items: [{ tone: 'good', text: 'Nothing is late', task_id: '' }] }; }
   };
   try {
-    const core = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), ai: stubAi });
+    const core = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi });
     const call = function (action, token, params) { return core.handle(Object.assign({ action: action, token: token }, params || {})); };
     const must = function (action, token, params) { const r = call(action, token, params); if (!r.ok) throw new Error(action + ' failed: ' + JSON.stringify(r)); return r.data; };
 
@@ -144,16 +144,23 @@ function smokeTest() {
     const doc = must('getArchived', staff1, { taskId: task.id });
     // created (system) + risky texts + voice + progress (system) = 3 + risky.length
     check(doc.messages.length === 3 + risky.length && doc.task.title === 'Smoke task', 'archived conversation (' + doc.messages.length + ' messages) can be opened from Drive');
+    check(doc.detailsOnly === true && doc.archive.code === 'EPP-0001', 'the archived task opens as details with its archive number: ' + (doc.archive && doc.archive.code));
     check(call('getAudio', staff1, { archived: true, taskId: task.id, messageId: v.message.id }).ok === false, 'voice audio is not kept after archiving (the words are)');
-    const vm = doc.messages.filter(function (m) { return m.type === 'voice'; })[0];
-    check(vm && vm.transcript === 'The work is finished' && vm.audioFileId === '', 'the archived chat keeps what the voice message said');
-    check(doc.archive && /^\d{4}\/\d{2}\/\d{4}-\d{2}-\d{2} Smoke task \[/.test(doc.archive.path) && doc.archive.folderUrl.indexOf('https://drive.google.com/drive/folders/') === 0, 'the archive says where it is saved in Drive: ' + (doc.archive && doc.archive.path));
-    const folderOf = function (path) { let f = archive; path.split('/').forEach(function (part) { f = f.getFoldersByName(part).next(); }); return f; };
-    const textOf = function (f, name) { return f.getFilesByName(name).next().getBlob().getDataAsString('UTF-8'); };
-    const f1 = folderOf(doc.archive.path);
-    check(textOf(f1, 'Conversation.txt').indexOf('Said: The work is finished') >= 0 && textOf(f1, 'Conversation.txt').indexOf('=1+1') >= 0, 'Conversation.txt in the Drive folder has the messages and the voice words');
-    check(textOf(f1, 'Summary.txt').indexOf('Assigned by:  Boss One') >= 0 && textOf(f1, 'Summary.txt').indexOf('Done by:      Staff One') >= 0, 'Summary.txt in the Drive folder says who did what');
+    const zipOf = function (d) {
+      const people = epp.getFoldersByName(d.archive.person);
+      if (!people.hasNext()) return null;
+      const files = people.next().getFilesByName(d.archive.zipName);
+      return files.hasNext() ? files.next() : null;
+    };
+    const entries = function (zipFile) { const o = {}; Utilities.unzip(zipFile.getBlob()).forEach(function (b) { o[b.getName()] = b.getDataAsString('UTF-8'); }); return o; };
+    const z1 = zipOf(doc);
+    check(!!z1 && /^EPP-0001 - Smoke task - \d{4}-\d{2}-\d{2}\.zip$/.test(doc.archive.zipName) && doc.archive.path === 'EPP/Boss One/' + doc.archive.zipName, 'one zip with the archive number is in the folder of the person who assigned the task: ' + doc.archive.path);
+    const e1 = z1 ? entries(z1) : {};
+    check(Object.keys(e1).sort().join('|') === 'Conversation.txt|Summary.txt', 'the zip holds Summary.txt and Conversation.txt: ' + Object.keys(e1).join(', '));
+    check((e1['Conversation.txt'] || '').indexOf('Said: The work is finished') >= 0 && (e1['Conversation.txt'] || '').indexOf('=1+1') >= 0, 'Conversation.txt has the messages and the words of the voice message');
+    check((e1['Summary.txt'] || '').indexOf('Archive ID:   EPP-0001') >= 0 && (e1['Summary.txt'] || '').indexOf('Assigned by:  Boss One') >= 0 && (e1['Summary.txt'] || '').indexOf('Done by:      Staff One') >= 0, 'Summary.txt says the number, who assigned and who did it');
     check(!voice.getFiles().hasNext(), 'no voice audio is left in the live voice folder');
+    check(epp.getFoldersByName('Boss One').hasNext(), 'the person who assigns tasks has a folder inside EPP');
     check(call('getArchived', admin, { taskId: task.id }).ok === false, 'admin cannot read other people\'s archived tasks');
 
     // profiles: picture + bio. First simulate a spreadsheet made before profiles existed (no Profiles sheet).
@@ -185,23 +192,39 @@ function smokeTest() {
     check(must('speak', boss1, { text: 'Hello there' }).mime.indexOf('audio/') === 0, 'the speak action returns audio');
     check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
     const idxSheet = SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex');
-    idxSheet.getRange(1, 14, 1, 3).clearContent();            // pretend this sheet was made before the newest columns existed
+    idxSheet.getRange(1, 14, 1, 5).clearContent();            // pretend this sheet was made before the newest columns existed
     must('setProgress', staff1, { taskId: t2.id, progress: 100 });
     must('approveTask', boss1, { taskId: t2.id });
-    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 3).getValues()[0].join('|') === 'folderId|purpose|fileCount', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
+    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 5).getValues()[0].join('|') === 'folderId|purpose|fileCount|archiveNo|docs', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
     const doc2 = must('getArchived', staff1, { taskId: t2.id });
     const fm2 = doc2.messages.filter(function (m) { return m.type === 'file'; })[0];
-    check(!!fm2 && must('getFile', staff1, { archived: true, taskId: t2.id, messageId: fm2.id }).b64 === pdf, 'a shared document is still readable after the task is archived');
-    const f2 = folderOf(doc2.archive.path), files2 = f2.getFoldersByName('Files').next().getFiles(), fn2 = [];
-    while (files2.hasNext()) fn2.push(files2.next().getName());
-    check(fn2.length === 1 && /^\d{4}-\d{2}-\d{2} \d{2}-\d{2} Staff - Smoke report\.pdf$/.test(fn2[0]), 'the shared document is in the Files folder with a readable name: ' + fn2.join(', '));
-    check(textOf(f2, 'Conversation.txt').indexOf('Files/' + fn2[0]) >= 0 && textOf(f2, 'Summary.txt').indexOf('1 shared document and picture') >= 0, 'the text files point to the document');
+    const z2 = zipOf(doc2), e2 = z2 ? entries(z2) : {}, docName = Object.keys(e2).filter(function (n) { return n.indexOf('Files/') === 0; });
+    check(doc2.archive.code === 'EPP-0002', 'the second archived task gets the next number: ' + doc2.archive.code);
+    check(docName.length === 1 && /^Files\/\d{4}-\d{2}-\d{2} \d{2}-\d{2} Staff - Smoke report\.pdf$/.test(docName[0]), 'the shared document is inside the zip, in Files, with a readable name: ' + docName.join(', '));
+    check(docName.length === 1 && (e2['Conversation.txt'] || '').indexOf(docName[0]) >= 0 && (e2['Summary.txt'] || '').indexOf('1 shared document and picture') >= 0, 'the text files point to the document');
+    check(doc2.documents.length === 1 && doc2.documents[0].name === 'Smoke report.pdf', 'the History details list the shared document by name');
+    check(!voice.getFiles().hasNext(), 'the loose copy of the shared document was thrown away after the zip was written');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);
   }
   if (problems.length) throw new Error('Smoke test FAILED: ' + problems.join(' | '));
   Logger.log('ALL SMOKE TESTS PASSED');
+}
+
+// Run by hand (it is safe to run again; nothing is duplicated): makes the folder "EPP" in My Drive of the account that owns the app, and inside it one
+// folder for every person who can assign tasks (anyone with at least one arrow going out). When someone new gets that right, run it again, or just let
+// the app make the folder the first time one of that person's tasks is archived. Completed tasks are zipped into the folder of the person who assigned them.
+function createEppFolders() {
+  const env = makeEnv_({}), from = {};
+  env.store.all('Links').forEach(function (l) { from[l.fromId] = true; });
+  Logger.log('EPP folder ready: ' + env.archive.eppFolder().getUrl());
+  let n = 0;
+  env.store.all('Users').filter(function (u) { return u.active && !u.isAdmin && from[u.id]; }).forEach(function (u) {
+    env.archive.personFolder(String(u.name).replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60));
+    n++;
+  });
+  Logger.log('Folders for ' + n + ' people who can assign tasks are ready.');
 }
 
 /* ------------------------------ AI helpers ------------------------------ */

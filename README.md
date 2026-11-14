@@ -14,7 +14,7 @@ No server of your own, nothing to install for the users (it installs from a QR c
 **Work**
 - A manager assigns a task to one or several people **below them** in the org pyramid; everyone on the task shares **one conversation**.
 - Assignees drag a **progress slider**. At 100% the task waits for the manager, who **approves** it or **sends it back**.
-- Approved tasks move to **History** with their start and finish dates, who did what, and a pointer to the Drive folder that holds the full conversation and the files (see *Long-term archive* below).
+- Approved tasks move to **History** with their start and finish dates, who did what, the shared documents' names, a small summary, an **archive ID** and exactly where the archive zip is in Google Drive (see *Long-term archive* below).
 - An **AI summary** at the top of every task shows where it stands (health, what is done, blockers, next steps).
 - The **home screen is made to be glanced at**: simple cards (a progress doughnut, the title, who -> whom as faces, one time badge), a "Today" strip of coloured tiles
   and a week of dots. Colours carry the meaning (red late, amber waiting for approval, blue going, grey not started), words are kept to a minimum.
@@ -97,22 +97,23 @@ python -m http.server 8765 --directory docs   # then open http://localhost:8765/
 
 ## Long-term archive
 
-When a manager approves a task, the app writes **one readable folder** to the archive folder in Google Drive, then removes the task from the live sheet (so the sheet stays small however long the app is used):
+Everything that is finished is kept in Google Drive as **one zip file per task**, in a folder for the person who assigned it:
 
 ```
-Archive / 2026 / 11 / 2026-11-14 Submit the compliance checklist [taskId] /
-    Summary.txt          what the task was for, who assigned it, who did it, started / completed / how many days, the AI summary, what is in the folder
-    Conversation.txt     every message in order; voice messages are written out ("Said: ...", plus the key points)
-    Files/               every shared document and picture, named "2026-11-12 09-10 Name - original name.pdf"
-    task.json            the same information for the app (do not edit)
-    Voice (no transcript)/   only if a voice message could not be transcribed: its audio is kept so nothing is lost
+My Drive / EPP / <person who assigned the task> / EPP-0042 - Submit the compliance checklist - 2026-11-14.zip
+                                                     Summary.txt        purpose, who assigned, who did it, started / completed / days, AI summary, what is in the zip
+                                                     Conversation.txt   every message in order; voice messages are written out ("Said: ...", plus key points)
+                                                     Files/             every shared document and picture, named "2026-11-12 09-10 Name - original name.pdf"
+                                                     Voice (no transcript)/   only if a voice message could not be written down: its audio goes in so nothing is lost
 ```
 
-- **Voice audio is not kept**: it is the biggest thing in a task. Once what was said is written down, the audio goes to the Drive trash (Drive empties it after 30 days); the words stay in `Conversation.txt` and are shown in History.
-- **History in the app** keeps only a few lines per task (title, people, dates, short summary, the folder path and an "Open in Google Drive" link for whoever owns the Drive folder). Participants can still read the conversation and open the files inside the app.
-- Anyone with access to the Drive archive folder can read everything without the app: open Drive, go to the folder named in the History page, read the text files and open the files.
-- Older archives (made before this change) are still readable in the app; they keep `conversation.html` and their voice audio.
-- Backups: the nightly job copies the database sheet to the backup folder (newest 14 kept). The archive folder itself is plain files: copy it to another drive now and then for a second copy.
+- **The archive ID** (`EPP-0042`, counting up) is in the zip's name, in `Summary.txt` and on the History page, so a task can be found in Drive by its number.
+- **EPP folder and person folders**: run `createEppFolders()` once in the Apps Script editor (and again when someone new gets the right to assign tasks). It makes the `EPP` folder in the Drive of the account that owns the app and one folder for every person who can assign tasks. If a folder is missing when a task is archived, the app makes it.
+- **Voice audio is not kept** (it is the biggest thing in a task): the words are in `Conversation.txt` and the audio is never put in the zip unless it could not be transcribed.
+- **The loose files are removed only after the zip has been written and opened again to check it** (they go to the Drive trash, which Drive empties after 30 days). If anything fails the task is simply not archived and nothing is lost.
+- **History in the app** shows the main details: title, who assigned and who it was assigned to, dates, the names of the shared documents, a small summary (the AI summary is made when the task is approved, if the approver may use the AI and none exists yet), the archive ID and the Drive path with "Open in Google Drive" buttons. The full conversation and the files are read from the zip in Drive, by whoever has access to that Drive folder. (The assistant can still answer questions about a completed task you are looking at: it reads the zip's text files for that one task.)
+- Older archives (made before the zip format) are still readable in the app; they keep their own folder, `conversation.html` and voice audio.
+- Backups: the nightly job copies the database sheet to the backup folder (newest 14 kept). The `EPP` folder is plain files: copy it to another drive now and then for a second copy.
 
 ## Known limits
 - Google Sheets is the database: fine for dozens of users, not thousands. Closed tasks leave the sheet, which keeps it small.

@@ -17,7 +17,7 @@ const PASSWORD_ROUNDS = 200;                                              // has
 function prop_(name) { return PropertiesService.getScriptProperties().getProperty(name); }
 
 /**
- * cfg (all optional): { ssId, voiceFolderId, archiveFolderId, ai }
+ * cfg (all optional): { ssId, voiceFolderId, archiveFolderId, eppFolderId, ai }
  * Defaults come from Script Properties written by setup().
  */
 function makeEnv_(cfg) {
@@ -36,7 +36,7 @@ function makeEnv_(cfg) {
     formatDate: function (ms) { return Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd HH:mm'); },
     store: new SheetsStore_(ssId),
     files: new DriveFiles_(voiceId),
-    archive: new DriveArchive_(archiveId),
+    archive: new DriveArchive_(archiveId, cfg.eppFolderId),
     ai: cfg.ai || makeAi_(),
     setting: function (name) { return prop_(name) || ''; },
     // how many times this has been asked in the current window (fixed windows of `seconds`), counting this call
@@ -348,10 +348,12 @@ DriveFiles_.prototype.saveFile = function (o) {
 DriveFiles_.prototype.readFile = DriveFiles_.prototype.readAudio;
 
 /* ============================== Drive: archive ============================== */
-// Layout:  Archive/<yyyy>/<MM>/<yyyy-MM-dd Title [taskId]>/{Summary.txt, Conversation.txt, task.json, Files/, Voice (no transcript)/}
-// (older archives: <taskId>-<slug>/{task.json, conversation.html, voice and files}). Voice audio is not kept once its words are written down.
+// Layout (new tasks):  My Drive / EPP / <person who assigned the task> / "EPP-0042 - Title - 2026-11-14.zip"
+//   the zip holds Summary.txt, Conversation.txt, Files/ (shared documents and pictures) and, only when a voice message could not be written
+//   down, Voice (no transcript)/. Voice audio is never kept otherwise.
+// Older archives (before the zip format) live under the Archive folder as <taskId>-<slug>/{task.json, conversation.html, ...}; read() still opens them.
 
-function DriveArchive_(rootId) { this.rootId = rootId; }
+function DriveArchive_(rootId, eppId) { this.rootId = rootId; this.eppId = eppId || ''; }
 DriveArchive_.prototype.folderFor = function (path, create) {
   let f = DriveApp.getFolderById(this.rootId);
   const parts = String(path).split('/');
@@ -363,30 +365,40 @@ DriveArchive_.prototype.folderFor = function (path, create) {
   }
   return f;
 };
-DriveArchive_.prototype.save = function (o) {
-  if (!this.rootId) throw new Error('ARCHIVE_FOLDER_ID is not set. Run setup() first.');
-  const folder = this.folderFor(o.folder, true);
-  let taskJsonId = '';
-  // 1. the text files first, so that whatever goes wrong later, the written record exists
-  o.files.forEach(function (f) {
-    const file = folder.createFile(f.name, f.content, f.mime);
-    if (f.name === 'task.json') taskJsonId = file.getId();
-  });
-  // 2. shared documents, pictures (and voice without a transcript) move into the folder; moving keeps the same file id
-  const subs = {};
-  (o.moves || []).concat((o.audioFileIds || []).map(function (id) { return { id: id }; })).forEach(function (mv) {
-    let target = folder;
-    if (mv.sub) {
-      if (!subs[mv.sub]) { const it = folder.getFoldersByName(mv.sub); subs[mv.sub] = it.hasNext() ? it.next() : folder.createFolder(mv.sub); }
-      target = subs[mv.sub];
-    }
-    const file = DriveApp.getFileById(mv.id);
-    file.moveTo(target);
-    if (mv.name) file.setName(mv.name);
-  });
-  // 3. last: voice audio that is already written down goes to the Drive trash (Drive empties it after 30 days)
-  (o.discardIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
-  return { storage: 'gdrive', path: o.folder, fileId: taskJsonId, folderId: folder.getId() };
+// The EPP folder in the Drive of the account that owns the app. Its id is remembered in the script property EPP_FOLDER_ID; if the folder
+// is missing it is looked up by name ("EPP" in My Drive) or created.
+DriveArchive_.prototype.eppFolder = function () {
+  if (this.eppId) return DriveApp.getFolderById(this.eppId);
+  const props = PropertiesService.getScriptProperties(), saved = props.getProperty('EPP_FOLDER_ID');
+  if (saved) { try { return DriveApp.getFolderById(saved); } catch (e) { /* it was deleted: find or make it again */ } }
+  const it = DriveApp.getRootFolder().getFoldersByName('EPP');
+  const f = it.hasNext() ? it.next() : DriveApp.createFolder('EPP');
+  props.setProperty('EPP_FOLDER_ID', f.getId());
+  return f;
+};
+// One folder per person who assigns tasks, named with the person's name.
+DriveArchive_.prototype.personFolder = function (name) {
+  const epp = this.eppFolder(), it = epp.getFoldersByName(name);
+  return it.hasNext() ? it.next() : epp.createFolder(name);
+};
+// Makes the zip from the text files and the stored files, puts it in the person's folder and checks that it opens and holds everything.
+// Only then are the loose originals thrown away (Drive trash, emptied by Drive after 30 days). If anything fails, nothing is lost.
+DriveArchive_.prototype.saveZip = function (o) {
+  const person = this.personFolder(o.person);
+  const blobs = o.files.map(function (f) { return Utilities.newBlob(f.content, f.mime, f.name); });
+  (o.moves || []).forEach(function (mv) { blobs.push(DriveApp.getFileById(mv.id).getBlob().copyBlob().setName(mv.name)); });
+  const file = person.createFile(Utilities.zip(blobs, o.zipName));
+  let ok = false;
+  try { ok = file.getSize() > 0 && Utilities.unzip(file.getBlob()).length === blobs.length; } catch (e) { ok = false; }
+  if (!ok) { file.setTrashed(true); throw new Error('The archive zip could not be checked, so the task was not archived.'); }
+  (o.trashIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
+  return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + file.getName(), fileId: file.getId(), folderId: person.getId() };
+};
+// The text files (Summary.txt, Conversation.txt) inside a task's zip: used only when the assistant looks at that one task.
+DriveArchive_.prototype.readZip = function (idx, wanted) {
+  const out = {};
+  Utilities.unzip(DriveApp.getFileById(idx.fileId).getBlob()).forEach(function (b) { if (wanted.indexOf(b.getName()) >= 0) out[b.getName()] = b.getDataAsString('UTF-8'); });
+  return out;
 };
 DriveArchive_.prototype.read = function (idx) {
   if (idx.fileId) {

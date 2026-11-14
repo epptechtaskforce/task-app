@@ -988,3 +988,11 @@ h1 { letter-spacing: -.025em; }
 .msg .txt.vtr { margin-top: .25rem; font-style: italic; }
 .person-line .names.drive-path { font-size: .84rem; color: var(--mute); }
 .person-line .names.drive-path a { color: var(--accent-strong); font-weight: 700; }
+
+/* history: a task archived as a zip - the archive ID, where it is saved, the shared documents */
+.arch-where .arch-code-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.arch-where .arch-code { font-size: 1.7rem; font-weight: 800; letter-spacing: .04em; color: var(--accent-strong); }
+.arch-where .arch-path { margin: .2rem 0 .5rem; font-weight: 700; overflow-wrap: anywhere; }
+.arch-where .row { gap: .5rem; flex-wrap: wrap; }
+.doc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
+.doc-list li { overflow-wrap: anywhere; padding: .35rem .6rem; border-radius: 10px; background: color-mix(in srgb, var(--accent) 9%, transparent); }

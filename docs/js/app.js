@@ -932,7 +932,7 @@
         r.items.forEach(function (t, i) {
           list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id, style: '--i:' + Math.min(i, 12) }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
             h('div', { class: 'people' }, UI.avatarStack([t.creatorName]), h('span', { class: 't' }, t.creatorName + ' → ' + t.assigneeNames)),
-            h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's'))),
+            h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null),
             t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
         });
         if (r.total > r.items.length) list.appendChild(h('p', { class: 'muted small', style: 'text-align:center' }, 'Showing the latest ' + r.items.length + ' of ' + r.total + '. Use search to narrow down.'));
@@ -942,6 +942,28 @@
     load();
   }
 
+  // A task archived as a zip file: the app shows the main details; the whole conversation and the files are in the zip in Google Drive.
+  function archivedDetails(doc) {
+    const t = doc.task, ar = doc.archive || {}, docs = doc.documents || [];
+    const where = h('div', { class: 'card arch-where' },
+      h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, ar.code || '–')),
+        ar.code ? h('button', { class: 'btn small', type: 'button', onclick: function () { try { navigator.clipboard.writeText(ar.code); UI.toast('Copied ' + ar.code); } catch (e) { UI.toast('Archive ID: ' + ar.code); } } }, 'Copy ID') : null),
+      h('div', { class: 'sec-title' }, h('h3', null, 'Where it is saved')),
+      h('p', { class: 'arch-path' }, 'Google Drive › EPP › ' + (ar.person || '') + ' › ' + (ar.zipName || '')),
+      h('p', { class: 'muted small' }, 'The whole conversation (voice messages written out), every shared document and a full summary are inside that zip file. Whoever has access to the Drive folder can open it.'),
+      h('div', { class: 'row' }, ar.folderUrl ? h('a', { class: 'btn small', href: ar.folderUrl, target: '_blank', rel: 'noopener' }, 'Open the folder in Google Drive') : null, ar.fileUrl ? h('a', { class: 'btn small', href: ar.fileUrl, target: '_blank', rel: 'noopener' }, 'Open the zip') : null));
+    const docCard = docs.length ? h('div', { class: 'card' }, h('div', { class: 'sec-title' }, h('h3', null, 'Shared documents (' + docs.length + ')')),
+      h('ul', { class: 'doc-list' }, docs.map(function (d) { return h('li', null, h('strong', null, d.name), h('span', { class: 'muted small' }, ' · ' + d.by + ' · ' + d.at + (d.size ? ' · ' + Math.max(1, Math.round(d.size / 1024)) + ' KB' : ''))); }))) : null;
+    return h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
+      h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, h('h1', null, t.title), h('div', { class: 'row' }, UI.chip('Closed', 'ok', 'check'), UI.chip('Started ' + UI.dateTime(t.createdAt)), UI.chip('Completed ' + UI.dateTime(t.closedAt), 'ok'), doc.messageCount ? UI.chip(doc.messageCount + ' message' + (doc.messageCount === 1 ? '' : 's')) : null),
+        h('div', { style: 'margin-top:.8rem' },
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'From'), h('span', { class: 'names' }, personBtn(t.creator))),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, t.assignees.map(function (a) { return personBtn(a); }))),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'Approved'), h('span', { class: 'names' }, t.approvedBy))),
+        t.description ? h('div', { class: 'desc' }, t.description) : null)),
+      where, t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, docCard);
+  }
+
   async function viewArchived(id) {
     const barOpts = { back: '#/history', title: 'Closed task' };
     shell(UI.skeleton('card', 2), 'history', barOpts);
@@ -949,6 +971,7 @@
     try { doc = await Api.call('getArchived', { taskId: id }, { timeout: 60000 }); }
     catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/history' }, '← Back to history'))), 'history', barOpts); }
     const t = doc.task;
+    if (doc.detailsOnly) return shell(archivedDetails(doc), 'history', barOpts);
     const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioRemoved: !!m.audioRemoved, transcript: m.transcript, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
     const chat = h('div', { class: 'chat' });
     renderChat(chat, msgs, { archived: true, taskId: id });

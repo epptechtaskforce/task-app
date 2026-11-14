@@ -211,11 +211,13 @@ test('full task life cycle: shared chat, progress, send back, approve, archive',
   assert.equal(app.ok('listHistory', s.tok.mgr, { q: 'zzz' }).total, 0);
   app.err('getArchived', s.tok.ceo, { taskId: t.id }, 'NOT_FOUND');
   const doc = app.ok('getArchived', s.tok.wk1, { taskId: t.id });
-  assert.equal(doc.task.title, 'Prepare harvest report');
-  assert.equal(doc.task.startedText.slice(0, 10), '2026-11-12');
-  assert.equal(doc.task.completedText.slice(0, 10), '2026-11-13');
-  assert.ok(doc.messages.some(m => m.text === 'Half done'));
-  assert.ok(doc.messages.some(m => /sent the task back/.test(m.text)));
+  assert.equal(doc.detailsOnly, true); assert.equal(doc.task.title, 'Prepare harvest report');
+  assert.equal(doc.archive.code, 'EPP-0001');
+  assert.ok(/^EPP\/MGR\/EPP-0001 - Prepare harvest report - 2026-11-13\.zip$/.test(doc.archive.path), doc.archive.path);
+  const zip = app.env._folders[doc.archive.path];                 // the conversation lives in the zip, not in the app
+  assert.ok(zip.files['Summary.txt'].includes('Started:      2026-11-12') && zip.files['Summary.txt'].includes('Completed:    2026-11-13'));
+  assert.ok(zip.files['Conversation.txt'].includes('Half done') && /sent the task back/.test(zip.files['Conversation.txt']));
+  assert.equal(doc.messages, undefined);
   // closed tasks cannot be changed
   app.err('postMessage', s.tok.wk1, { taskId: t.id, text: 'late' }, 'NOT_FOUND');
 });
@@ -247,24 +249,17 @@ test('voice messages: stored, transcribed, and a failing AI does not lose the au
   // transcripts are included in the conversation view
   const msgs = app.ok('getTask', s.tok.mgr, { taskId: t.id }).messages.filter(m => m.type === 'voice');
   assert.equal(msgs.length, 2);
-  // after archiving: audio whose words are written down is thrown away (large, and the words are kept); audio without a transcript is kept
+  // after archiving the zip holds the words of the voice messages; audio that was written down is not kept, audio without a transcript goes into the zip
   app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 });
   app.ok('approveTask', s.tok.mgr, { taskId: t.id });
   app.err('getAudio', s.tok.wk1, { archived: true, taskId: t.id, messageId: ok.message.id }, 'NOT_FOUND');
-  assert.equal(app.ok('getAudio', s.tok.wk1, { archived: true, taskId: t.id, messageId: bad.message.id }).b64, audio2);
-  app.err('getAudio', s.tok.ceo, { archived: true, taskId: t.id, messageId: bad.message.id }, 'NOT_FOUND');
-  // the archived chat shows the words of the removed audio, and keeps hiding the "AI memory" of audio that is still there
   const doc = app.ok('getArchived', s.tok.wk1, { taskId: t.id });
-  const kept = doc.messages.find(m => m.id === bad.message.id), gone = doc.messages.find(m => m.id === ok.message.id);
-  assert.equal(gone.transcript, 'The work is finished'); assert.equal(gone.audioFileId, ''); assert.equal(gone.audioRemoved, true);
-  assert.ok(kept.audioFileId); assert.equal(kept.transcript, undefined);
-  // the Drive folder: summary + conversation as text (with the words of the voice message), the discarded audio is gone from storage
-  const folder = app.env._folders[doc.archive.path];
-  assert.ok(folder.files['Summary.txt'] && folder.files['Conversation.txt'] && folder.files['task.json']);
-  assert.ok(folder.files['Conversation.txt'].includes('Said: The work is finished') && folder.files['Conversation.txt'].includes('Key points: Work reported finished.'));
-  assert.equal(folder.trashed.length, 1);
-  assert.equal(folder.moved.filter(m => m.sub === 'Voice (no transcript)').length, 1);
-  assert.ok(folder.files['Conversation.txt'].includes('the audio is kept in the folder "Voice (no transcript)"'));
+  const zip = app.env._folders[doc.archive.path], conv = zip.files['Conversation.txt'];
+  assert.ok(conv.includes('Said: The work is finished') && conv.includes('Key points: Work reported finished.'));
+  assert.ok(conv.includes('the audio is kept in the folder "Voice (no transcript)"'));
+  assert.equal(zip.moved.length, 1); assert.ok(/^Voice \(no transcript\)\//.test(zip.moved[0].name));
+  assert.equal(zip.trashed.length, 2);                                // both loose audio files are thrown away once the zip holds what matters
+  assert.equal(JSON.stringify(doc).includes('The work is finished'), false);
 });
 
 test('AI summary: cached until new messages arrive; failures are reported cleanly', () => {
@@ -288,34 +283,64 @@ test('AI summary: cached until new messages arrive; failures are reported cleanl
   assert.equal(app.ok('getTask', s.tok.mgr, { taskId: t.id }).task.summary.summary_en, 'Going well'); // old summary kept
 });
 
-test('archive text files: summary says who/what/when, conversation is complete, folder and file names are readable', () => {
-  const app = makeApp(); const s = seed(app);
+test('archive zip: summary says who/what/when, conversation is complete, names are readable, the index keeps a few lines', () => {
+  const noAi = { transcribe: () => ({}), summarize: () => { throw new Error('AI is down'); } };       // a failing AI never stops an approval
+  const app = makeApp({ ai: noAi }); const s = seed(app);
   const t = app.ok('createTask', s.tok.mgr, { title: 'Pump: roof / gate "A"?', description: 'Fix the roof of the pump house', assigneeIds: [s.users.wk1.id, s.users.wk2.id], dueDate: '2026-11-20' }).task;
   app.tick(60000); app.ok('postMessage', s.tok.wk1, { taskId: t.id, text: 'Line one\nLine two' });
   const pdf = Buffer.from('%PDF-1.4 tiny').toString('base64');
   app.tick(60000); app.ok('postFile', s.tok.wk1, { taskId: t.id, name: 'Roof plan.pdf', mime: 'application/pdf', b64: pdf, caption: 'the plan' });
   app.tick(60000); app.ok('postFile', s.tok.wk2, { taskId: t.id, name: 'Roof plan.pdf', mime: 'application/pdf', b64: pdf });
   app.tick(86400000); app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 });
-  app.ok('approveTask', s.tok.mgr, { taskId: t.id });
+  const r = app.ok('approveTask', s.tok.mgr, { taskId: t.id });
+  assert.equal(r.archiveCode, 'EPP-0001');
   const doc = app.ok('getArchived', s.tok.mgr, { taskId: t.id });
-  const folder = app.env._folders[doc.archive.path], sum = folder.files['Summary.txt'], conv = folder.files['Conversation.txt'];
-  // the folder name is for people: date, title, id, and no characters Drive or Windows dislike
-  assert.ok(/^2026\/11\/2026-11-13 Pump roof gate A \[[^\]]+\]$/.test(doc.archive.path), doc.archive.path);
-  assert.ok(doc.archive.folderUrl.indexOf('https://drive.google.com/drive/folders/') === 0);
-  // summary: purpose, who, when, how long, what is inside
-  for (const bit of ['Pump: roof / gate "A"?', 'Fix the roof of the pump house', 'Assigned by:  MGR', 'WK1, WK2', 'Started:      2026-11-12', 'Completed:    2026-11-13', '(1 day)', 'Due date:     2026-11-20', 'Approved by:  MGR', 'Conversation.txt', '2 shared documents and pictures'])
+  const zip = app.env._folders[doc.archive.path], sum = zip.files['Summary.txt'], conv = zip.files['Conversation.txt'];
+  // one zip, in the folder of the person who assigned the task, with the archive number and readable characters only
+  assert.equal(doc.archive.path, 'EPP/MGR/EPP-0001 - Pump roof gate A - 2026-11-13.zip');
+  assert.equal(doc.archive.person, 'MGR'); assert.equal(doc.archive.zipName, 'EPP-0001 - Pump roof gate A - 2026-11-13.zip');
+  assert.ok(doc.archive.folderUrl.indexOf('https://drive.google.com/drive/folders/') === 0 && doc.archive.fileUrl.indexOf('https://drive.google.com/file/d/') === 0);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['Conversation.txt', 'Summary.txt']);
+  // summary: number, place, purpose, who, when, how long, what is inside
+  for (const bit of ['Archive ID:   EPP-0001', 'Stored in:    Google Drive > EPP > MGR > EPP-0001 - Pump roof gate A - 2026-11-13.zip', 'Pump: roof / gate "A"?', 'Fix the roof of the pump house', 'Assigned by:  MGR', 'WK1, WK2', 'Started:      2026-11-12', 'Completed:    2026-11-13', '(1 day)', 'Due date:     2026-11-20', 'Approved by:  MGR', 'IN THIS ZIP', '2 shared documents and pictures'])
     assert.ok(sum.includes(bit), 'Summary.txt should include: ' + bit + '\n' + sum);
   // conversation: every message, multi-line text indented, files named as in the Files folder
-  assert.ok(conv.includes('WK1: Line one\n    Line two'));
-  const names = folder.moved.filter(m => m.sub === 'Files').map(m => m.name);
+  assert.ok(conv.includes('Archive ID EPP-0001') && conv.includes('WK1: Line one\n    Line two'));
+  const names = zip.moved.map(m => m.name);
   assert.equal(names.length, 2); assert.notEqual(names[0], names[1]);                                  // same original name twice: both kept
-  assert.ok(names.every(n => /^2026-11-1\d \d\d-\d\d WK\d - (\(2\) )?Roof plan\.pdf$/.test(n)), names.join(' | '));
-  names.forEach(n => assert.ok(conv.includes('Files/' + n) && sum.includes(n)));
+  assert.ok(names.every(n => /^Files\/2026-11-1\d \d\d-\d\d WK\d - (\(2\) )?Roof plan\.pdf$/.test(n)), names.join(' | '));
+  names.forEach(n => assert.ok(conv.includes(n) && sum.includes(n.slice(6))));
   assert.ok(conv.includes('the plan'));
-  // the History list stays small: a few lines per task
+  assert.equal(zip.trashed.length, 2);                                                                   // the loose copies are thrown away after the zip
+  // the History page: a few lines per task - people, dates, the documents' names, a small summary, the number and the place
   const row = app.env.store.all('ArchiveIndex')[0];
-  assert.equal(row.purpose, 'Fix the roof of the pump house'); assert.equal(row.fileCount, 2); assert.ok(row.folderId);
-  assert.ok(row.summaryText.includes('Assigned by MGR to WK1, WK2'));
+  assert.equal(row.purpose, 'Fix the roof of the pump house'); assert.equal(row.fileCount, 2); assert.equal(row.archiveNo, 1); assert.ok(row.folderId);
+  assert.deepEqual(row.docs.map(d => d.name), ['Roof plan.pdf', 'Roof plan.pdf']);
+  assert.ok(row.summaryText.includes('Assigned by MGR to WK1, WK2, done in 1 day'));
+  assert.equal(doc.detailsOnly, true); assert.equal(doc.documents.length, 2); assert.equal(doc.task.creator.name, 'MGR'); assert.deepEqual(doc.task.assignees.map(a => a.name), ['WK1', 'WK2']);
+  assert.equal(doc.task.summary.summary_en, row.summaryText); assert.equal(doc.archive.code, 'EPP-0001');
+  const list = app.ok('listHistory', s.tok.wk1, {}).items[0];
+  assert.equal(list.archiveCode, 'EPP-0001'); assert.equal(list.docCount, 2);
+  // search finds it by number and by a document's name
+  assert.equal(app.ok('listHistory', s.tok.mgr, { q: 'epp-0001' }).total, 1); assert.equal(app.ok('listHistory', s.tok.mgr, { q: 'roof plan' }).total, 1);
+  // numbers count up
+  const t2 = app.ok('createTask', s.tok.mgr, { title: 'Second', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('setProgress', s.tok.wk1, { taskId: t2.id, progress: 100 }); assert.equal(app.ok('approveTask', s.tok.mgr, { taskId: t2.id }).archiveCode, 'EPP-0002');
+});
+
+test('archive zip: approving makes a last AI summary (before the lock), and it is what the zip and the History page keep', () => {
+  let calls = 0;
+  const ai = { transcribe: () => ({}), summarize: () => { calls++; return { summary_en: 'Finished well, one crate short', health: 'done', blockers: [], next_steps: ['Order one crate'], progress_note: 'All counted' }; } };
+  const app = makeApp({ ai }); const s = seed(app);
+  const t = app.ok('createTask', s.tok.mgr, { title: 'Count crates', assigneeIds: [s.users.wk1.id] }).task;
+  app.tick(1000); app.ok('postMessage', s.tok.wk1, { taskId: t.id, text: 'Counted 99' });
+  app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 });
+  app.ok('approveTask', s.tok.mgr, { taskId: t.id });
+  assert.equal(calls, 1);
+  const doc = app.ok('getArchived', s.tok.mgr, { taskId: t.id });
+  const zip = app.env._folders[doc.archive.path];
+  assert.ok(zip.files['Summary.txt'].includes('HOW IT WENT') && zip.files['Summary.txt'].includes('Finished well, one crate short') && zip.files['Summary.txt'].includes('Next steps: Order one crate'));
+  assert.equal(doc.task.summary.summary_en, 'Finished well, one crate short');
 });
 
 test('maintenance removes expired sessions', () => {
