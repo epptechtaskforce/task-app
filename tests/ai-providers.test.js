@@ -28,7 +28,7 @@ function world(props, route) {
 }
 const gemini = (obj) => ({ code: 200, text: JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }) });
 const claude = (obj, fenced) => ({ code: 200, text: JSON.stringify({ content: [{ type: 'text', text: fenced ? '```json\n' + JSON.stringify(obj) + '\n```' : JSON.stringify(obj) }] }) });
-const INPUT = { context: 'TODAY: x', history: [{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'hello' }], text: 'What is late?', audio: null, pending: [], focus: null, files: [], userName: 'Geeth' };
+const INPUT = { context: 'TODAY: x', history: [{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'hello' }], text: 'What is late?', audio: null, pending: [], focus: null, files: [], userName: 'Zane' };
 
 test('without a Claude key the AI is Gemini only', () => {
   const w = world({ GEMINI_API_KEY: 'g' }, () => gemini({ reply: 'from gemini' }));
@@ -133,13 +133,13 @@ test('Groq: when every model is busy, Gemini answers (and Groq is not asked agai
 });
 
 test('Groq: a spoken question is heard by Whisper (any language to English, with names as hints) and then answered like a typed one', () => {
-  const w = world({ GROQ_API_KEY: 'k', GROQ_MODELS: 'llama-3.3-70b-versatile' }, (url) => (/audio\/translations$/.test(url) ? { code: 200, text: JSON.stringify({ text: ' Give Janith a task to check the cold room. ' }) } : groqChat({ heard: 'wrong', reply: 'done', actions: [] })));
+  const w = world({ GROQ_API_KEY: 'k', GROQ_MODELS: 'llama-3.3-70b-versatile' }, (url) => (/audio\/translations$/.test(url) ? { code: 200, text: JSON.stringify({ text: ' Give Jonas a task to check the cold room. ' }) } : groqChat({ heard: 'wrong', reply: 'done', actions: [] })));
   const out = w.sb.makeAi_().assistant(Object.assign({}, INPUT, { text: '', audio: { b64: Buffer.from('RIFFxxxx').toString('base64'), mime: 'audio/wav' } }));
   const whisper = w.calls.filter((c) => /translations$/.test(c.url))[0];
   assert.equal(whisper.body.model, 'whisper-large-v3'); assert.equal(whisper.body.file.name, 'speech.wav'); assert.ok(whisper.body.prompt.includes('TODAY'));
   const chat = w.calls.filter((c) => /chat\/completions$/.test(c.url))[0];
-  assert.equal(chat.body.messages[chat.body.messages.length - 1].content, 'Give Janith a task to check the cold room.');
-  assert.equal(out.heard, 'Give Janith a task to check the cold room.');                  // what Whisper heard, not the chat model's guess
+  assert.equal(chat.body.messages[chat.body.messages.length - 1].content, 'Give Jonas a task to check the cold room.');
+  assert.equal(out.heard, 'Give Jonas a task to check the cold room.');                  // what Whisper heard, not the chat model's guess
   assert.ok(w.calls.every((c) => c.url.indexOf('generativelanguage') < 0));
 });
 
@@ -153,9 +153,9 @@ test('Groq: if Whisper fails, Gemini listens to the sound instead', () => {
 
 test('Groq: voice messages in a chat are written in English by Whisper (names as hints)', () => {
   const w = world({ GROQ_API_KEY: 'k' }, () => ({ code: 200, text: JSON.stringify({ text: 'The pump is fixed.' }) }));
-  const out = w.sb.makeAi_().transcribe('AAAA', 'audio/webm', 'Task: Irrigation. People: Janith.');
+  const out = w.sb.makeAi_().transcribe('AAAA', 'audio/webm', 'Task: Irrigation. People: Jonas.');
   assert.equal(out.english, 'The pump is fixed.');
-  assert.equal(w.calls[0].body.file.name, 'speech.webm'); assert.ok(w.calls[0].body.prompt.includes('Janith'));
+  assert.equal(w.calls[0].body.file.name, 'speech.webm'); assert.ok(w.calls[0].body.prompt.includes('Jonas'));
 });
 
 test('Groq cannot look at pictures or PDFs, so a question with files goes to a provider that can', () => {

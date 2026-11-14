@@ -259,108 +259,119 @@ function mockInspect() {
 // accounts are only "borrowed" in memory for the run: nothing is written to Users or Sessions, no password is needed, and the AI is
 // switched off (the invented voice messages get their text from the story below).
 
-const MOCK_BASE_ = 'https://epptechtaskforce.github.io/task-app/mock/';
+// Where the sample pictures live: the "mock" folder of the published site. Set the script property MOCK_BASE_URL to its address,
+// for example https://<account>.github.io/<repository>/mock/   (a setting, so no address is written into the code).
+function mockBase_() {
+  const b = PropertiesService.getScriptProperties().getProperty('MOCK_BASE_URL');
+  if (!b) throw new Error('Set the script property MOCK_BASE_URL to the address of the mock folder of your published site, for example https://<account>.github.io/<repository>/mock/');
+  return String(b).replace(/\/?$/, '/');
+}
+// The story is told by made-up people. When the real accounts have other names, the script property MOCK_PEOPLE maps each made-up name
+// to the real person's name, as JSON: {"maya":"<real name, lowercase>", "noel":"<real name>", ...}. Without it the story names are looked up as they are.
+function mockAlias_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('MOCK_PEOPLE') || '{}') || {}; } catch (e) { throw new Error('MOCK_PEOPLE is not valid JSON'); }
+}
 
 // Events: ['s',day,hour,who,text] typed update, ['v',day,hour,who,secs,what was said] voice message, ['i',day,hour,who,kind,caption] photo,
 // ['f',day,hour,who,docKey,caption] document, ['p',day,hour,who,percent] progress slider, ['ok',day,hour] manager approves (-> History),
 // ['back',day,hour,note] manager sends it back. day = days ago, hour = hour of that day. due = days from today (negative = late).
 const MOCK_TASKS_ = [
   /* ---------- finished and approved (they end up in History) ---------- */
-  { t: 'Harvest totals report for September', d: 'Collect picking totals for every block and send me one summary before the Friday review.', by: 'amila', to: ['darshana', 'kavishan'], day: 58, hour: 9, due: -53, ev: [
-    ['s', 58, 10, 'amila', 'Please have this ready before the Friday review.'], ['s', 57, 15, 'darshana', 'Blocks A and B are counted. Waiting for the C totals.'],
-    ['v', 56, 11, 'kavishan', 14, 'Block C counting is finished. The total picked in Block C was 3975 kilos and 201 kilos were rejected.'], ['f', 56, 16, 'darshana', 'totals-csv', 'Block totals as a sheet'], ['p', 55, 9, 'darshana', 100], ['ok', 55, 14]] },
-  { t: 'Replace blocked drippers in Block B', d: 'Walk rows 1 to 14, replace every blocked emitter and note how many were changed.', by: 'amila', to: ['kavishan'], day: 56, hour: 8, due: -52, ev: [
-    ['s', 56, 12, 'kavishan', 'Started at row 1. Many emitters are clogged with algae.'], ['i', 55, 10, 'kavishan', 'drip', 'Row 4 with the new emitters fitted'], ['p', 55, 15, 'kavishan', 50],
-    ['s', 54, 11, 'kavishan', 'Rows 8 to 14 done. 63 emitters replaced in total.'], ['p', 54, 12, 'kavishan', 100], ['ok', 54, 16]] },
-  { t: 'Set up the packing line for export order 118', d: 'Line 2 must be ready with labels, punnets and the metal detector tested.', by: 'priyantha', to: ['tharaka', 'janith'], day: 54, hour: 9, due: -50, ev: [
-    ['s', 54, 14, 'tharaka', 'Labels and punnets are in. Metal detector test is booked for tomorrow.'], ['i', 53, 11, 'janith', 'crates', 'Line 2 stacked and ready'],
-    ['f', 53, 15, 'tharaka', 'packing-pdf', 'Packing plan for the order'], ['p', 52, 10, 'tharaka', 100], ['ok', 52, 15]] },
-  { t: 'Calibrate the Brix meter and log the readings', d: 'Use the reference solution and record three readings per batch for two weeks.', by: 'amila', to: ['darshana'], day: 52, hour: 10, due: -40, ev: [
-    ['s', 52, 15, 'darshana', 'Calibrated with the reference solution. Reading is within 0.1.'], ['i', 45, 11, 'darshana', 'chart', 'Two weeks of readings'], ['p', 39, 10, 'darshana', 100], ['ok', 38, 14]] },
-  { t: 'Prepare the board update on export growth', d: 'One page with the volumes, the new buyers and what we need from the board.', by: 'geeth', to: ['amila'], day: 50, hour: 9, due: -43, ev: [
-    ['s', 49, 11, 'amila', 'First draft is with the COO for the logistics numbers.'], ['f', 46, 16, 'amila', 'board-pdf', 'Final one-pager'], ['p', 45, 9, 'amila', 100], ['ok', 45, 13]] },
-  { t: 'Pest scouting in Blocks A to D', d: 'Check 20 plants per block for mites and aphids and photograph anything suspicious.', by: 'amila', to: ['darshana', 'janith', 'kavishan'], day: 47, hour: 8, due: -43, ev: [
-    ['i', 46, 10, 'darshana', 'field', 'Block A, leaves look clean'], ['s', 46, 13, 'janith', 'Block C has light mite damage on the lower leaves.'],
-    ['v', 45, 9, 'kavishan', 21, 'Block D looks clean, no mites. I checked twenty plants near the gate and found only a few aphids on two plants.'],
-    ['i', 45, 12, 'janith', 'field', 'Block C damage, close to the south fence'], ['s', 45, 16, 'amila', 'Thanks. We will spray Block C on Monday.'], ['p', 44, 10, 'darshana', 100], ['ok', 44, 15]] },
-  { t: 'Service the cold room compressor', d: 'Book the technician, keep the room below 4 degrees while the work is done.', by: 'priyantha', to: ['janith'], day: 45, hour: 9, due: -42, ev: [
-    ['s', 45, 14, 'janith', 'Technician comes Thursday morning. I will move the stock to room 1.'], ['i', 43, 12, 'janith', 'cold', 'Room back to 2.4 degrees after the service'], ['p', 43, 13, 'janith', 100], ['ok', 43, 16]] },
-  { t: 'Fix the fence near the Block D gate', d: 'Wild boar broke the lower wire. Repair and add two more posts.', by: 'amila', to: ['kavishan'], day: 43, hour: 8, due: -40, ev: [
-    ['s', 42, 10, 'kavishan', 'Posts are on site. Starting the repair.'], ['i', 41, 14, 'kavishan', 'field', 'Fence repaired, two new posts'], ['p', 41, 15, 'kavishan', 100], ['ok', 41, 17]] },
-  { t: 'Truck slots for the October dispatch', d: 'Match the truck slots with the harvest forecast and share the schedule with the packing house.', by: 'priyantha', to: ['amila'], day: 40, hour: 9, due: -36, ev: [
-    ['s', 39, 11, 'amila', 'Draft schedule is ready, checking it against the forecast.'], ['f', 38, 15, 'amila', 'trucks-pdf', 'Truck schedule for October'], ['p', 38, 16, 'amila', 100], ['ok', 37, 9]] },
-  { t: 'Weekly quality sampling, three batches', d: 'Take samples from three batches, record firmness and sugar, and report any batch below grade.', by: 'amila', to: ['tharaka', 'darshana'], day: 38, hour: 9, due: -33, ev: [
-    ['s', 37, 12, 'tharaka', 'Batch 1 and 2 are fine. Batch 3 firmness is slightly low.'], ['i', 36, 11, 'darshana', 'chart', 'Firmness and sugar results'], ['p', 35, 10, 'tharaka', 100], ['ok', 35, 14]] },
-  { t: 'Review the packaging supplier quotes', d: 'Compare the three quotes on price, delivery time and minimum order.', by: 'geeth', to: ['priyantha'], day: 35, hour: 10, due: -28, ev: [
-    ['s', 34, 14, 'priyantha', 'Supplier B is cheapest but needs 6 weeks. Supplier A delivers in 2 weeks.'], ['f', 31, 11, 'priyantha', 'quotes-pdf', 'Comparison of the three quotes'], ['s', 31, 12, 'geeth', 'Go with A for the next two orders.'], ['p', 30, 9, 'priyantha', 100], ['ok', 30, 12]] },
-  { t: 'Negotiate the cold storage contract renewal', d: 'The contract ends next month. Get a better price per pallet or a longer term.', by: 'geeth', to: ['priyantha'], day: 33, hour: 10, due: -25, ev: [
-    ['s', 32, 11, 'priyantha', 'The owner offered 4 percent off for a two year term.'], ['s', 31, 9, 'geeth', 'Ask for 6 percent and a clause for extra space in peak weeks.'], ['s', 28, 15, 'priyantha', 'Agreed at 5 percent with the peak week clause.'], ['p', 27, 10, 'priyantha', 100], ['ok', 27, 14]] },
-  { t: 'Fertiliser application in Blocks A to C', d: 'Apply the planned mix, record the quantity used per block.', by: 'amila', to: ['darshana', 'kavishan'], day: 32, hour: 7, due: -28, ev: [
-    ['v', 31, 10, 'darshana', 18, 'I started the fertiliser in Block A this morning. The mixer is working fine and we will finish A and B today.'], ['i', 30, 11, 'kavishan', 'field', 'Block B after the application'],
-    ['s', 30, 15, 'darshana', 'A and B are done. 240 kg used in A, 210 kg in B.'], ['p', 29, 10, 'darshana', 100], ['ok', 29, 13]] },
-  { t: 'Safety drill and extinguisher check', d: 'Run the fire drill with the packing house staff and check every extinguisher tag.', by: 'priyantha', to: ['tharaka'], day: 28, hour: 9, due: -24, ev: [
-    ['s', 27, 11, 'tharaka', 'Drill planned for Wednesday 10 am.'], ['i', 25, 14, 'tharaka', 'extinguisher', 'All tags updated, two extinguishers replaced'], ['p', 25, 15, 'tharaka', 100], ['ok', 25, 17]] },
-  { t: 'Update the cold chain temperature log', d: 'The log has gaps for the last two weeks. Fill them from the data logger.', by: 'amila', to: ['janith'], day: 25, hour: 10, due: -22, ev: [
-    ['s', 24, 12, 'janith', 'Downloaded the data logger file, entering it now.'], ['i', 23, 11, 'janith', 'sheet', 'Updated log, no gaps left'], ['p', 23, 12, 'janith', 100], ['ok', 23, 15]] },
-  { t: 'Clear the weeds along the irrigation canal', d: 'Both sides of the main canal, from the pump house to Block E.', by: 'amila', to: ['kavishan', 'darshana'], day: 21, hour: 8, due: -16, ev: [
-    ['s', 20, 12, 'kavishan', 'Started from the pump house side with the two helpers.'], ['i', 18, 11, 'darshana', 'leak', 'Canal bank after clearing'], ['p', 17, 10, 'darshana', 100], ['ok', 17, 14]] },
-  { t: 'Count and label the new picking crates', d: 'About 400 new crates. Number them and record them in the stock sheet.', by: 'priyantha', to: ['janith', 'tharaka'], day: 17, hour: 9, due: -13, ev: [
-    ['s', 16, 13, 'janith', 'Counted 412 crates. Labelling now.'], ['i', 14, 10, 'tharaka', 'crates', 'Labelled stack, ready for the blocks'], ['p', 14, 11, 'janith', 100], ['ok', 14, 15]] },
-  { t: 'Retrain the pickers on ripeness grading', d: 'Short session with the picture cards for every picking team.', by: 'amila', to: ['darshana', 'kavishan'], day: 13, hour: 9, due: -9, ev: [
-    ['v', 12, 10, 'darshana', 24, 'We finished the grading session with teams one and two. The picture cards help a lot and the pickers now understand the colours.'], ['i', 11, 12, 'kavishan', 'field', 'Team 3 with the grading cards'],
-    ['s', 11, 15, 'darshana', 'All five teams are done. Rejects dropped the next day.'], ['p', 10, 10, 'darshana', 100], ['ok', 10, 14]] },
-  { t: 'Approve the Q4 harvest forecast', d: 'Check the forecast sheet and confirm the numbers for the buyers.', by: 'geeth', to: ['amila'], day: 9, hour: 10, due: -5, ev: [
-    ['s', 8, 11, 'amila', 'Forecast is 12 percent above last year. Details in the sheet.'], ['f', 7, 15, 'amila', 'forecast-csv', 'Q4 forecast by block'], ['p', 6, 9, 'amila', 100], ['ok', 5, 11]] },
-  { t: 'Dispatch checklist for the Colombo order', d: 'Check labels, temperature, seals and paperwork before the truck leaves.', by: 'priyantha', to: ['tharaka'], day: 6, hour: 9, due: -3, ev: [
-    ['s', 5, 12, 'tharaka', 'Labels and seals checked. Truck arrives at 4 pm.'], ['i', 4, 17, 'tharaka', 'truck', 'Truck loaded and sealed'], ['p', 3, 9, 'tharaka', 100], ['ok', 3, 12]] },
+  { t: 'Harvest totals report for September', d: 'Collect picking totals for every block and send me one summary before the Friday review.', by: 'maya', to: ['rhea', 'sam'], day: 58, hour: 9, due: -53, ev: [
+    ['s', 58, 10, 'maya', 'Please have this ready before the Friday review.'], ['s', 57, 15, 'rhea', 'Blocks A and B are counted. Waiting for the C totals.'],
+    ['v', 56, 11, 'sam', 14, 'Block C counting is finished. The total picked in Block C was 3975 kilos and 201 kilos were rejected.'], ['f', 56, 16, 'rhea', 'totals-csv', 'Block totals as a sheet'], ['p', 55, 9, 'rhea', 100], ['ok', 55, 14]] },
+  { t: 'Replace blocked drippers in Block B', d: 'Walk rows 1 to 14, replace every blocked emitter and note how many were changed.', by: 'maya', to: ['sam'], day: 56, hour: 8, due: -52, ev: [
+    ['s', 56, 12, 'sam', 'Started at row 1. Many emitters are clogged with algae.'], ['i', 55, 10, 'sam', 'drip', 'Row 4 with the new emitters fitted'], ['p', 55, 15, 'sam', 50],
+    ['s', 54, 11, 'sam', 'Rows 8 to 14 done. 63 emitters replaced in total.'], ['p', 54, 12, 'sam', 100], ['ok', 54, 16]] },
+  { t: 'Set up the packing line for export order 118', d: 'Line 2 must be ready with labels, punnets and the metal detector tested.', by: 'noel', to: ['tara', 'vik'], day: 54, hour: 9, due: -50, ev: [
+    ['s', 54, 14, 'tara', 'Labels and punnets are in. Metal detector test is booked for tomorrow.'], ['i', 53, 11, 'vik', 'crates', 'Line 2 stacked and ready'],
+    ['f', 53, 15, 'tara', 'packing-pdf', 'Packing plan for the order'], ['p', 52, 10, 'tara', 100], ['ok', 52, 15]] },
+  { t: 'Calibrate the Brix meter and log the readings', d: 'Use the reference solution and record three readings per batch for two weeks.', by: 'maya', to: ['rhea'], day: 52, hour: 10, due: -40, ev: [
+    ['s', 52, 15, 'rhea', 'Calibrated with the reference solution. Reading is within 0.1.'], ['i', 45, 11, 'rhea', 'chart', 'Two weeks of readings'], ['p', 39, 10, 'rhea', 100], ['ok', 38, 14]] },
+  { t: 'Prepare the board update on export growth', d: 'One page with the volumes, the new buyers and what we need from the board.', by: 'zane', to: ['maya'], day: 50, hour: 9, due: -43, ev: [
+    ['s', 49, 11, 'maya', 'First draft is with the COO for the logistics numbers.'], ['f', 46, 16, 'maya', 'board-pdf', 'Final one-pager'], ['p', 45, 9, 'maya', 100], ['ok', 45, 13]] },
+  { t: 'Pest scouting in Blocks A to D', d: 'Check 20 plants per block for mites and aphids and photograph anything suspicious.', by: 'maya', to: ['rhea', 'vik', 'sam'], day: 47, hour: 8, due: -43, ev: [
+    ['i', 46, 10, 'rhea', 'field', 'Block A, leaves look clean'], ['s', 46, 13, 'vik', 'Block C has light mite damage on the lower leaves.'],
+    ['v', 45, 9, 'sam', 21, 'Block D looks clean, no mites. I checked twenty plants near the gate and found only a few aphids on two plants.'],
+    ['i', 45, 12, 'vik', 'field', 'Block C damage, close to the south fence'], ['s', 45, 16, 'maya', 'Thanks. We will spray Block C on Monday.'], ['p', 44, 10, 'rhea', 100], ['ok', 44, 15]] },
+  { t: 'Service the cold room compressor', d: 'Book the technician, keep the room below 4 degrees while the work is done.', by: 'noel', to: ['vik'], day: 45, hour: 9, due: -42, ev: [
+    ['s', 45, 14, 'vik', 'Technician comes Thursday morning. I will move the stock to room 1.'], ['i', 43, 12, 'vik', 'cold', 'Room back to 2.4 degrees after the service'], ['p', 43, 13, 'vik', 100], ['ok', 43, 16]] },
+  { t: 'Fix the fence near the Block D gate', d: 'Wild boar broke the lower wire. Repair and add two more posts.', by: 'maya', to: ['sam'], day: 43, hour: 8, due: -40, ev: [
+    ['s', 42, 10, 'sam', 'Posts are on site. Starting the repair.'], ['i', 41, 14, 'sam', 'field', 'Fence repaired, two new posts'], ['p', 41, 15, 'sam', 100], ['ok', 41, 17]] },
+  { t: 'Truck slots for the October dispatch', d: 'Match the truck slots with the harvest forecast and share the schedule with the packing house.', by: 'noel', to: ['maya'], day: 40, hour: 9, due: -36, ev: [
+    ['s', 39, 11, 'maya', 'Draft schedule is ready, checking it against the forecast.'], ['f', 38, 15, 'maya', 'trucks-pdf', 'Truck schedule for October'], ['p', 38, 16, 'maya', 100], ['ok', 37, 9]] },
+  { t: 'Weekly quality sampling, three batches', d: 'Take samples from three batches, record firmness and sugar, and report any batch below grade.', by: 'maya', to: ['tara', 'rhea'], day: 38, hour: 9, due: -33, ev: [
+    ['s', 37, 12, 'tara', 'Batch 1 and 2 are fine. Batch 3 firmness is slightly low.'], ['i', 36, 11, 'rhea', 'chart', 'Firmness and sugar results'], ['p', 35, 10, 'tara', 100], ['ok', 35, 14]] },
+  { t: 'Review the packaging supplier quotes', d: 'Compare the three quotes on price, delivery time and minimum order.', by: 'zane', to: ['noel'], day: 35, hour: 10, due: -28, ev: [
+    ['s', 34, 14, 'noel', 'Supplier B is cheapest but needs 6 weeks. Supplier A delivers in 2 weeks.'], ['f', 31, 11, 'noel', 'quotes-pdf', 'Comparison of the three quotes'], ['s', 31, 12, 'zane', 'Go with A for the next two orders.'], ['p', 30, 9, 'noel', 100], ['ok', 30, 12]] },
+  { t: 'Negotiate the cold storage contract renewal', d: 'The contract ends next month. Get a better price per pallet or a longer term.', by: 'zane', to: ['noel'], day: 33, hour: 10, due: -25, ev: [
+    ['s', 32, 11, 'noel', 'The owner offered 4 percent off for a two year term.'], ['s', 31, 9, 'zane', 'Ask for 6 percent and a clause for extra space in peak weeks.'], ['s', 28, 15, 'noel', 'Agreed at 5 percent with the peak week clause.'], ['p', 27, 10, 'noel', 100], ['ok', 27, 14]] },
+  { t: 'Fertiliser application in Blocks A to C', d: 'Apply the planned mix, record the quantity used per block.', by: 'maya', to: ['rhea', 'sam'], day: 32, hour: 7, due: -28, ev: [
+    ['v', 31, 10, 'rhea', 18, 'I started the fertiliser in Block A this morning. The mixer is working fine and we will finish A and B today.'], ['i', 30, 11, 'sam', 'field', 'Block B after the application'],
+    ['s', 30, 15, 'rhea', 'A and B are done. 240 kg used in A, 210 kg in B.'], ['p', 29, 10, 'rhea', 100], ['ok', 29, 13]] },
+  { t: 'Safety drill and extinguisher check', d: 'Run the fire drill with the packing house staff and check every extinguisher tag.', by: 'noel', to: ['tara'], day: 28, hour: 9, due: -24, ev: [
+    ['s', 27, 11, 'tara', 'Drill planned for Wednesday 10 am.'], ['i', 25, 14, 'tara', 'extinguisher', 'All tags updated, two extinguishers replaced'], ['p', 25, 15, 'tara', 100], ['ok', 25, 17]] },
+  { t: 'Update the cold chain temperature log', d: 'The log has gaps for the last two weeks. Fill them from the data logger.', by: 'maya', to: ['vik'], day: 25, hour: 10, due: -22, ev: [
+    ['s', 24, 12, 'vik', 'Downloaded the data logger file, entering it now.'], ['i', 23, 11, 'vik', 'sheet', 'Updated log, no gaps left'], ['p', 23, 12, 'vik', 100], ['ok', 23, 15]] },
+  { t: 'Clear the weeds along the irrigation canal', d: 'Both sides of the main canal, from the pump house to Block E.', by: 'maya', to: ['sam', 'rhea'], day: 21, hour: 8, due: -16, ev: [
+    ['s', 20, 12, 'sam', 'Started from the pump house side with the two helpers.'], ['i', 18, 11, 'rhea', 'leak', 'Canal bank after clearing'], ['p', 17, 10, 'rhea', 100], ['ok', 17, 14]] },
+  { t: 'Count and label the new picking crates', d: 'About 400 new crates. Number them and record them in the stock sheet.', by: 'noel', to: ['vik', 'tara'], day: 17, hour: 9, due: -13, ev: [
+    ['s', 16, 13, 'vik', 'Counted 412 crates. Labelling now.'], ['i', 14, 10, 'tara', 'crates', 'Labelled stack, ready for the blocks'], ['p', 14, 11, 'vik', 100], ['ok', 14, 15]] },
+  { t: 'Retrain the pickers on ripeness grading', d: 'Short session with the picture cards for every picking team.', by: 'maya', to: ['rhea', 'sam'], day: 13, hour: 9, due: -9, ev: [
+    ['v', 12, 10, 'rhea', 24, 'We finished the grading session with teams one and two. The picture cards help a lot and the pickers now understand the colours.'], ['i', 11, 12, 'sam', 'field', 'Team 3 with the grading cards'],
+    ['s', 11, 15, 'rhea', 'All five teams are done. Rejects dropped the next day.'], ['p', 10, 10, 'rhea', 100], ['ok', 10, 14]] },
+  { t: 'Approve the Q4 harvest forecast', d: 'Check the forecast sheet and confirm the numbers for the buyers.', by: 'zane', to: ['maya'], day: 9, hour: 10, due: -5, ev: [
+    ['s', 8, 11, 'maya', 'Forecast is 12 percent above last year. Details in the sheet.'], ['f', 7, 15, 'maya', 'forecast-csv', 'Q4 forecast by block'], ['p', 6, 9, 'maya', 100], ['ok', 5, 11]] },
+  { t: 'Dispatch checklist for the Colombo order', d: 'Check labels, temperature, seals and paperwork before the truck leaves.', by: 'noel', to: ['tara'], day: 6, hour: 9, due: -3, ev: [
+    ['s', 5, 12, 'tara', 'Labels and seals checked. Truck arrives at 4 pm.'], ['i', 4, 17, 'tara', 'truck', 'Truck loaded and sealed'], ['p', 3, 9, 'tara', 100], ['ok', 3, 12]] },
 
   /* ---------- finished, waiting for the manager to approve ---------- */
-  { t: 'Prepare the packing schedule for Friday', d: 'Match the truck slots with the harvest forecast.', by: 'amila', to: ['darshana', 'kavishan'], day: 4, hour: 9, due: 0, ev: [
-    ['s', 3, 11, 'darshana', 'Drafted and shared with the packing house.'], ['i', 2, 14, 'kavishan', 'crates', 'Crate stacks for the first truck'], ['p', 0, 8, 'darshana', 100]] },
-  { t: 'Monthly lab results summary', d: 'Summarise the pesticide residue and sugar results from the lab for the file.', by: 'priyantha', to: ['janith'], day: 3, hour: 10, due: 1, unread: true, ev: [
-    ['s', 2, 12, 'janith', 'All residue results are well under the limit.'], ['f', 1, 15, 'janith', 'lab-pdf', 'Lab summary for this month'], ['p', 1, 16, 'janith', 100]] },
-  { t: 'Summarise export order status for the board', d: 'One short note: orders shipped, orders pending and any risk to the dates.', by: 'geeth', to: ['priyantha'], day: 3, hour: 14, due: 2, ev: [
-    ['s', 2, 10, 'priyantha', 'Four orders shipped, two pending. No date is at risk right now.'], ['p', 0, 9, 'priyantha', 100]] },
+  { t: 'Prepare the packing schedule for Friday', d: 'Match the truck slots with the harvest forecast.', by: 'maya', to: ['rhea', 'sam'], day: 4, hour: 9, due: 0, ev: [
+    ['s', 3, 11, 'rhea', 'Drafted and shared with the packing house.'], ['i', 2, 14, 'sam', 'crates', 'Crate stacks for the first truck'], ['p', 0, 8, 'rhea', 100]] },
+  { t: 'Monthly lab results summary', d: 'Summarise the pesticide residue and sugar results from the lab for the file.', by: 'noel', to: ['vik'], day: 3, hour: 10, due: 1, unread: true, ev: [
+    ['s', 2, 12, 'vik', 'All residue results are well under the limit.'], ['f', 1, 15, 'vik', 'lab-pdf', 'Lab summary for this month'], ['p', 1, 16, 'vik', 100]] },
+  { t: 'Summarise export order status for the board', d: 'One short note: orders shipped, orders pending and any risk to the dates.', by: 'zane', to: ['noel'], day: 3, hour: 14, due: 2, ev: [
+    ['s', 2, 10, 'noel', 'Four orders shipped, two pending. No date is at risk right now.'], ['p', 0, 9, 'noel', 100]] },
 
   /* ---------- in progress ---------- */
-  { t: 'Check irrigation in Block C', d: 'Walk the lines and report any leaks or blocked drippers.', by: 'amila', to: ['darshana', 'kavishan'], day: 6, hour: 9, due: 2, ev: [
-    ['v', 5, 10, 'darshana', 14, 'I walked rows one to ten in Block C. The water pressure is good. I will check the rest of the rows this afternoon.'], ['s', 5, 14, 'kavishan', 'Rows 1 to 10 are fine. Two drippers blocked in row 11, fixing now.'],
-    ['i', 3, 11, 'darshana', 'leak', 'Leak at the joint near row 12'], ['s', 3, 15, 'amila', 'Please fix the joint first, it wastes the most water.'], ['p', 2, 10, 'kavishan', 60]] },
-  { t: 'Transplant new seedlings in Block E', d: 'About 3,000 seedlings. Keep 40 cm between plants.', by: 'amila', to: ['kavishan', 'tharaka'], day: 5, hour: 8, due: 5, ev: [
-    ['s', 4, 11, 'kavishan', 'First 1,200 are in. Soil is moist enough.'], ['i', 3, 12, 'tharaka', 'field', 'New rows in Block E, day 2'],
-    ['v', 1, 10, 'kavishan', 17, 'We planted another eight hundred seedlings in Block E. The soil is moist and the seedlings look healthy.'], ['p', 1, 11, 'kavishan', 40]] },
-  { t: 'Install the shelving in cold room 2', d: 'Six racks, anchored to the floor, and move the stock back.', by: 'priyantha', to: ['tharaka', 'janith'], day: 4, hour: 9, due: 6, ev: [
-    ['s', 3, 12, 'janith', 'Racks delivered. Two are missing the corner brackets.'], ['s', 3, 14, 'priyantha', 'Ask the supplier to send them tomorrow.'], ['i', 1, 13, 'tharaka', 'cold', 'Room 2 with the first racks in place'], ['p', 1, 14, 'janith', 25]] },
-  { t: 'Draft the next season expansion plan', d: 'Land, water, labour and the investment needed for 10 more acres.', by: 'geeth', to: ['amila'], day: 3, hour: 10, due: 10, ev: [
-    ['s', 2, 11, 'amila', 'I have the land and water numbers. Labour costs are next.'], ['f', 1, 16, 'amila', 'plan-pdf', 'First draft of the plan'], ['p', 1, 17, 'amila', 30]] },
-  { t: 'Send soil samples to the lab', d: 'Five samples from different blocks, labelled, with the request form.', by: 'amila', to: ['janith'], day: 2, hour: 9, due: 4, ev: [
-    ['i', 1, 10, 'janith', 'drip', 'Taking the sample next to the drip line in Block B'], ['s', 1, 13, 'janith', 'Three samples collected, two more tomorrow.'], ['p', 1, 14, 'janith', 50]] },
-  { t: 'Prepare the supplier audit documents', d: 'Collect certificates, spray records and training logs for the audit.', by: 'priyantha', to: ['amila'], day: 1, hour: 11, due: 7, unread: true, ev: [
-    ['s', 1, 15, 'amila', 'I have the training logs. The spray records are still with the field team.'], ['f', 0, 9, 'amila', 'audit-pdf', 'Spray record list so far'], ['p', 0, 10, 'amila', 20]] },
-  { t: 'Update the harvest forecast sheet', d: 'Use the latest picking numbers and move the forecast for the next three weeks.', by: 'amila', to: ['darshana'], day: 2, hour: 15, due: 3, ev: [
-    ['s', 1, 9, 'darshana', 'Picking numbers are in. Working on the next three weeks.'], ['p', 1, 10, 'darshana', 45]] },
+  { t: 'Check irrigation in Block C', d: 'Walk the lines and report any leaks or blocked drippers.', by: 'maya', to: ['rhea', 'sam'], day: 6, hour: 9, due: 2, ev: [
+    ['v', 5, 10, 'rhea', 14, 'I walked rows one to ten in Block C. The water pressure is good. I will check the rest of the rows this afternoon.'], ['s', 5, 14, 'sam', 'Rows 1 to 10 are fine. Two drippers blocked in row 11, fixing now.'],
+    ['i', 3, 11, 'rhea', 'leak', 'Leak at the joint near row 12'], ['s', 3, 15, 'maya', 'Please fix the joint first, it wastes the most water.'], ['p', 2, 10, 'sam', 60]] },
+  { t: 'Transplant new seedlings in Block E', d: 'About 3,000 seedlings. Keep 40 cm between plants.', by: 'maya', to: ['sam', 'tara'], day: 5, hour: 8, due: 5, ev: [
+    ['s', 4, 11, 'sam', 'First 1,200 are in. Soil is moist enough.'], ['i', 3, 12, 'tara', 'field', 'New rows in Block E, day 2'],
+    ['v', 1, 10, 'sam', 17, 'We planted another eight hundred seedlings in Block E. The soil is moist and the seedlings look healthy.'], ['p', 1, 11, 'sam', 40]] },
+  { t: 'Install the shelving in cold room 2', d: 'Six racks, anchored to the floor, and move the stock back.', by: 'noel', to: ['tara', 'vik'], day: 4, hour: 9, due: 6, ev: [
+    ['s', 3, 12, 'vik', 'Racks delivered. Two are missing the corner brackets.'], ['s', 3, 14, 'noel', 'Ask the supplier to send them tomorrow.'], ['i', 1, 13, 'tara', 'cold', 'Room 2 with the first racks in place'], ['p', 1, 14, 'vik', 25]] },
+  { t: 'Draft the next season expansion plan', d: 'Land, water, labour and the investment needed for 10 more acres.', by: 'zane', to: ['maya'], day: 3, hour: 10, due: 10, ev: [
+    ['s', 2, 11, 'maya', 'I have the land and water numbers. Labour costs are next.'], ['f', 1, 16, 'maya', 'plan-pdf', 'First draft of the plan'], ['p', 1, 17, 'maya', 30]] },
+  { t: 'Send soil samples to the lab', d: 'Five samples from different blocks, labelled, with the request form.', by: 'maya', to: ['vik'], day: 2, hour: 9, due: 4, ev: [
+    ['i', 1, 10, 'vik', 'drip', 'Taking the sample next to the drip line in Block B'], ['s', 1, 13, 'vik', 'Three samples collected, two more tomorrow.'], ['p', 1, 14, 'vik', 50]] },
+  { t: 'Prepare the supplier audit documents', d: 'Collect certificates, spray records and training logs for the audit.', by: 'noel', to: ['maya'], day: 1, hour: 11, due: 7, unread: true, ev: [
+    ['s', 1, 15, 'maya', 'I have the training logs. The spray records are still with the field team.'], ['f', 0, 9, 'maya', 'audit-pdf', 'Spray record list so far'], ['p', 0, 10, 'maya', 20]] },
+  { t: 'Update the harvest forecast sheet', d: 'Use the latest picking numbers and move the forecast for the next three weeks.', by: 'maya', to: ['rhea'], day: 2, hour: 15, due: 3, ev: [
+    ['s', 1, 9, 'rhea', 'Picking numbers are in. Working on the next three weeks.'], ['p', 1, 10, 'rhea', 45]] },
 
   /* ---------- overdue ---------- */
-  { t: 'Repair the pump house roof', d: 'The roof leaks over the electric panel. Repair before the rains get heavier.', by: 'amila', to: ['kavishan'], day: 21, hour: 9, due: -9, ev: [
-    ['s', 20, 12, 'kavishan', 'Checked the roof. We need sheets and screws from the hardware shop.'], ['s', 17, 10, 'amila', 'Did the materials arrive?'], ['s', 17, 14, 'kavishan', 'Not yet, the shop says Monday.'],
-    ['i', 12, 11, 'kavishan', 'leak', 'Water marks next to the panel after last night rain'], ['p', 12, 12, 'kavishan', 35], ['s', 8, 9, 'amila', 'This is now late. Please tell me what you need to finish.']] },
-  { t: 'Weekly equipment inspection report', d: 'Check sprayers, pumps and the tractor and report anything that needs repair.', by: 'amila', to: ['tharaka', 'darshana'], day: 18, hour: 8, due: -6, ev: [
-    ['v', 17, 11, 'darshana', 19, 'I checked the sprayers and the water pumps. Sprayer two has a worn seal and pump three is making a noise. I have not checked the tractor yet.'], ['s', 15, 14, 'tharaka', 'Sprayer 2 has a worn seal. Ordered a spare.'], ['p', 14, 10, 'darshana', 70], ['s', 7, 10, 'amila', 'Report still missing the tractor and the pumps.']] },
-  { t: 'Reconcile the packaging material stock', d: 'Count punnets, labels and cartons and match them to the stock sheet.', by: 'priyantha', to: ['janith'], day: 15, hour: 10, due: -4, ev: [
-    ['s', 14, 12, 'janith', 'Counting punnets today, labels tomorrow.'], ['f', 11, 15, 'janith', 'stock-csv', 'Stock count so far'], ['p', 10, 16, 'janith', 55], ['s', 5, 11, 'priyantha', 'Two carton sizes are still missing from the count.']] },
-  { t: 'Submit the compliance checklist to the exporter', d: 'Complete every section, attach the certificates and submit through the exporter portal.', by: 'geeth', to: ['amila', 'priyantha'], day: 12, hour: 9, due: -2, ev: [
-    ['s', 11, 12, 'priyantha', 'Logistics sections are complete. Waiting for the farm sections.'], ['f', 7, 14, 'amila', 'compliance-pdf', 'Farm sections as a draft'], ['p', 6, 15, 'amila', 80], ['s', 3, 9, 'geeth', 'The exporter called. We must submit by this week.']] },
+  { t: 'Repair the pump house roof', d: 'The roof leaks over the electric panel. Repair before the rains get heavier.', by: 'maya', to: ['sam'], day: 21, hour: 9, due: -9, ev: [
+    ['s', 20, 12, 'sam', 'Checked the roof. We need sheets and screws from the hardware shop.'], ['s', 17, 10, 'maya', 'Did the materials arrive?'], ['s', 17, 14, 'sam', 'Not yet, the shop says Monday.'],
+    ['i', 12, 11, 'sam', 'leak', 'Water marks next to the panel after last night rain'], ['p', 12, 12, 'sam', 35], ['s', 8, 9, 'maya', 'This is now late. Please tell me what you need to finish.']] },
+  { t: 'Weekly equipment inspection report', d: 'Check sprayers, pumps and the tractor and report anything that needs repair.', by: 'maya', to: ['tara', 'rhea'], day: 18, hour: 8, due: -6, ev: [
+    ['v', 17, 11, 'rhea', 19, 'I checked the sprayers and the water pumps. Sprayer two has a worn seal and pump three is making a noise. I have not checked the tractor yet.'], ['s', 15, 14, 'tara', 'Sprayer 2 has a worn seal. Ordered a spare.'], ['p', 14, 10, 'rhea', 70], ['s', 7, 10, 'maya', 'Report still missing the tractor and the pumps.']] },
+  { t: 'Reconcile the packaging material stock', d: 'Count punnets, labels and cartons and match them to the stock sheet.', by: 'noel', to: ['vik'], day: 15, hour: 10, due: -4, ev: [
+    ['s', 14, 12, 'vik', 'Counting punnets today, labels tomorrow.'], ['f', 11, 15, 'vik', 'stock-csv', 'Stock count so far'], ['p', 10, 16, 'vik', 55], ['s', 5, 11, 'noel', 'Two carton sizes are still missing from the count.']] },
+  { t: 'Submit the compliance checklist to the exporter', d: 'Complete every section, attach the certificates and submit through the exporter portal.', by: 'zane', to: ['maya', 'noel'], day: 12, hour: 9, due: -2, ev: [
+    ['s', 11, 12, 'noel', 'Logistics sections are complete. Waiting for the farm sections.'], ['f', 7, 14, 'maya', 'compliance-pdf', 'Farm sections as a draft'], ['p', 6, 15, 'maya', 80], ['s', 3, 9, 'zane', 'The exporter called. We must submit by this week.']] },
 
   /* ---------- sent back once, now being reworked ---------- */
-  { t: 'Mark the irrigation valves on the site map', d: 'Every valve numbered on the printed site map, so night staff can find them.', by: 'amila', to: ['darshana'], day: 10, hour: 9, due: 1, ev: [
-    ['s', 9, 12, 'darshana', 'Marked the valves in A and B.'], ['p', 7, 11, 'darshana', 100], ['back', 7, 15, 'Blocks C and D are missing, and valve 14 is in the wrong place.'], ['s', 6, 10, 'darshana', 'Understood, going to C and D tomorrow.'],
-    ['i', 3, 12, 'darshana', 'sheet', 'Updated map with C and D'], ['p', 3, 13, 'darshana', 70]] },
+  { t: 'Mark the irrigation valves on the site map', d: 'Every valve numbered on the printed site map, so night staff can find them.', by: 'maya', to: ['rhea'], day: 10, hour: 9, due: 1, ev: [
+    ['s', 9, 12, 'rhea', 'Marked the valves in A and B.'], ['p', 7, 11, 'rhea', 100], ['back', 7, 15, 'Blocks C and D are missing, and valve 14 is in the wrong place.'], ['s', 6, 10, 'rhea', 'Understood, going to C and D tomorrow.'],
+    ['i', 3, 12, 'rhea', 'sheet', 'Updated map with C and D'], ['p', 3, 13, 'rhea', 70]] },
 
   /* ---------- just assigned ---------- */
-  { t: 'Send the Q4 budget draft', d: '', by: 'geeth', to: ['priyantha'], day: 0, hour: 8, due: 2, unread: true, ev: [] },
-  { t: 'Plan the weekend harvest shifts', d: 'Two shifts on Saturday, one on Sunday. Check who can work.', by: 'amila', to: ['darshana', 'janith'], day: 0, hour: 9, due: 1, unread: true, ev: [] },
-  { t: 'Arrange transport for the Sunday dispatch', d: 'Confirm the truck, the driver and the loading time with the packing house.', by: 'priyantha', to: ['tharaka'], day: 1, hour: 16, due: 1, unread: true, ev: [
-    ['s', 0, 8, 'tharaka', 'I called the transporter. Will confirm the time this afternoon.']] }
+  { t: 'Send the Q4 budget draft', d: '', by: 'zane', to: ['noel'], day: 0, hour: 8, due: 2, unread: true, ev: [] },
+  { t: 'Plan the weekend harvest shifts', d: 'Two shifts on Saturday, one on Sunday. Check who can work.', by: 'maya', to: ['rhea', 'vik'], day: 0, hour: 9, due: 1, unread: true, ev: [] },
+  { t: 'Arrange transport for the Sunday dispatch', d: 'Confirm the truck, the driver and the loading time with the packing house.', by: 'noel', to: ['tara'], day: 1, hour: 16, due: 1, unread: true, ev: [
+    ['s', 0, 8, 'tara', 'I called the transporter. Will confirm the time this afternoon.']] }
 ];
 
 function mockPdf_(title, lines) {
@@ -417,14 +428,16 @@ function mockSeed() {
   const env = makeEnv_({ ai: ai }), core = createCore(env);
   env.store.init(core.TABLES);
   const realAll = env.store.all.bind(env.store);
-  const people = realAll('Users').filter(function (u) { return u.active && !u.isAdmin; }), byName = {}, tok = {}, virtual = [];
-  people.forEach(function (u) {
-    const key = String(u.name).toLowerCase(); byName[key] = u; tok[key] = 'mock-' + Utilities.getUuid();
-    virtual.push({ tokenHash: env.sha256Hex('token:' + tok[key]), userId: u.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 });
-  });
+  const alias = mockAlias_(), people = {}, byName = {}, tok = {}, virtual = [];
+  realAll('Users').filter(function (u) { return u.active && !u.isAdmin; }).forEach(function (u) { people[String(u.name).toLowerCase()] = u; });
   const needed = {}; MOCK_TASKS_.forEach(function (s) { needed[s.by] = 1; s.to.forEach(function (n) { needed[n] = 1; }); });
-  const missing = Object.keys(needed).filter(function (n) { return !byName[n]; });
-  if (missing.length) throw new Error('These people are not in the system (the story needs them): ' + missing.join(', '));
+  const realName = function (n) { return String(alias[n] || n).toLowerCase(); };
+  const missing = Object.keys(needed).filter(function (n) { return !people[realName(n)]; });
+  if (missing.length) throw new Error('These people are not in the system (the story needs them): ' + missing.map(function (n) { return realName(n); }).join(', ') + '. Map the story names to your people with the script property MOCK_PEOPLE.');
+  Object.keys(needed).forEach(function (n) {
+    const u = people[realName(n)]; byName[n] = u; tok[n] = 'mock-' + Utilities.getUuid();
+    virtual.push({ tokenHash: env.sha256Hex('token:' + tok[n]), userId: u.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 });
+  });
   // "borrow" the accounts in memory only: nothing is written to Users or Sessions
   env.store.all = function (name) {
     const rows = realAll(name);
@@ -445,7 +458,7 @@ function mockSeed() {
   const save = function () { props.setProperty('MOCK_STATE', JSON.stringify(state)); };
   const imgs = {}, img = function (kind) {
     if (!imgs[kind]) {
-      const f = UrlFetchApp.fetch(MOCK_BASE_ + kind + '.jpg'), t = UrlFetchApp.fetch(MOCK_BASE_ + kind + '.thumb.jpg');
+      const f = UrlFetchApp.fetch(mockBase_() + kind + '.jpg'), t = UrlFetchApp.fetch(mockBase_() + kind + '.thumb.jpg');
       imgs[kind] = { b64: Utilities.base64Encode(f.getContent()), thumb: 'data:image/jpeg;base64,' + Utilities.base64Encode(t.getContent()) };
     }
     return imgs[kind];
@@ -529,7 +542,7 @@ function speedTest() {
   };
   Logger.log('Asking as ' + me.name);
   run('typed', { text: 'What needs my attention today?' });
-  const phrases = ['Which tasks are overdue and who is responsible for them?', 'Give Janith a task to check the cold room temperature by Friday.', 'ඉරිගේෂන් පද්ධතියේ ඉදිරි වැට මොනවාද කියලා කියන්න'];
+  const phrases = ['Which tasks are overdue and who is responsible for them?', 'Give Vik a task to check the cold room temperature by Friday.', 'ඉරිගේෂන් පද්ධතියේ ඉදිරි වැට මොනවාද කියලා කියන්න'];
   const samples = [];
   phrases.forEach(function (ph) { try { samples.push({ ph: ph, b64: new GeminiAi_().speak(ph).b64 }); } catch (e) { Logger.log('could not make a speech sample (' + e + ')'); } });
   try {
@@ -549,7 +562,7 @@ function speechTest() {
   env.store.all = function (name) { const rows = realAll(name); if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); }); if (name === 'Sessions') return rows.concat(virtual); return rows; };
   Logger.log('AI chain: ' + (prop_('ANTHROPIC_API_KEY') ? 'Claude, ' : '') + (prop_('GROQ_API_KEY') ? 'Groq, ' : '') + 'Gemini; asking as ' + me.name);
   ['speech1.wav', 'speech2.wav', 'speech1.wav'].forEach(function (f, i) {
-    const wav = UrlFetchApp.fetch('https://epptechtaskforce.github.io/task-app/mock/' + f.replace('.wav', '.txt')).getContentText().trim();   // the recording as base64 text (the repository refuses .wav files on purpose)
+    const wav = UrlFetchApp.fetch(mockBase_() + f.replace('.wav', '.txt')).getContentText().trim();   // the recording as base64 text (the repository refuses .wav files on purpose)
     GEMINI_LOG_.length = 0; const a = Date.now(), r = core.handle({ action: 'assistant', token: tok, history: [], wavB64: wav }), total = Date.now() - a;
     Logger.log('spoken ' + (i + 1) + ' (' + f + '): ' + total + ' ms | ' + GEMINI_LOG_.map(function (x) { return x.model + ' ' + x.code + ' ' + x.ms + 'ms'; }).join(', ') + ' | HEARD: ' + (r.ok ? r.data.heard + ' | REPLY: ' + String(r.data.reply).slice(0, 110) : r.error));
   });
