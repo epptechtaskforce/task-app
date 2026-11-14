@@ -142,18 +142,32 @@
   }
   function bubbleEl(kind, content) { return h('div', { class: 'aib-msg ' + kind }, content); }
   function dissolve(el) { if (!el || !el.parentNode) return; el.classList.add('out'); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 380); }
-  // The assistant's words: a small name tag, then the text laid out in lines (lines starting with "- " become bullets) with the
-  // words fading in one after another, so it feels like it is speaking. Very long answers skip the per-word effect.
+  // The assistant's words, made easy to scan: a name tag, a bold headline, then points. A point may start with a tag in square brackets
+  // ([late] [wait] [good] [info]) which becomes a coloured dot, and "[35%]" anywhere becomes a small progress bar. The words fade in one
+  // after another, so it feels like it is speaking (very long answers skip that). Nothing here is ever read aloud (see Speech.clean).
+  const TONES = { late: 'late', urgent: 'late', bad: 'late', overdue: 'late', blocked: 'late', wait: 'wait', watch: 'wait', pending: 'wait', good: 'good', ok: 'good', done: 'good', info: 'info', note: 'info' };
   function botCard(text) {
     const lines = String(text).split('\n').filter(function (l) { return l.trim(); });
     const total = String(text).split(/\s+/).length, fancy = total <= 140, step = Math.max(14, Math.min(46, 1500 / Math.max(1, total)));
-    let n = 0;
+    const bulletRe = /^\s*[-•]\s+/;
+    const hasBullets = lines.some(function (l) { return bulletRe.test(l); });
+    let n = 0, headDone = false;
+    const delay = function () { return 'animation-delay:' + Math.min(Math.round(n++ * step), 1800) + 'ms'; };
     const body = h('div', { class: 'aib-body' }, lines.map(function (line) {
-      const bullet = /^\s*[-•]\s+/.test(line), note = /^\(Note:/.test(line.trim()), words = line.replace(/^\s*[-•]\s+/, '').split(/(\s+)/);
-      const span = h('span', { class: 'txt' }, fancy ? words.map(function (w) {
-        return /^\s*$/.test(w) ? document.createTextNode(w || '') : h('span', { class: 'w', style: 'animation-delay:' + Math.min(Math.round(n++ * step), 1800) + 'ms' }, w);
-      }) : line.replace(/^\s*[-•]\s+/, ''));
-      return h('div', { class: 'aib-line' + (bullet ? ' li' : '') + (note ? ' note' : '') }, bullet ? h('i', { class: 'pt' }) : null, span);
+      const bullet = bulletRe.test(line), note = /^\(Note:/.test(line.trim());
+      let src = line.replace(bulletRe, ''), tone = '';
+      const tag = /^\[([a-z]+)\]\s*/i.exec(src);
+      if (tag && TONES[tag[1].toLowerCase()]) { if (bullet) tone = TONES[tag[1].toLowerCase()]; src = src.slice(tag[0].length); }
+      const head = !bullet && !note && hasBullets && !headDone; if (head) headDone = true;
+      const kids = [];
+      src.split(/(\[\d{1,3}%\])/).forEach(function (part) {
+        const pm = /^\[(\d{1,3})%\]$/.exec(part);
+        if (pm) { const pc = Math.min(100, Number(pm[1])); kids.push(h('span', { class: 'aib-pct', style: '--p:' + pc + '%;' + delay(), 'aria-label': pc + ' percent' }, h('span', { class: 'bar' }, h('i')), h('b', null, pc + '%'))); return; }
+        if (!part) return;
+        if (fancy) part.split(/(\s+)/).forEach(function (w) { kids.push(/^\s*$/.test(w) ? document.createTextNode(w || '') : h('span', { class: 'w', style: delay() }, w)); });
+        else kids.push(document.createTextNode(part));
+      });
+      return h('div', { class: 'aib-line' + (bullet ? ' li' : '') + (note ? ' note' : '') + (head ? ' head' : '') + (tone ? ' tone-' + tone : '') }, bullet ? h('i', { class: 'pt' }) : null, h('span', { class: 'txt' }, kids));
     }));
     return [h('div', { class: 'aib-who' }, h('span', { class: 'aib-mini' }, icon('sparkles', 11)), 'Assistant'), body];
   }
@@ -311,7 +325,7 @@
     if (r.confirm === 'yes' && B.pending.length) return confirmPending();           // it says "Done" itself
     putBot(r.reply);
     free.forEach(function (a) { if (a.type === 'show_page') B.App.showPage(a); else if (a.type === 'fill_task') B.App.fillTask(a); else openTask(a); });
-    say(String(r.reply).split('\n\n(Note:')[0], my, r.reply);          // the whole answer is read aloud, word for word
+    say(r.spoken || String(r.reply).split('\n\n(Note:')[0], my, r.reply);          // the whole answer is read aloud (without the picture tags)
   }
   function say(text, my, shown) {
     const again = function () {                                                      // it asked something: listen for the answer

@@ -1014,6 +1014,10 @@ function createCore(env) {
     if (!t || t.split(' ').length > 4 || /\b(change|edit|instead|make|shorter|longer|add)\b/.test(t)) return false;
     return /^(no|nope|nah|cancel|stop|delete|don't|dont|do not|never mind|nevermind|leave it|forget it|scrap that|discard)\b/.test(t);
   }
+  // The reply as it is spoken: the picture tags ([late], [35%]) are for the screen only.
+  function speakable(text) {
+    return String(text || '').replace(/\[(?:late|urgent|bad|overdue|blocked|wait|watch|pending|good|ok|done|info|note)\]\s*/gi, '').replace(/\[(\d{1,3})%\]/g, '$1 percent');
+  }
   // Does this reply claim that something was sent / done?
   function claimsDone(reply) {
     const t = String(reply || '').split('\n\n(Note:')[0].trim().slice(0, 200);
@@ -1072,7 +1076,7 @@ function createCore(env) {
     // Something is still waiting for the person's OK and nothing has been done: the answer must not say it has been
     if (pending.length && !decided && !actions.length && claimsDone(reply)) reply = 'That is not done yet. Say yes, or tap the button, to go ahead.';
     // what is said aloud is the whole answer, word for word (the note about actions that could not be done stays on screen only)
-    const spoken = reply.split('\n\n(Note:')[0].trim();
+    const spoken = speakable(reply.split('\n\n(Note:')[0].trim());
     return { heard: clip(raw.heard, LIMITS.maxAssistText).trim(), reply: reply, spoken: spoken, confirm: confirm, actions: actions };
   } };
 

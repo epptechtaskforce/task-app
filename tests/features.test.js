@@ -442,3 +442,16 @@ test('assistant summaries: the AI summary shown at the top of a task is what the
   app.ok('assistant', s.tok.mgr, { text: 'summary of the finished gate job', archivedId: gate.id });
   c = context(); assert.ok(c.includes('AI SUMMARY (exactly what the task page shows') && c.includes('blockers: Waiting for the tiles'));
 });
+
+test('points and pictures: the reply keeps its tags for the screen, the spoken version never reads them', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  ai.reply = () => ({ reply: 'Two things need you.\n- [late] Pump house roof [35%] is 3 days late\n- [wait] Gate lock [100%] waits for your approval\n- [good] Fence is on track', actions: [] });
+  const r = app.ok('assistant', s.tok.mgr, { text: 'what needs me' });
+  assert.ok(r.reply.includes('[late] Pump house roof [35%]') && r.reply.includes('[wait]') && r.reply.includes('[good]'));   // drawn by the screen
+  assert.equal(/\[[a-z]+\]|\[\d+%\]/.test(r.spoken), false);                                                                    // never read aloud
+  assert.ok(r.spoken.includes('Pump house roof 35 percent is 3 days late'));
+  assert.ok(r.spoken.includes('Two things need you.'));
+  // the model is told how to write them
+  const adapters = require('fs').readFileSync(require('path').join(__dirname, '..', 'backend', 'Adapters.gs'), 'utf8');
+  assert.ok(adapters.includes('FORMAT: the reply is drawn as points') && adapters.includes('[late]') && adapters.includes('[35%]'));
+});

@@ -164,7 +164,10 @@
           }
         }
         return { heard: input.audio ? '(demo) voice is not transcribed in demo mode' : '', confirm: '', actions: [],
-          reply: '(Demo) The real assistant answers from your tasks. Right now you have ' + titles.length + ' open task' + (titles.length === 1 ? '' : 's') + (late ? ', ' + late + ' overdue' : '') + (titles.length ? ': ' + titles.slice(0, 4).join('; ') + '.' : '.') };
+          reply: '(Demo) You have ' + titles.length + ' open task' + (titles.length === 1 ? '' : 's') + (late ? ', ' + late + ' overdue' : '') + '.' + lines.slice(0, 4).map(function (l) {
+            const t = (/"([^"]*)"/.exec(l) || [])[1], pc = (/in progress, (\d+)%/.exec(l) || [])[1];
+            return '\n- [' + (l.indexOf('OVERDUE') >= 0 ? 'late' : l.indexOf('WAITING FOR APPROVAL') >= 0 ? 'wait' : 'good') + '] ' + t + (pc ? ' [' + pc + '%]' : '');
+          }).join('') };
       },
       briefing: function (input) {
         const lines = String(input.context).split(/\r?\n/).filter(function (l) { return l.indexOf('TASK id=') === 0; });

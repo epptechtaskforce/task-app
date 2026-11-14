@@ -965,3 +965,16 @@ h1 { letter-spacing: -.025em; }
 .logomark { display: block; overflow: visible; }
 .lm-fruit { fill: #fff; } .lm-leaf { fill: #9be37a; } .lm-tick { fill: none; stroke: var(--brand-to); stroke-width: 42; stroke-linecap: round; stroke-linejoin: round; }
 :root[data-theme="dark"] .lm-tick { stroke: var(--brand-to); }
+
+/* the assistant's answer as points: a bold headline, coloured dots for meaning, a small bar for progress */
+.aib-line.head { font-weight: 750; margin-bottom: .3rem; }
+.aib-line.li .txt { flex: 1; min-width: 0; }
+.aib-line.tone-late { --tc: var(--c-late); } .aib-line.tone-wait { --tc: var(--c-wait); } .aib-line.tone-good { --tc: var(--c-ok); } .aib-line.tone-info { --tc: var(--c-active); }
+.aib-line[class*="tone-"] .pt { width: 9px; height: 9px; margin-top: .55em; background: var(--tc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 24%, transparent); }
+.aib-pct { display: inline-flex; align-items: center; gap: .35rem; vertical-align: middle; margin: 0 .2rem; opacity: 0; animation: aibword .42s ease forwards; }
+.aib-pct .bar { width: 46px; height: 7px; border-radius: 99px; overflow: hidden; background: color-mix(in srgb, var(--tc, var(--accent)) 18%, var(--line)); }
+.aib-pct .bar i { display: block; height: 100%; width: var(--p); border-radius: inherit; background: var(--tc, var(--accent)); transform-origin: left; animation: aibgrow .8s var(--ease) .1s both; }
+.aib-pct b { font-size: .78rem; font-weight: 800; color: var(--tc, var(--accent)); }
+@keyframes aibgrow { from { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) { .aib-pct { animation: none; opacity: 1; } .aib-pct .bar i { animation: none; } }
+.aib-line.li .aib-pct { display: flex; margin: .22rem 0 .1rem; }
