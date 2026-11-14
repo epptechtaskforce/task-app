@@ -66,6 +66,8 @@ test('shareFolder: an address without a Google account is refused in plain words
   fake.fetch.fail = 'You are trying to invite x@example.com. Since there is no Google account associated with this email address, you must check the "Notify people" box to invite this recipient.';
   assert.throws(() => a.shareFolder({ person: 'Kamala', email: 'x@example.com' }), /no Google account\. Use a Gmail or Google Workspace address/);
   assert.equal(fake.epp.children.Kamala.viewers.size, 0);
+  fake.fetch.fail = 'Forbidden. User message: "Sorry, you cannot share with x@example.com because they do not have a Google Account."';   // the wording Google really uses
+  assert.throws(() => a.shareFolder({ person: 'Kamala', email: 'x@example.com' }), /no Google account\. Use a Gmail or Google Workspace address/);
   fake.fetch.fail = 'Some other Google problem';
   assert.throws(() => a.shareFolder({ person: 'Kamala', email: 'y@gmail.com' }), /Some other Google problem/);
 });

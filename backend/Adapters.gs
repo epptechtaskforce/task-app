@@ -420,7 +420,7 @@ DriveArchive_.prototype.shareFolder = function (o) {
   if (folder.getSharingAccess() !== DriveApp.Access.PRIVATE) folder.setSharing(DriveApp.Access.PRIVATE, P.NONE);      // never open to anyone with a link
   try { driveApi_('post', 'files/' + folder.getId() + '/permissions', 'sendNotificationEmail=false&supportsAllDrives=false', { role: 'reader', type: 'user', emailAddress: email }); }   // 'reader' = Viewer; no email is sent
   catch (e) {
-    if (/no Google account|invitation|notify/i.test(String(e && e.message || e))) throw new Error('That email address has no Google account. Use a Gmail or Google Workspace address.');
+    if (/do not have a Google Account|no Google account|invitation|notify/i.test(String(e && e.message || e))) throw new Error('That email address has no Google account. Use a Gmail or Google Workspace address.');
     throw e;
   }
   if (folder.getAccess(email) !== P.VIEW) { try { folder.removeViewer(email); } catch (e) { /* nothing more to undo */ } throw new Error('Google Drive did not record view-only access, so nothing was shared'); }
