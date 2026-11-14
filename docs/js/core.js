@@ -32,6 +32,8 @@
  *   env.archive.saveZip({person, zipName, files:[{name,content,mime}], moves:[{id,name}], trashIds}) -> {storage:'zip', path, fileId, folderId}   (one zip in the folder of the person who assigned the task)
  *   env.archive.read({storage, path, fileId}) -> JSON text of task.json   (only for archives made before the zip format)
  *   env.archive.readZip({fileId, path}, ['Summary.txt','Conversation.txt']) -> {name: text}   (text files inside a task's zip)
+ *   env.archive.shareFolder({person, email}) -> {folderId}   (view-only access to the ONE folder EPP/<person>; throws if that would be wider)
+ *   env.archive.unshareFolder({person, email})
  *   env.ai.transcribe(b64, mime, hints) -> {english, language, key_points}   (always English; Sinhala is translated)
  *   env.ai.summarize(input)        -> {summary_en, progress_note, health, blockers, next_steps}
  *   env.ai.assistant(input)        -> {heard, reply, confirm, actions[]}      (the private secretary; see A.assistant)
@@ -78,6 +80,7 @@ const TABLES = {
   Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n' } },
   Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n' } },
   Reads:        { key: 'id', cols: { id: 's', taskId: 's', userId: 's', lastReadAt: 'n' } },
+  DriveAccess:  { key: 'userId', cols: { userId: 's', email: 's', status: 's', requestedAt: 'n', grantedAt: 'n', grantedBy: 's', folderId: 's' } },   // who may read their own archive folder in Google Drive
   Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
   Attachments:  { key: 'id', cols: { id: 's', taskId: 's', name: 's', mime: 's', size: 'n', fileId: 's', thumb: 's', w: 'n', h: 'n', createdAt: 'n' } },   // id = the id of the message that carries the file
   Briefings:    { key: 'userId', cols: { userId: 's', sig: 's', at: 'n', data: 'j' } },                                                               // the last home-page overview made for each person
@@ -1130,6 +1133,73 @@ function createCore(env) {
     return { briefing: data, at: at, stale: false };
   } };
 
+  /* ---------------- Google Drive access to one's own archive folder ---------------- */
+  // Completed tasks are zipped into "EPP/<person who assigned>" in the Drive of the app's account. A person who assigns tasks can ask to read and
+  // download that ONE folder with their own Google account; the admin allows or withdraws it. The app only ever shares that folder, as a Viewer
+  // (open and download: no changing, deleting, moving or sharing), never by link, and never the EPP folder or the rest of the Drive. The Google
+  // email can only be typed by the person themself (the admin can allow or refuse it, not replace it), so the admin cannot read someone else's archive.
+  const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+  function assignsTasks(ctx, userId) { const users = usersById(ctx); return ctx.rows('Links').some(function (l) { return l.fromId === userId && users[l.toId] && users[l.toId].active; }); }
+  function driveRowOf(ctx, userId) { return ctx.rows('DriveAccess').filter(function (r) { return r.userId === userId; })[0] || null; }
+  function driveView(r) { return r ? { status: r.status, email: r.email, folderUrl: r.status === 'granted' && r.folderId ? 'https://drive.google.com/drive/folders/' + r.folderId : '' } : { status: '', email: '', folderUrl: '' }; }
+
+  A.driveStatus = { run: function (ctx, user) { return Object.assign({ eligible: assignsTasks(ctx, user.id) }, driveView(driveRowOf(ctx, user.id))); } };
+
+  A.requestDriveAccess = { run: function (ctx, user, req) {
+    const email = String(req.email || '').trim().toLowerCase();
+    if (!EMAIL_RE.test(email) || email.length > 120) throw fail('VALIDATION', 'Enter the Google account email you will use, for example name@gmail.com');
+    if (!assignsTasks(ctx, user.id)) throw fail('VALIDATION', 'Only people who give tasks to others have an archive folder in Google Drive');
+    return ctx.write(function () {
+      const row = driveRowOf(ctx, user.id);
+      if (row && row.status === 'granted') throw fail('VALIDATION', 'You already have access. Ask the admin to withdraw it first if the Google account has to change');
+      if (row) update(ctx, 'DriveAccess', user.id, { email: email, status: 'requested', requestedAt: env.now() });
+      else insert(ctx, 'DriveAccess', { userId: user.id, email: email, status: 'requested', requestedAt: env.now(), grantedAt: 0, grantedBy: '', folderId: '' });
+      audit(ctx, user, 'drive.request', user.username);
+      return driveView(driveRowOf(ctx, user.id));
+    });
+  } };
+
+  A.adminDriveList = { admin: true, run: function (ctx) {
+    const rows = {}; ctx.rows('DriveAccess').forEach(function (r) { rows[r.userId] = r; });
+    const order = { requested: 0, granted: 1, '': 2 };
+    return { people: ctx.rows('Users').filter(function (u) { return u.active && !u.isAdmin && (assignsTasks(ctx, u.id) || rows[u.id]); }).map(function (u) {
+      const v = driveView(rows[u.id]);
+      return { userId: u.id, name: u.name, jobTitle: brief(ctx, u.id).jobTitle, status: v.status, email: v.email, folder: 'EPP / ' + niceName(u.name, 60) };
+    }).sort(function (a, b) { return order[a.status] - order[b.status] || a.name.localeCompare(b.name); }) };
+  } };
+
+  A.adminDriveGrant = { admin: true, run: function (ctx, user, req) {
+    const u = usersById(ctx)[req.userId];
+    if (!u || !u.active || u.isAdmin) throw fail('NOT_FOUND', 'Person not found');
+    const row = driveRowOf(ctx, u.id);
+    if (!row || row.status !== 'requested') throw fail('VALIDATION', 'This person has not asked for access (the Google email has to come from them)');
+    if (!assignsTasks(ctx, u.id)) throw fail('VALIDATION', 'Only people who give tasks to others have an archive folder');
+    if (!env.archive.shareFolder) throw fail('ERROR', 'Sharing is not available here');
+    let res;
+    try { res = env.archive.shareFolder({ person: niceName(u.name, 60), email: row.email }); }
+    catch (e) { env.log('drive grant failed: ' + e); throw fail('VALIDATION', 'Google Drive did not allow it: ' + clip(String(e && e.message || e), 160)); }
+    return ctx.write(function () {
+      update(ctx, 'DriveAccess', u.id, { status: 'granted', grantedAt: env.now(), grantedBy: user.name, folderId: res.folderId });
+      audit(ctx, user, 'drive.grant', u.username);
+      return { ok: true };
+    });
+  } };
+
+  // withdraws access that was given, or refuses a request that is waiting
+  A.adminDriveRevoke = { admin: true, run: function (ctx, user, req) {
+    const u = usersById(ctx)[req.userId], row = u && driveRowOf(ctx, u.id);
+    if (!row) throw fail('NOT_FOUND', 'Nothing to withdraw');
+    if (row.status === 'granted' && env.archive.unshareFolder) {
+      try { env.archive.unshareFolder({ person: niceName(u.name, 60), email: row.email }); }
+      catch (e) { env.log('drive revoke failed: ' + e); throw fail('VALIDATION', 'Google Drive could not withdraw the access: ' + clip(String(e && e.message || e), 160)); }
+    }
+    return ctx.write(function () {
+      removeWhere(ctx, 'DriveAccess', function (r) { return r.userId === u.id; });
+      audit(ctx, user, row.status === 'granted' ? 'drive.revoke' : 'drive.refuse', u.username);
+      return { ok: true };
+    });
+  } };
+
   /* ---------------- history / archive ---------------- */
 
   // Archives made before the zip format keep a task.json the app can read; a zip is for people to open in Drive, so the app keeps only the index row.
@@ -1157,11 +1227,12 @@ function createCore(env) {
     if (idx.storage === 'zip') {
       // The page for a task archived as a zip: the main details, from the index row, and exactly where to find the rest.
       const ids = idx.participantIds || [], parts = String(idx.path || '').split('/');
+      const access = driveRowOf(ctx, user.id), canOpen = idx.creatorId === user.id && !!access && access.status === 'granted';   // only the person whose folder it is, once the admin allowed it
       return {
         version: 3, detailsOnly: true, id: idx.id,
         task: { id: idx.id, title: idx.title, description: idx.purpose || '', creator: brief(ctx, idx.creatorId), assignees: ids.slice(1).map(function (id) { return brief(ctx, id); }), createdAt: idx.createdAt, closedAt: idx.closedAt, approvedBy: idx.creatorName, summary: idx.summaryText ? { summary_en: idx.summaryText } : null },
         documents: idx.docs || [], messageCount: idx.messageCount,
-        archive: { code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: parts[1] || '', zipName: parts[2] || '', folderUrl: idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '' }
+        archive: { code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id }
       };
     }
     const doc = readArchiveDoc(idx);   // the stored copy keeps what the AI understood from voice messages; the browser only gets the audio

@@ -193,7 +193,7 @@
    */
   function createMemoryEnv(options) {
     options = options || {};
-    const files = {}, archives = {}, folders = {}, counters = {};
+    const files = {}, archives = {}, folders = {}, shares = {}, counters = {};
     let counter = 0;
     let timer = null, filesDirty = false;
     const saveNow = function (s) {
@@ -249,6 +249,9 @@
           folders['EPP/' + o.person + '/' + o.zipName] = zip;
           return { storage: 'zip', path: 'EPP/' + o.person + '/' + o.zipName, fileId: id, folderId: 'FD' + randomHex(6) };
         },
+        // like Drive: view-only access to one person's folder, remembered here so tests can see exactly what was shared
+        shareFolder: function (o) { shares[o.person] = shares[o.person] || {}; shares[o.person][o.email] = 'VIEW'; return { folderId: 'FD' + String(o.person).replace(/[^A-Za-z0-9]/g, '').slice(0, 10) }; },
+        unshareFolder: function (o) { if (shares[o.person]) delete shares[o.person][o.email]; },
         readZip: function (idx, wanted) {
           const z = folders[idx.path]; if (!z) throw new Error('Archive not found');
           const out = {}; wanted.forEach(function (n) { if (z.files[n] !== undefined) out[n] = z.files[n]; });
@@ -257,7 +260,7 @@
         read: function (idx) { if (!archives[idx.fileId]) throw new Error('Archive not found'); return archives[idx.fileId]; }
       },
       ai: options.ai || fakeAi(),
-      _files: files, _archives: archives, _folders: folders
+      _files: files, _archives: archives, _folders: folders, _shares: shares
     };
     return env;
   }
