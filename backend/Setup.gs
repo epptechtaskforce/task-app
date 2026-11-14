@@ -70,16 +70,40 @@ function installTriggers() {
   Logger.log('Nightly job scheduled for about 02:00 (script time zone: ' + Session.getScriptTimeZone() + ').');
 }
 
-function nightlyJob() {
-  const props = PropertiesService.getScriptProperties();
-  // Backup: copy the database sheet, keep the newest 14 copies.
-  const folder = DriveApp.getFolderById(props.getProperty('BACKUP_FOLDER_ID'));
-  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-  DriveApp.getFileById(props.getProperty('SPREADSHEET_ID')).makeCopy('TaskApp backup ' + stamp, folder);
+// Backups in the Backups folder. Each kind rotates on its own (by its name), so one kind never pushes out another, nor a safety copy made by hand.
+function backupRotate_(folder, prefix, keep) {
   const files = [], it = folder.getFiles();
-  while (it.hasNext()) files.push(it.next());
-  files.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
-  files.slice(14).forEach(function (f) { f.setTrashed(true); });
+  while (it.hasNext()) { const f = it.next(); if (f.getName().indexOf(prefix) === 0) files.push(f); }
+  files.sort(function (x, y) { return y.getDateCreated() - x.getDateCreated(); });
+  files.slice(keep).forEach(function (f) { f.setTrashed(true); });
+  return Math.max(0, files.length - keep);
+}
+function backupOnce_(folder, source, name) {          // one copy per name: running the job again the same day makes no second copy
+  if (folder.getFilesByName(name).hasNext()) return false;
+  source.makeCopy(name, folder); return true;
+}
+
+// Every night (about 02:00): backups, then the clean-up of the live database.
+//  - the live database sheet: a copy each night, the newest 14 kept;
+//  - the FULL HISTORY sheet (the permanent record of every completed task): a copy each night, the newest 14 kept, and the first copy of each month kept for 12 months,
+//    so a mistake that goes unnoticed for weeks can still be undone;
+//  - then maintenance (expired sessions, the full-history repair, History older than a year leaves the live sheet).
+// (`when` is only for tests; a trigger passes an event object.)
+function nightlyJob(when) {
+  const now = when && typeof when.getTime === 'function' ? when : new Date(), props = PropertiesService.getScriptProperties();
+  const folder = DriveApp.getFolderById(props.getProperty('BACKUP_FOLDER_ID')), day = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  backupOnce_(folder, DriveApp.getFileById(props.getProperty('SPREADSHEET_ID')), 'TaskApp backup ' + day);
+  backupRotate_(folder, 'TaskApp backup ', 14);
+  try {
+    const id = makeEnv_({}).history.fileId();
+    if (id) {
+      const src = DriveApp.getFileById(id);
+      backupOnce_(folder, src, 'EPP History backup ' + day);
+      backupRotate_(folder, 'EPP History backup ', 14);
+      backupOnce_(folder, src, 'EPP History monthly ' + day.slice(0, 7));
+      backupRotate_(folder, 'EPP History monthly ', 12);
+    } else Logger.log('No full history sheet yet: nothing to back up.');
+  } catch (e) { Logger.log('Backup of the full history sheet FAILED (maintenance goes on): ' + e); }
   Logger.log('Maintenance: ' + JSON.stringify(getCore_().maintenance()));
 }
 
