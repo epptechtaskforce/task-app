@@ -109,6 +109,14 @@ python -m http.server 8765 --directory docs   # then http://localhost:8765/?demo
   Never put company names, usernames, URLs, keys or data in `main`. `HANDOVER.md` is deliberately git-ignored.
 - Editing tips for AI assistants on Windows: write large files with the file-write tool; do not build JS/regex with backslashes inside shell heredocs (they get mangled).
 
+## Look and feel
+
+- **Logo:** a berry with leaves and a tick (`docs/icon.svg`; `icon-maskable.svg` has extra safe margin). The PNGs (`icon-192/512`, `icon-maskable-512`, `apple-touch-icon`) are rendered from them
+  (headless Edge/Chrome screenshot of the SVG at the target size). In the app the same drawing is `UI.logoMark(size)`, coloured by `.logomark` / `.lm-*` rules so it follows the appearance.
+- **Appearance colours** (Account > Appearance: berry, ocean, forest, sunset, violet; light/dark) work only through `--accent`, `--accent-strong`, `--accent-2`, `--accent-soft`, `--brand-from`, `--brand-to`.
+  **Never write a berry/pink colour literal in a style rule** (use `var(--accent)` or `color-mix(in srgb, var(--accent) 40%, transparent)` for glows and shadows); `tests/theme.test.js` fails if you do.
+  Red for late/listening/unread is meaning, not decoration, and is allowed. `UI.accent` also tints the phone's `theme-color` meta tag and the confetti.
+
 ## Conventions
 
 - Plain ES2015+ JavaScript, no build step, no framework, no dependencies. All DOM text goes through `h()` / `textContent` (never `innerHTML` with user data).

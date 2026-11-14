@@ -89,6 +89,14 @@
     stop: ['M6 6h12v12H6z']
   };
   // opts.fill: solid shape (play/pause). opts.cls: extra class. Decorative by default (aria-hidden).
+  // The app's logo (a berry with leaves and a tick), drawn in the colours of the chosen appearance (see .logomark in the CSS).
+  function logoMark(size) {
+    const s = svg('svg', { viewBox: '86 50 340 410', width: size || 20, height: size || 20, 'class': 'logomark', 'aria-hidden': 'true', focusable: 'false' });
+    s.appendChild(svg('path', { 'class': 'lm-fruit', d: 'M256 168C322 148 396 178 402 252 408 334 338 408 256 446 174 408 104 334 110 252 116 178 190 148 256 168Z' }));
+    ['M256 176C226 134 176 122 138 138 160 184 214 198 256 176Z', 'M256 176C286 134 336 122 374 138 352 184 298 198 256 176Z', 'M256 180C238 138 242 100 262 70 284 102 282 142 256 180Z'].forEach(function (d) { s.appendChild(svg('path', { 'class': 'lm-leaf', d: d })); });
+    s.appendChild(svg('path', { 'class': 'lm-tick', d: 'M180 286l50 50 102-112' }));
+    return s;
+  }
   function icon(name, size, opts) {
     opts = opts || {};
     const s = svg('svg', { viewBox: '0 0 24 24', width: size || 20, height: size || 20, 'class': 'icon' + (opts.cls ? ' ' + opts.cls : ''), 'aria-hidden': 'true', focusable: 'false',
@@ -338,7 +346,8 @@
     const W = w.innerWidth, H = w.innerHeight; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
     document.body.appendChild(cv);
     const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
-    const colors = ['#c0397f', '#8a2b66', '#f6b73c', '#3fb6a8', '#5b8def', '#ff7a7a', '#7ed957'];
+    const cs = getComputedStyle(document.documentElement), tone = function (v, d) { return (cs.getPropertyValue(v) || '').trim() || d; };
+    const colors = [tone('--accent', '#a0246a'), tone('--accent-2', '#d0408c'), tone('--accent-strong', '#7d1a52'), '#f6b73c', '#3fb6a8', '#5b8def', '#ff7a7a', '#7ed957'];
     const ox = opts.x === undefined ? W / 2 : opts.x, oy = opts.y === undefined ? H * 0.35 : opts.y;
     const parts = [];
     for (let i = 0; i < (opts.count || 110); i++) {
@@ -619,17 +628,25 @@
     const v = themeGet(), de = document.documentElement;
     if (v === 'auto') de.removeAttribute('data-theme'); else de.setAttribute('data-theme', v);
   }
-  function themeSet(v) { try { if (v === 'auto') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage blocked */ } themeApply(); }
+  function themeSet(v) { try { if (v === 'auto') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage blocked */ } themeApply(); tintBar(); }
 
   const ACCENT_KEY = 'taskapp.accent';
   const ACCENTS = [['berry', 'Berry', '#a0246a', '#d0408c'], ['ocean', 'Ocean', '#1769c9', '#2fa8f5'], ['forest', 'Forest', '#1f8a4c', '#3cc77a'], ['sunset', 'Sunset', '#d9622b', '#ff9a4d'], ['violet', 'Violet', '#6a3fd0', '#9b7cf2']];
   function accentGet() { try { return localStorage.getItem(ACCENT_KEY) || 'berry'; } catch (e) { return 'berry'; } }
-  function accentApply() { const v = accentGet(); if (v === 'berry') document.documentElement.removeAttribute('data-accent'); else document.documentElement.setAttribute('data-accent', v); }
+  function accentApply() { const v = accentGet(); if (v === 'berry') document.documentElement.removeAttribute('data-accent'); else document.documentElement.setAttribute('data-accent', v); tintBar(); }
+  // the colour of the phone's address bar / status bar follows the appearance too
+  function tintBar() {
+    try {
+      const m = document.querySelector('meta[name="theme-color"]'); if (!m) return;
+      const c = getComputedStyle(document.documentElement).getPropertyValue('--brand-from').trim();
+      if (c) m.setAttribute('content', c);
+    } catch (e) { /* not important */ }
+  }
   function accentSet(v) { try { if (v === 'berry') localStorage.removeItem(ACCENT_KEY); else localStorage.setItem(ACCENT_KEY, v); } catch (e) { /* storage blocked */ } accentApply(); }
 
   w.h = h;
   w.UI = { h: h, svg: svg, clear: clear, icon: icon, setIcon: setIcon, date: date, time: time, dateTime: dateTime, dayLabel: dayLabel, ago: ago, duration: duration, dueInfo: dueInfo, greeting: greeting, ymd: ymd,
-    toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
+    logoMark: logoMark, toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
     chip: chip, initials: initials, avatar: avatar, avatarStack: avatarStack, hydrateAvatars: hydrateAvatars, pickPhoto: pickPhoto, reduced: reduced,
     skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply }, accent: { get: accentGet, set: accentSet, apply: accentApply, list: ACCENTS },
     fileIcon: fileIcon, fileKind: fileKind, fmtSize: fmtSize, prepareFile: prepareFile, attachMenu: attachMenu, b64Url: b64Url, saveUrl: saveUrl, lightbox: lightbox, MAX_FILE_BYTES: MAX_FILE_BYTES };

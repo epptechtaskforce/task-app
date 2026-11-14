@@ -62,7 +62,7 @@
   function names(list) { return list.map(function (a) { return a.name; }); }
 
   // The four states a task can be in, for the donut chart and its filters (a task is in exactly one).
-  const BUCKETS = [['late', 'Overdue', '#ef5b6c'], ['wait', 'Awaiting approval', '#f6b73c'], ['active', 'In progress', '#5b8def'], ['new', 'Not started', '#a99bc8']];
+  const BUCKETS = [['late', 'Overdue', '#ef5b6c'], ['wait', 'Awaiting approval', '#f6b73c'], ['active', 'In progress', '#5b8def'], ['new', 'Not started', '#98a0b6']];
   function bucket(t) {
     const due = UI.dueInfo(t.dueDate, t.status);
     if (due && due.cls === 'bad') return 'late';
@@ -107,7 +107,7 @@
 
     const sideLink = function (n) { return h('a', { href: n.href, class: (n.k === active ? 'active' : '') + (n.k === 'assistant' ? ' ai-link' : ''), 'data-nav': n.k, 'aria-current': n.k === active ? 'page' : false }, icon(n.ic, 20), n.label, n.k === 'tasks' ? unreadBadge() : null); };
     const sidebar = h('aside', { class: 'sidebar' },
-      h('div', { class: 'side-brand' }, h('span', { class: 'logo' }, icon('checkCircle', 20)), h('span', null, S.company || 'Task Manager')),
+      h('div', { class: 'side-brand' }, h('span', { class: 'logo' }, UI.logoMark(24)), h('span', null, S.company || 'Task Manager')),
       S.canAssign ? h('a', { class: 'btn primary side-new', href: '#/new' }, icon('plus', 18), 'New task') : null,
       h('nav', { class: 'side-nav', 'aria-label': 'Main' },
         m.work.length ? [h('div', { class: 'side-label' }, 'Work'), m.work.map(sideLink)] : null,
@@ -118,7 +118,7 @@
 
     const titleEl = h('div', { class: 'brand' }, opts.title || S.company || 'Task Manager');
     const mtop = h('header', { class: 'mtop' }, h('div', { class: 'mtop-in' },
-      opts.back ? h('a', { class: 'icon-btn', href: opts.back, 'aria-label': 'Back' }, icon('back', 24)) : h('span', { class: 'logo' }, icon('checkCircle', 20)),
+      opts.back ? h('a', { class: 'icon-btn', href: opts.back, 'aria-label': 'Back' }, icon('back', 24)) : h('span', { class: 'logo' }, UI.logoMark(24)),
       titleEl,
       opts.back ? null : h('a', { class: 'icon-btn', href: '#/account', 'aria-label': 'My profile' }, UI.avatar(u.name, 'sm', u.id))));
 
@@ -153,7 +153,7 @@
   // art: an illustration for the top of the page (the sign-in page); other pages get a plain logo
   function authPage(heading, sub, body, art) {
     mount(h('div', { class: 'auth' },
-      h('div', { class: 'auth-hero' }, art ? UI.illustration('hero') : h('div', { class: 'logo', style: 'width:60px;height:60px;border-radius:18px;margin:0 auto .8rem' }, icon('checkCircle', 32)), heading, h('p', null, sub)),
+      h('div', { class: 'auth-hero' }, art ? UI.illustration('hero') : h('div', { class: 'logo', style: 'width:60px;height:60px;border-radius:18px;margin:0 auto .8rem' }, UI.logoMark(40)), heading, h('p', null, sub)),
       h('div', { class: 'auth-card' }, body)));
   }
 
@@ -341,7 +341,7 @@
     const subLine = h('p', { class: 'sub' }, ' ');
     shell(h('div', null,
       h('div', { class: 'hero2' },
-        h('div', { class: 'hero2-top' }, h('span', { class: 'logo' }, icon('checkCircle', 20)), h('span', { class: 'nm' }, S.company || 'Task Manager'), h('a', { href: '#/account', 'aria-label': 'My profile' }, UI.avatar(S.user.name, 'sm', S.user.id))),
+        h('div', { class: 'hero2-top' }, h('span', { class: 'logo' }, UI.logoMark(24)), h('span', { class: 'nm' }, S.company || 'Task Manager'), h('a', { href: '#/account', 'aria-label': 'My profile' }, UI.avatar(S.user.name, 'sm', S.user.id))),
         h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), subLine, statBox),
       h('div', { class: 'home-grid' },
         h('div', { class: 'home-side' }, glance.el),
