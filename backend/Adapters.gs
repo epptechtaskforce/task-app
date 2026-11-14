@@ -38,6 +38,7 @@ function makeEnv_(cfg) {
     store: new SheetsStore_(ssId),
     files: new DriveFiles_(voiceId),
     archive: archive,
+    archiveAtNight: cfg.archiveAtNight !== false,     // approving only closes a task; a background job (every hour) files it in Drive. Setup tests pass false (file at once)
     history: new HistorySheet_(archive),
     ai: cfg.ai || makeAi_(),
     setting: function (name) { return prop_(name) || ''; },
@@ -348,6 +349,7 @@ DriveFiles_.prototype.saveFile = function (o) {
   return DriveApp.getFolderById(this.folderId).createFile(blob).getId();
 };
 DriveFiles_.prototype.readFile = DriveFiles_.prototype.readAudio;
+DriveFiles_.prototype.remove = function (fileId) { DriveApp.getFileById(fileId).setTrashed(true); };      // a file that was stored but not used (the task closed meanwhile)
 
 /* ============================== Drive: archive ============================== */
 // Layout (new tasks):  My Drive / EPP / <person who assigned the task> / "EPP-0042 - Title - 2026-11-14.zip"
@@ -440,7 +442,11 @@ DriveArchive_.prototype.saveZip = function (o) {
   }
   try { Logger.log('saveZip: ' + parts.length + ' zip file(s), ' + moves.length + ' documents, ' + Math.round((Date.now() - t0) / 1000) + ' s'); } catch (e) { /* logging never matters */ }
   (o.trashIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
-  return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + made[0].getName(), fileId: made[0].getId(), folderId: person.getId(), parts: parts.length };
+  return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + made[0].getName(), fileId: made[0].getId(), folderId: person.getId(), parts: parts.length, partIds: made.map(function (f) { return f.getId(); }) };
+};
+// Removes the zip(s) saveZip just made (the task changed while they were being made, so it is filed again later). The documents themselves are in the Drive trash.
+DriveArchive_.prototype.discard = function (saved) {
+  (saved.partIds || [saved.fileId]).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
 };
 // One call to the Google Drive web service (v3) with the script's own permission. DriveApp cannot share WITHOUT Google emailing the person, so the
 // permission itself is made through this call with sendNotificationEmail=false: nobody receives any message, the person simply opens the folder from the app.

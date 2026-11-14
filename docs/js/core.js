@@ -31,6 +31,8 @@
  *   env.files.readFile(fileId)     -> {b64, mime}
  *   env.archive.saveZip({person, zipName, files:[{name,content,mime}], moves:[{id,name}], trashIds}) -> {storage:'zip', path, fileId, folderId}   (one zip in the folder of the person who assigned the task)
  *   env.archive.read({storage, path, fileId}) -> JSON text of task.json   (only for archives made before the zip format)
+ *   env.archiveAtNight               true = approving a task only closes it and a background job (hourly) files it in Drive (archiveWaiting); false/absent = filed at once (demo, tests)
+ *   env.archive.discard(saved)     removes the zip(s) saveZip just made (used when the task changed while they were being made)
  *   env.archive.readZip({fileId, path}, ['Summary.txt','Conversation.txt']) -> {name: text}   (text files inside a task's zip)
  *   env.archive.shareFolder({person, email}) -> {folderId}   (view-only access to the ONE folder EPP/<person>; throws if that would be wider)
  *   env.archive.unshareFolder({person, email})
@@ -83,7 +85,7 @@ const TABLES = {
   Links:        { key: 'id', cols: { id: 's', fromId: 's', toId: 's', createdAt: 'n' } },
   LinkVersions: { key: 'id', cols: { id: 's', version: 'n', createdBy: 's', createdAt: 'n', note: 's', links: 'j' } },
   Sessions:     { key: 'tokenHash', cols: { tokenHash: 's', userId: 's', expires: 'n', createdAt: 'n', lastSeen: 'n' } },
-  Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n' } },
+  Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n', archiveNo: 'n', archiveStartedAt: 'n' } },
   Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n' } },
   Reads:        { key: 'id', cols: { id: 's', taskId: 's', userId: 's', lastReadAt: 'n' } },
   DriveAccess:  { key: 'userId', cols: { userId: 's', email: 's', status: 's', requestedAt: 'n', grantedAt: 'n', grantedBy: 's', folderId: 's' } },   // who may read their own archive folder in Google Drive
@@ -575,10 +577,17 @@ function createCore(env) {
     return { task: view, messages: msgs.map(function (m) { return msgView(ctx, m); }), serverTime: env.now() };
   } };
 
+  // Sending can take minutes (a big file on slow data). If the manager approved the task meanwhile, the late message is refused with a clear note, BEFORE it is
+  // stored: a stored message in a task that is already filed in Drive would never be archived. (The sender still has it on their device.)
+  function stillOpen(ctx, user, taskId) {
+    try { return loadTask(ctx, user, taskId, { open: true }); }
+    catch (e) { throw fail('VALIDATION', 'This task was closed while your message was being sent, so it was not added. Your file or message is still on your device.'); }
+  }
   A.postMessage = { run: function (ctx, user, req) {
     const t = loadTask(ctx, user, req.taskId, { open: true });
     const text = str(req.text, 'Message', LIMITS.text);
     return ctx.write(function () {
+      stillOpen(ctx, user, t.id);
       const row = insert(ctx, 'Messages', { id: newId('M'), taskId: t.id, senderId: user.id, type: 'text', text: text, transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: env.now() });
       update(ctx, 'Tasks', t.id, { updatedAt: row.createdAt });
       return { message: msgView(ctx, row) };
@@ -596,6 +605,7 @@ function createCore(env) {
     const msgId = newId('M');
     const fileId = env.files.saveAudio({ taskId: t.id, messageId: msgId, b64: audioB64, mime: mime });
     ctx.write(function () {
+      try { stillOpen(ctx, user, t.id); } catch (e) { try { if (env.files.remove) env.files.remove(fileId); } catch (x) { /* an unused file is harmless */ } throw e; }
       const row = insert(ctx, 'Messages', { id: msgId, taskId: t.id, senderId: user.id, type: 'voice', text: '', transcript: '', translation: '', lang: '', audioFileId: fileId, audioMime: mime, audioSecs: secs, status: 'transcribing', createdAt: env.now() });
       update(ctx, 'Tasks', t.id, { updatedAt: row.createdAt });
     });
@@ -660,6 +670,7 @@ function createCore(env) {
     const msgId = newId('M');
     const fileId = env.files.saveFile({ taskId: t.id, messageId: msgId, name: name, mime: mime, b64: b64 });   // the slow part happens outside the lock
     return ctx.write(function () {
+      try { stillOpen(ctx, user, t.id); } catch (e) { try { if (env.files.remove) env.files.remove(fileId); } catch (x) { /* an unused file is harmless */ } throw e; }
       const at = env.now();
       insert(ctx, 'Attachments', { id: msgId, taskId: t.id, name: name, mime: mime, size: size, fileId: fileId, thumb: thumb, w: dim(req.w), h: dim(req.h), createdAt: at });
       const row = insert(ctx, 'Messages', { id: msgId, taskId: t.id, senderId: user.id, type: 'file', text: caption, transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: at });
@@ -736,6 +747,8 @@ function createCore(env) {
     });
   } };
 
+  // Approving only CLOSES the task (a few milliseconds under the lock). Filing it in Google Drive (the zip, the History row) is the slow part: the night job
+  // does it (archiveWaiting), so nobody waits and nobody is blocked. Where there is no background job (the demo, the tests) it is filed right away.
   A.approveTask = { run: function (ctx, user, req) {
     // The archive keeps the task's AI summary. If it is missing or out of date it is made now, before the lock is taken (an AI call can be slow)
     // and only for people who may use the AI; if it fails the task is archived without it.
@@ -743,12 +756,18 @@ function createCore(env) {
       const t0 = loadTask(ctx, user, req.taskId, { open: true });
       if (t0.creatorId === user.id && t0.status === 'pending' && aiAllowed(ctx, user)) A.refreshSummary.run(ctx, user, { taskId: t0.id });
     } catch (e) { env.log('final summary skipped: ' + e); }
-    return ctx.write(function () {
+    const id = ctx.write(function () {
       const t = loadTask(ctx, user, req.taskId, { open: true });
       if (t.creatorId !== user.id) throw fail('FORBIDDEN', 'Only the person who assigned the task can approve it');
       if (t.status !== 'pending') throw fail('VALIDATION', 'The task must be at 100% before it can be approved');
-      return archiveTask(ctx, user, t);
+      const now = env.now();
+      update(ctx, 'Tasks', t.id, { status: 'closed', closedAt: now, updatedAt: now });
+      audit(ctx, user, 'task.approve', t.id);
+      return t.id;
     });
+    let filed = null;
+    if (!env.archiveAtNight) { try { filed = archiveClosed(id); } catch (e) { env.log('filing ' + id + ' failed, the night job will try again: ' + e); } }
+    return { closed: true, archived: !!filed, id: id, archiveCode: filed ? filed.archiveCode : '' };
   } };
 
   A.refreshSummary = { run: function (ctx, user, req) {
@@ -853,10 +872,10 @@ function createCore(env) {
         L.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), t.id === focusId ? 300 : (tight ? 140 : 200)).replace(/\s+/g, ' '));
       });
     });
-    const done = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, tight ? 10 : 20);
+    const done = historyRows(ctx).filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; }).sort(function (a, b) { return b.closedAt - a.closedAt; }).slice(0, tight ? 10 : 20);
     L.push('COMPLETED TASKS, newest first (' + done.length + '; use the id to open one):');
     if (!done.length) L.push('(none)');
-    done.forEach(function (x) { L.push('- id=' + x.id + ' "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.summaryText ? ': ' + clip(x.summaryText, tight ? 70 : 110) : '')); });
+    done.forEach(function (x) { L.push('- id=' + x.id + ' "' + clip(x.title, 100) + '" from ' + x.creatorName + ' to ' + x.assigneeNames + ', completed ' + env.formatDate(x.closedAt).slice(0, 10) + (x.waiting ? ' (approved, being filed in Google Drive)' : '') + (x.summaryText ? ': ' + clip(x.summaryText, tight ? 70 : 110) : '')); });
     return L.join('\n');
   }
   function aiContextFit(ctx, user, withPeople, budget, focusId) {
@@ -922,7 +941,7 @@ function createCore(env) {
     const task = mineById[String(a.task_id || '')];
     if (['set_progress', 'post_message', 'approve_task', 'send_back', 'update_task', 'open_task'].indexOf(type) < 0) return { err: 'one of the actions was not understood' };
     if (!task && type === 'open_task') {   // a completed task (History)
-      const ix = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(a.task_id || '') && x.participantIds.indexOf(user.id) >= 0; })[0];
+      const ix = historyRows(ctx).filter(function (x) { return x.id === String(a.task_id || '') && x.participantIds.indexOf(user.id) >= 0; })[0];
       if (ix) return { ok: { type: 'open_task', taskId: ix.id, archived: true, mode: 'enter', needsConfirm: false, label: 'Open ' + q(ix.title) + ' (completed)' } };
     }
     if (!task) return { err: 'I could not find that task among your open tasks' };
@@ -962,6 +981,13 @@ function createCore(env) {
 
   // The conversation of a completed task, as text for the assistant (the person is looking at it in History).
   function archivedText(ctx, ix) {
+    if (ix.waiting) {   // approved, not filed in Drive yet: the conversation is still in the app
+      const W = ['THE PERSON IS LOOKING AT THIS COMPLETED TASK: "' + clip(ix.title, 120) + '" (id=' + ix.id + ') from ' + ix.creatorName + ' to ' + ix.assigneeNames + ', started ' + env.formatDate(ix.createdAt).slice(0, 10) + ', completed ' + env.formatDate(ix.closedAt).slice(0, 10) + '. It is approved and is being filed in Google Drive.'];
+      if (ix.purpose) W.push('details: ' + clip(ix.purpose, 300));
+      if (ix.summaryText) W.push('summary: ' + clip(ix.summaryText, 400));
+      messagesOf(ctx, ix.id).slice(-60).forEach(function (m) { W.push('  [' + env.formatDate(m.createdAt).slice(5) + '] ' + (m.senderId ? brief(ctx, m.senderId).name : 'System') + ': ' + clip(aiMsgText(ctx, m), 240).replace(/\s+/g, ' ')); });
+      return W.join('\n');
+    }
     if (ix.storage === 'zip') {
       const L = ['THE PERSON IS LOOKING AT THIS COMPLETED TASK: "' + clip(ix.title, 120) + '" (id=' + ix.id + ') from ' + ix.creatorName + ' to ' + ix.assigneeNames + ', started ' + env.formatDate(ix.createdAt).slice(0, 10) + ', completed ' + env.formatDate(ix.closedAt).slice(0, 10) + (ix.archiveNo ? ', archive ID ' + archiveCode(ix.archiveNo) : '') + '.',
         'Its full conversation and files are in one zip in Google Drive (' + ix.path + '); only the details below are known here.'];
@@ -1094,7 +1120,7 @@ function createCore(env) {
     }
     let context = aiContextFit(ctx, user, true, 16000, focus ? focus.id : '');   // a small prompt is faster, and fits the free AI services' limits
     if (!focus && req.archivedId) {
-      const ix = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(req.archivedId) && x.participantIds.indexOf(user.id) >= 0; })[0];
+      const ix = historyRows(ctx).filter(function (x) { return x.id === String(req.archivedId) && x.participantIds.indexOf(user.id) >= 0; })[0];
       if (ix) { focus = { id: ix.id, title: ix.title }; context += '\n\n' + archivedText(ctx, ix); }
     }
     const mineById = {}; openTasksOf(ctx, user).forEach(function (t) { mineById[t.id] = t; });
@@ -1238,11 +1264,28 @@ function createCore(env) {
 
   // Archives made before the zip format keep a task.json the app can read; a zip is for people to open in Drive, so the app keeps only the index row.
   function readArchiveDoc(idx) {
+    if (idx.waiting) throw fail('NOT_FOUND', 'This task is being filed in Google Drive');
     if (idx.storage === 'zip') throw fail('NOT_FOUND', 'This task is archived as a zip file in Google Drive (' + idx.path + ')');
     return JSON.parse(env.archive.read(idx));
   }
+  // Approved tasks that the background job has not filed yet (status "closed" in the Tasks sheet). They show in History like filed ones (marked as being filed)
+  // and their conversation is still in the app, so nothing is missing for the people who look. Same shape as an ArchiveIndex row, plus waiting: true.
+  function waitingRows(ctx) {
+    const closed = ctx.rows('Tasks').filter(function (t) { return t.status === 'closed'; });
+    if (!closed.length) return [];
+    const msgsAll = ctx.rows('Messages'), attsAll = ctx.rows('Attachments');
+    return closed.map(function (t) {
+      const msgs = msgsAll.filter(function (m) { return m.taskId === t.id; }), sender = {};
+      msgs.forEach(function (m) { sender[m.id] = m.senderId; });
+      const docs = attsAll.filter(function (a) { return a.taskId === t.id; }).slice(0, 40).map(function (a) { return { name: clip(a.name, 100), size: a.size, by: sender[a.id] ? brief(ctx, sender[a.id]).name : '', at: env.formatDate(a.createdAt).slice(0, 10) }; });
+      return { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: brief(ctx, t.creatorId).name, assigneeNames: names(t.assigneeIds.map(function (id) { return brief(ctx, id); })), participantIds: [t.creatorId].concat(t.assigneeIds),
+        createdAt: t.createdAt, closedAt: t.closedAt, storage: 'waiting', waiting: true, path: '', fileId: '', folderId: '', summaryText: t.summary && t.summary.summary_en ? clip(t.summary.summary_en, 400) : '',
+        messageCount: countContent(msgs), purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: 0, docs: docs, dueDate: t.dueDate || '' };
+    });
+  }
+  function historyRows(ctx) { return ctx.rows('ArchiveIndex').concat(waitingRows(ctx)); }
   function archiveIndexFor(ctx, user, taskId) {
-    const idx = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(taskId || ''); })[0];
+    const idx = historyRows(ctx).filter(function (x) { return x.id === String(taskId || ''); })[0];
     if (!idx || idx.participantIds.indexOf(user.id) < 0) throw fail('NOT_FOUND', 'Task not found');
     return idx;
   }
@@ -1256,27 +1299,27 @@ function createCore(env) {
     let from = day(req.from), to = day(req.to);
     if (from && to && from > to) { const t = from; from = to; to = t; }                       // dates picked the wrong way round still work
     const role = ['mine', 'byme'].indexOf(req.role) >= 0 ? req.role : 'all';
-    let rows = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; });
+    let rows = historyRows(ctx).filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; });
     if (q) rows = rows.filter(function (x) { return (x.title + ' ' + x.creatorName + ' ' + x.assigneeNames + ' ' + x.summaryText + ' ' + (x.archiveNo ? archiveCode(x.archiveNo) : '') + ' ' + (x.docs || []).map(function (d) { return d.name; }).join(' ')).toLowerCase().indexOf(q) >= 0; });
     if (from || to) rows = rows.filter(function (x) { const d = env.formatDate(x.closedAt).slice(0, 10); return (!from || d >= from) && (!to || d <= to); });   // the day it was completed, company time
     const byMe = function (x) { return x.creatorId === user.id; }, toMe = function (x) { return x.participantIds.slice(1).indexOf(user.id) >= 0; };
     const counts = { all: rows.length, mine: rows.filter(toMe).length, byme: rows.filter(byMe).length };
     if (role === 'mine') rows = rows.filter(toMe); else if (role === 'byme') rows = rows.filter(byMe);
     rows.sort(function (a, b) { return b.closedAt - a.closedAt; });
-    return { total: rows.length, counts: counts, items: rows.slice(offset, offset + limit).map(function (x) { return { id: x.id, title: x.title, creatorName: x.creatorName, assigneeNames: x.assigneeNames, createdAt: x.createdAt, closedAt: x.closedAt, summaryText: x.summaryText, messageCount: x.messageCount, archiveCode: x.archiveNo ? archiveCode(x.archiveNo) : '', docCount: x.fileCount || 0 }; }) };
+    return { total: rows.length, counts: counts, items: rows.slice(offset, offset + limit).map(function (x) { return { id: x.id, title: x.title, creatorName: x.creatorName, assigneeNames: x.assigneeNames, createdAt: x.createdAt, closedAt: x.closedAt, summaryText: x.summaryText, messageCount: x.messageCount, archiveCode: x.archiveNo ? archiveCode(x.archiveNo) : '', docCount: x.fileCount || 0, waiting: !!x.waiting }; }) };
   } };
 
   A.getArchived = { run: function (ctx, user, req) {
     const idx = archiveIndexFor(ctx, user, req.taskId);
-    if (idx.storage === 'zip') {
+    if (idx.storage === 'zip' || idx.waiting) {
       // The page for a task archived as a zip: the main details, from the index row, and exactly where to find the rest.
       const ids = idx.participantIds || [], parts = String(idx.path || '').split('/');
-      const access = driveRowOf(ctx, user.id), canOpen = idx.creatorId === user.id && !!access && access.status === 'granted';   // only the person whose folder it is, once the admin allowed it
+      const access = driveRowOf(ctx, user.id), canOpen = !idx.waiting && idx.creatorId === user.id && !!access && access.status === 'granted';   // only the person whose folder it is, once the admin allowed it
       return {
         version: 3, detailsOnly: true, id: idx.id,
         task: { id: idx.id, title: idx.title, description: idx.purpose || '', creator: brief(ctx, idx.creatorId), assignees: ids.slice(1).map(function (id) { return brief(ctx, id); }), createdAt: idx.createdAt, closedAt: idx.closedAt, approvedBy: idx.creatorName, summary: idx.summaryText ? { summary_en: idx.summaryText } : null },
         documents: idx.docs || [], messageCount: idx.messageCount,
-        archive: { code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id, status: idx.creatorId === user.id && access ? access.status : '', email: idx.creatorId === user.id && access ? access.email : '' }
+        archive: { waiting: !!idx.waiting, code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: idx.waiting ? niceName(idx.creatorName, 60) : parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id, status: idx.creatorId === user.id && access ? access.status : '', email: idx.creatorId === user.id && access ? access.email : '' }
       };
     }
     const doc = readArchiveDoc(idx);   // the stored copy keeps what the AI understood from voice messages; the browser only gets the audio
@@ -1353,6 +1396,7 @@ function createCore(env) {
       '  Conversation.txt  the whole conversation (' + countContent(doc.messages) + ' messages' + (voices.length ? ', ' + voices.length + ' voice message' + (voices.length === 1 ? '' : 's') + ' written out' : '') + ')',
       '  Files/            ' + (files.length ? files.length + ' shared document' + (files.length === 1 ? '' : 's') + ' and picture' + (files.length === 1 ? '' : 's') : 'nothing was shared'));
     files.forEach(function (m) { L.push('                    - ' + (m.file.archivedAs || m.file.name) + ' (' + sizeText(m.file.size) + ')'); });
+    if (doc.unlinked && doc.unlinked.length) { L.push('', 'ALSO STORED WITH THIS TASK (no message points to them):'); doc.unlinked.forEach(function (n) { L.push('                    - ' + n); }); }
     if (voices.some(function (m) { return !m.audioFileId; })) L.push('', 'Voice messages are not kept as audio, to save space: what was said is written in Conversation.txt.');
     return L.join('\n') + '\n';
   }
@@ -1363,19 +1407,38 @@ function createCore(env) {
     return 'Assigned by ' + t.creator.name + ' to ' + names(t.assignees) + ', done in ' + days + (days === 1 ? ' day' : ' days') + '.' + (t.description ? ' ' + t.description : '');
   }
 
-  // When a task is approved everything about it becomes ONE zip file, in the folder of the person who assigned it:
+  // Filing an approved ("closed") task: everything about it becomes a zip file (more than one for a very big task), in the folder of the person who assigned it:
   //   Google Drive > EPP > <person who assigned> > "EPP-0042 - Title - 2026-11-14.zip"
   // inside: Summary.txt, Conversation.txt (voice messages written out), Files/ (shared documents and pictures, readable names).
   // Voice audio is not kept. The loose files are thrown away (Drive trash) only after the zip has been written and checked. The
   // ArchiveIndex row keeps just the few lines the History page shows: people, dates, documents' names, summary, the number and the place.
-  function archiveTask(ctx, closer, t) {
-    const msgs = messagesOf(ctx, t.id), closedAt = env.now();
+  // NOBODY WAITS FOR THIS: a closed task cannot change any more, so the slow work (reading the files, making and checking the zips) takes no lock.
+  //   1. a short lock: claim the task (so two runs never file it twice) and reserve its archive number;
+  //   2. no lock: build and check the zip(s);
+  //   3. a short lock: write the History row and let go of the live rows - but only if nothing arrived in the task meanwhile (then the zips are removed
+  //      and the next run files it again with the late message).
+  const CLAIM_MS = 15 * 60 * 1000;
+  function archiveClosed(taskId) {
+    const claim = makeCtx();
+    const t = claim.write(function () {
+      const row = claim.rows('Tasks').filter(function (x) { return x.id === String(taskId); })[0];
+      if (!row || row.status !== 'closed') return null;
+      const now = env.now();
+      if (Number(row.archiveStartedAt) > 0 && now - Number(row.archiveStartedAt) < CLAIM_MS) return null;       // another run is on it
+      if (env.store.ensureColumns) { try { env.store.ensureColumns('Tasks'); } catch (e) { env.log('ensureColumns failed: ' + e); } }   // an older sheet gets the two new columns
+      const no = Number(row.archiveNo) || nextArchiveNo(claim);
+      if (!Number(row.archiveNo)) saveArchiveNo(claim, no);                                                          // a retry keeps the same number: no gaps
+      return update(claim, 'Tasks', row.id, { archiveNo: no, archiveStartedAt: now });
+    });
+    if (!t) return null;
+    const ctx = makeCtx();                                                       // fresh reads for the slow part
+    const msgs = messagesOf(ctx, t.id), closedAt = t.closedAt || env.now(), no = Number(t.archiveNo), code = archiveCode(no);
+    const attCount = ctx.rows('Attachments').filter(function (a) { return a.taskId === t.id; }).length;
     const hasFiles = msgs.some(function (m) { return m.type === 'file'; });
     const fileOf = function (m) { const a = hasFiles && m.type === 'file' ? attachmentOf(ctx, m.id) : null; return a ? { name: a.name, mime: a.mime, size: a.size, fileId: a.fileId } : undefined; };
-    const no = nextArchiveNo(ctx), code = archiveCode(no);
     const doc = {
       version: 3, id: t.id, archiveCode: code,
-      task: { id: t.id, title: t.title, description: t.description, creator: brief(ctx, t.creatorId), assignees: t.assigneeIds.map(function (id) { return brief(ctx, id); }), createdAt: t.createdAt, closedAt: closedAt, startedText: env.formatDate(t.createdAt), completedText: env.formatDate(closedAt), dueDate: t.dueDate, progress: 100, approvedBy: closer.name, summary: t.summary || null },
+      task: { id: t.id, title: t.title, description: t.description, creator: brief(ctx, t.creatorId), assignees: t.assigneeIds.map(function (id) { return brief(ctx, id); }), createdAt: t.createdAt, closedAt: closedAt, startedText: env.formatDate(t.createdAt), completedText: env.formatDate(closedAt), dueDate: t.dueDate, progress: 100, approvedBy: brief(ctx, t.creatorId).name, summary: t.summary || null },
       messages: msgs.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderId ? brief(ctx, m.senderId).name : 'System', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, audioFileId: m.audioFileId, audioMime: m.audioMime, audioSecs: m.audioSecs, createdAt: m.createdAt, time: env.formatDate(m.createdAt), file: fileOf(m) }; })
     };
     // Shared documents and pictures go into "Files" with names a person can read. A voice message is large: once its words are written down
@@ -1404,7 +1467,13 @@ function createCore(env) {
         else moves.push({ id: m.audioFileId, name: 'Voice (no transcript)/' + entryName('Voice (no transcript)/', stamp, 'voice message', (String(m.audioMime || '').split(';')[0].split('/')[1] || 'audio').replace('x-m4a', 'm4a')) });
       }
     });
-    if (env.store.ensureColumns) { try { env.store.ensureColumns('ArchiveIndex'); } catch (e) { env.log('ensureColumns failed: ' + e); } }   // an older sheet gets the newer columns the first time (never a reason to stop an approval)
+    // Safety net: a stored document that no message points to (should never happen) is archived too, so no document is ever left behind.
+    const linked = {}; doc.messages.forEach(function (m) { if (m.file) linked[m.id] = 1; });
+    doc.unlinked = [];
+    ctx.rows('Attachments').filter(function (a) { return a.taskId === t.id && !linked[a.id] && a.fileId; }).forEach(function (a) {
+      const dot = String(a.name).lastIndexOf('.'), nm = entryName('Files/', 'not linked to a message', dot > 0 ? String(a.name).slice(0, dot) : a.name, dot > 0 ? String(a.name).slice(dot + 1) : '');
+      moves.push({ id: a.fileId, name: 'Files/' + nm }); trash.push(a.fileId); doc.unlinked.push(nm);
+    });
     const d = env.formatDate(closedAt), person = niceName(doc.task.creator.name, 60);
     const zipName = niceName(code + ' - ' + t.title, 90) + ' - ' + d.slice(0, 10) + '.zip';
     const saved = env.archive.saveZip({
@@ -1416,16 +1485,43 @@ function createCore(env) {
     const docs = doc.messages.filter(function (m) { return m.file; }).slice(0, 40).map(function (m) { return { name: clip(m.file.name, 100), size: m.file.size, by: m.senderName, at: m.time.slice(0, 10) }; });
     const gist = t.summary && t.summary.summary_en ? t.summary.summary_en : plainGist(doc);
     const idxRow = { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: names(doc.task.assignees), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(gist, 400), messageCount: countContent(msgs), folderId: saved.folderId || '', purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: no, docs: docs, dueDate: t.dueDate || '' };
-    insert(ctx, 'ArchiveIndex', idxRow); saveArchiveNo(ctx, no);
-    // the full history sheet in Drive: one more row. If it cannot be written now, the task is still archived and the nightly job adds the row later.
-    try { if (env.history) env.history.append([historyRow(idxRow)]); } catch (e) { env.log('full history sheet: could not add ' + code + ' now: ' + e); }
-    // Only after the archive is safely written do we remove the live rows.
-    removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
-    if (hasFiles) removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
-    removeWhere(ctx, 'Reads', function (r) { return r.taskId === t.id; });
-    removeWhere(ctx, 'Tasks', function (x) { return x.id === t.id; });
-    audit(ctx, closer, 'task.archive', t.id);
-    return { archived: true, id: t.id, archiveCode: code };
+    return ctx.write(function () {
+      const now = ctx.rows('Tasks').filter(function (x) { return x.id === t.id; })[0];
+      if (!now || now.status !== 'closed') return null;                          // gone (data wiped): leave the zip, there is nothing to commit
+      const nowMsgs = ctx.rows('Messages').filter(function (m) { return m.taskId === t.id; }).length, nowAtts = ctx.rows('Attachments').filter(function (a) { return a.taskId === t.id; }).length;
+      if (nowMsgs !== msgs.length || nowAtts !== attCount) {                     // something arrived while the zip was made: it must be in the archive too
+        try { if (env.archive.discard) env.archive.discard(saved); } catch (e) { env.log('could not remove the unused archive: ' + e); }
+        update(ctx, 'Tasks', t.id, { archiveStartedAt: 0 });
+        return null;
+      }
+      if (env.store.ensureColumns) { try { env.store.ensureColumns('ArchiveIndex'); } catch (e) { env.log('ensureColumns failed: ' + e); } }
+      insert(ctx, 'ArchiveIndex', idxRow); saveArchiveNo(ctx, no);
+      // the full history sheet in Drive: one more row. If it cannot be written now, the task is still archived and the nightly maintenance adds the row later.
+      try { if (env.history) env.history.append([historyRow(idxRow)]); } catch (e) { env.log('full history sheet: could not add ' + code + ' now: ' + e); }
+      // Only after the archive is safely written do we remove the live rows.
+      removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
+      if (hasFiles) removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
+      removeWhere(ctx, 'Reads', function (r) { return r.taskId === t.id; });
+      removeWhere(ctx, 'Tasks', function (x) { return x.id === t.id; });
+      audit(ctx, { id: t.creatorId }, 'task.archive', t.id);
+      return { archived: true, id: t.id, archiveCode: code };
+    });
+  }
+
+  // The background job (every hour): files every approved task that is waiting, oldest first, one at a time. `keepGoing()` (optional) says whether there is still time; the
+  // tasks left over are counted in `left` and the next run takes them. A task that fails stays as it is (and is tried again): the reason goes to the audit log.
+  function archiveWaiting(opts) {
+    opts = opts || {};
+    const ctx = makeCtx(), out = { archived: 0, skipped: 0, failed: 0, left: 0 };
+    ctx.rows('Tasks').filter(function (t) { return t.status === 'closed'; }).sort(function (a, b) { return a.closedAt - b.closedAt; }).forEach(function (t) {
+      if (opts.keepGoing && !opts.keepGoing()) { out.left++; return; }
+      try { if (archiveClosed(t.id)) out.archived++; else out.skipped++; }
+      catch (e) {
+        out.failed++; env.log('filing ' + t.id + ' failed: ' + (e && e.message || e));
+        try { ctx.write(function () { audit(ctx, null, 'task.archive.failed', t.id + ': ' + (e && e.message || e)); }); } catch (x) { /* the log is only a note */ }
+      }
+    });
+    return out;
   }
 
   /* ============================== dispatcher ============================== */
@@ -1494,7 +1590,7 @@ function createCore(env) {
     });
   }
 
-  return { handle: handle, setup: setup, maintenance: maintenance, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
+  return { handle: handle, setup: setup, maintenance: maintenance, archiveWaiting: archiveWaiting, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS, HISTORY_COLUMNS: HISTORY_COLUMNS };

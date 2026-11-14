@@ -7,7 +7,8 @@
  *   smokeTest()       Runs the whole app against a temporary sheet/folders (nothing real is touched).
  *   selfTest()        Checks the Gemini key and models work.
  *   listModels()      Lists the Gemini models your key can use (useful if a model is retired).
- *   nightlyJob()      What the trigger runs (backup + remove expired sessions). Safe to run by hand.
+ *   nightlyJob()      What the 02:00 trigger runs (backup + remove expired sessions). Safe to run by hand.
+ *   archiveJob()      What the hourly trigger runs: files approved tasks in Drive. Safe to run by hand.
  *
  * Before setup(), add these Script properties (Project Settings > Script properties):
  *   GEMINI_API_KEY, SETUP_COMPANY_NAME, SETUP_ADMIN_USERNAME, (optional) SETUP_ADMIN_NAME,
@@ -65,9 +66,28 @@ function generatePassword_() {
 }
 
 function installTriggers() {
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'nightlyJob') ScriptApp.deleteTrigger(t); });
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (['nightlyJob', 'archiveJob', 'archiveJobMore'].indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('nightlyJob').timeBased().everyDays(1).atHour(2).create();
-  Logger.log('Nightly job scheduled for about 02:00 (script time zone: ' + Session.getScriptTimeZone() + ').');
+  ScriptApp.newTrigger('archiveJob').timeBased().everyHours(1).create();
+  Logger.log('Scheduled: backups and clean-up about 02:00, and the filing of approved tasks in Drive every hour (script time zone: ' + Session.getScriptTimeZone() + ').');
+}
+
+// Every hour, in the background on Google's servers (no phone has to be on, nobody is waiting): files the tasks the managers approved since the last run,
+// each as a zip in Drive plus its History row. Approving a task only closes it; this does the slow part. It takes no lock while it works, so the app is
+// never slowed. Time is limited to about 4.5 minutes per run; what is left is taken a minute later (archiveJobMore) or at the next hour. A task that
+// fails stays as it is and is tried again; the reason is in the audit log (action task.archive.failed). Safe to run by hand.
+function archiveJob() {
+  const start = Date.now();
+  const out = getCore_().archiveWaiting({ keepGoing: function () { return Date.now() - start < 270000; } });
+  if (out.archived || out.failed || out.left || out.skipped) Logger.log('Archive job: ' + JSON.stringify(out));
+  if (out.left > 0) {
+    ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'archiveJobMore') ScriptApp.deleteTrigger(t); });
+    ScriptApp.newTrigger('archiveJobMore').timeBased().after(60 * 1000).create();
+  }
+}
+function archiveJobMore() {                                         // the one-off continuation: removes itself first, then does the same work
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'archiveJobMore') ScriptApp.deleteTrigger(t); });
+  archiveJob();
 }
 
 // Backups in the Backups folder. Each kind rotates on its own (by its name), so one kind never pushes out another, nor a safety copy made by hand.
@@ -123,7 +143,7 @@ function smokeTest() {
     briefing: function () { return { headline: 'All good', items: [{ tone: 'good', text: 'Nothing is late', task_id: '' }] }; }
   };
   try {
-    const core = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi });
+    const core = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi, archiveAtNight: false });
     const call = function (action, token, params) { return core.handle(Object.assign({ action: action, token: token }, params || {})); };
     const must = function (action, token, params) { const r = call(action, token, params); if (!r.ok) throw new Error(action + ' failed: ' + JSON.stringify(r)); return r.data; };
 
@@ -266,9 +286,17 @@ function smokeTest() {
     check(must('getFile', boss1, { messageId: bm.id }).b64 === bigB64, 'the 10 MB document is read back from Drive unchanged');
     check(call('postFile', staff1, { taskId: tBig.id, name: 'Too big.pdf', b64: 'JVBERi0x' + new Array(3500002).join('QUJD') }).code === 'VALIDATION', 'a document over 10 MB is refused');
     must('setProgress', staff1, { taskId: tBig.id, progress: 100 });
-    const t0big = Date.now(); must('approveTask', boss1, { taskId: tBig.id });
+    // approving only closes the task (instant); the background job then files it, one lock-free zip
+    const coreN = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi, archiveAtNight: true });
+    const tAp = Date.now(), ap = coreN.handle({ action: 'approveTask', token: boss1, taskId: tBig.id });
+    check(ap.ok && ap.data.closed === true && ap.data.archived === false && ap.data.archiveCode === '', 'approving only closes the task, nothing is filed yet (' + (Date.now() - tAp) + ' ms)');
+    check(must('listHistory', staff1, {}).items.some(function (i) { return i.id === tBig.id && i.waiting; }) && must('getArchived', staff1, { taskId: tBig.id }).archive.waiting === true, 'meanwhile the task shows in History as being saved to Drive');
+    check(must('listTasks', boss1, {}).tasks.every(function (x) { return x.id !== tBig.id; }), 'and it is no longer in the task list');
+    const t0big = Date.now(), job = coreN.archiveWaiting();
+    check(job.archived === 1 && job.failed === 0 && job.skipped === 0, 'the background job filed it: ' + JSON.stringify(job) + ' in ' + Math.round((Date.now() - t0big) / 1000) + ' s');
+    check(coreN.archiveWaiting().archived === 0 && must('getArchived', staff1, { taskId: tBig.id }).archive.waiting === false, 'a second run finds nothing to do, and the History page shows the archive ID');
     const docBig = must('getArchived', staff1, { taskId: tBig.id }), zBig = zipOf(docBig), eBig = zBig ? entries(zBig) : {}, nBig = Object.keys(eBig).filter(function (n) { return n.indexOf('Files/') === 0; });
-    check(nBig.length === 1 && eBig[nBig[0]].length === bigBytes && eBig[nBig[0]].slice(0, 12) === '%PDF-1ABCABC', 'the 10 MB document is inside the zip, complete (approval took ' + Math.round((Date.now() - t0big) / 1000) + ' s)');
+    check(nBig.length === 1 && eBig[nBig[0]].length === bigBytes && eBig[nBig[0]].slice(0, 12) === '%PDF-1ABCABC', 'the 10 MB document is inside the zip, complete (filing took ' + Math.round((Date.now() - t0big) / 1000) + ' s)');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);
@@ -480,7 +508,7 @@ function simulateCompany(mockBaseUrl) {
       assistant: function () { throw new Error('AI is off during the simulation'); }, briefing: function () { throw new Error('AI is off during the simulation'); }
     };
     let said = '';
-    const env = makeEnv_({ ai: ai }), core = createCore(env);
+    const env = makeEnv_({ ai: ai, archiveAtNight: false }), core = createCore(env);
     env.store.init(core.TABLES);
     const realAll = env.store.all.bind(env.store);
     // the real accounts, borrowed in memory only: nothing is written to Users or Sessions and no password is needed
@@ -855,7 +883,7 @@ function mockSeed() {
   let said = '';
   const ai = { transcribe: function () { return { english: said, language: 'English', key_points: '' }; },
     summarize: function () { throw new Error('AI is off while seeding'); }, assistant: function () { throw new Error('AI is off while seeding'); }, briefing: function () { throw new Error('AI is off while seeding'); } };
-  const env = makeEnv_({ ai: ai }), core = createCore(env);
+  const env = makeEnv_({ ai: ai, archiveAtNight: false }), core = createCore(env);
   env.store.init(core.TABLES);
   const realAll = env.store.all.bind(env.store);
   const alias = mockAlias_(), people = {}, byName = {}, tok = {}, virtual = [];
