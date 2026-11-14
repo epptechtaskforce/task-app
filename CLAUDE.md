@@ -115,6 +115,7 @@ python -m http.server 8765 --directory docs   # then http://localhost:8765/?demo
   (headless Edge/Chrome screenshot of the SVG at the target size). In the app the same drawing is `UI.logoMark(size)`, coloured by `.logomark` / `.lm-*` rules so it follows the appearance.
 - **Appearance colours** (Account > Appearance: berry, ocean, forest, sunset, violet; light/dark) work only through `--accent`, `--accent-strong`, `--accent-2`, `--accent-soft`, `--brand-from`, `--brand-to`.
   **Never write a berry/pink colour literal in a style rule** (use `var(--accent)` or `color-mix(in srgb, var(--accent) 40%, transparent)` for glows and shadows); `tests/theme.test.js` fails if you do.
+  This includes the page-background glow (`body::before`) and person avatars (hue list in `UI.avatar` has no pink). Check pseudo-elements too (`::before`/`::after`) when auditing computed colours.
   Red for late/listening/unread is meaning, not decoration, and is allowed. `UI.accent` also tints the phone's `theme-color` meta tag and the confetti.
 
 ## Conventions

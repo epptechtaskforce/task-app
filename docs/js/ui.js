@@ -233,7 +233,7 @@
   function avatar(name, size, uid) {
     let hash = 0; const s = String(name || '?');
     for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
-    const hue = [330, 280, 215, 190, 150, 25, 355, 250][hash % 8];
+    const hue = [215, 190, 150, 25, 250, 100, 45, 170][hash % 8];   // (no pink or rose here: those would stay berry-coloured whatever appearance is chosen)
     const el = h('span', { class: 'avatar' + (size ? ' ' + size : ''), style: '--h:' + hue, 'aria-hidden': 'true' }, h('b', null, initials(name)));
     if (uid) { el.setAttribute('data-uid', uid); paintAvatar(el); }
     return el;

@@ -27,7 +27,7 @@ function hsl(r, g, b) {
 test('theme: no stylesheet rule hard-codes the berry pink outside the colour-variable definitions', () => {
   const bad = [];
   css.forEach((line, i) => {
-    if (i < 59 || line.indexOf('data-accent') >= 0) return;                    // the variable definitions themselves (top of the file, and the accent sets)
+    if (i < 53 || line.indexOf('data-accent') >= 0) return;                    // the variable definitions themselves (top of the file, and the accent sets)
     (line.match(/#[0-9a-fA-F]{8}\b|#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]*\)/g) || []).forEach((tok) => {
       const [h, s, l] = hsl(...rgbOf(tok));
       if (h >= 295 && h <= 345 && s > 0.3 && l > 0.15 && l < 0.9) bad.push('line ' + (i + 1) + ': ' + tok);
@@ -56,4 +56,12 @@ test('logo: the app icon files exist in every size the browsers ask for, and the
   const ui = fs.readFileSync(path.join(root, 'js', 'ui.js'), 'utf8');
   assert.ok(/function logoMark\(/.test(ui) && /logoMark: logoMark/.test(ui));
   assert.ok(css.join('\n').indexOf('.logo { background: linear-gradient(135deg, var(--brand-from), var(--brand-to)); }') >= 0);
+});
+
+test('theme: person avatars never use a pink or rose hue (they would stay berry-coloured in every appearance)', () => {
+  const ui = fs.readFileSync(path.join(root, 'js', 'ui.js'), 'utf8');
+  const m = ui.match(/const hue = \[([\d,\s]+)\]/);
+  assert.ok(m, 'avatar hue list not found');
+  m[1].split(',').map(Number).forEach((h) => assert.ok(!(h >= 290 && h <= 360), 'avatar hue ' + h + ' is pink/rose'));
+  assert.equal(css.join('\n').indexOf('var(--h, 330)'), -1);
 });
