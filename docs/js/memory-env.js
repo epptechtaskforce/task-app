@@ -113,6 +113,18 @@
         if (/^(no|cancel|stop)( |$|[.!,])/.test(said) && input.pending.length) return { heard: '', reply: 'Okay, I will not do that.', confirm: 'no', actions: [] };
         const ctxLines = String(input.context).split(/\r?\n/);
         const tidy = function (t) { t = t.trim().replace(/\s+/g, ' '); return t ? t.charAt(0).toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.') : ''; };
+        // the stand-in sees the screen too: "where am I" reads it back, and on the New task form it fills the form ("title ...", "assign to <name>")
+        const scr = String(input.screen || '');
+        if (scr && /where am i|what am i looking at|what is on (?:my|this) screen/i.test(said)) return { heard: '', confirm: '', reply: '(Demo) ' + (scr.split('\n')[1] || '').split('. ')[0].replace(/\.$/, '') + '.', actions: [] };
+        if (scr.indexOf('NEW TASK form') >= 0) {
+          const ft = /^(?:call it|title it|title)[:,]?\s+(.+)$/i.exec(said ? String(input.text).trim() : ''), asg = /^assign(?: it)? to\s+(.+?)\.?$/i.exec(String(input.text || '').trim());
+          if (ft) return { heard: '', confirm: '', reply: '(Demo) I filled in the title.', actions: [{ type: 'fill_task', title: ft[1].replace(/\.$/, '') }] };
+          if (asg) {
+            const row = ctxLines.filter(function (l) { return l.indexOf('- ') === 0 && l.toLowerCase().indexOf(asg[1].toLowerCase()) >= 0 && /\(id /.test(l); })[0];
+            const pid = row && (/\(id ([^)]+)\)/.exec(row) || [])[1];
+            if (pid) return { heard: '', confirm: '', reply: '(Demo) Assigned.', actions: [{ type: 'fill_task', assignee_ids: [pid] }] };
+          }
+        }
         // dictating a message: "send this message ..." / "tell them ..." (or, while a draft waits, "change it to ...")
         const dict = /^(?:send|post|write|tell them|tell)(?: this)?(?: a)?(?: message)?(?: in the chat)?(?: that)?[:,]?\s+(.+)$/i.exec(String(input.text || '').trim()), change = /^(?:change it to|make it|say)[:,]?\s+(.+)$/i.exec(String(input.text || '').trim());
         if ((dict || (change && input.pending.length)) && input.focus) return { heard: '', confirm: '', reply: 'Here is your message. Send it, edit it or delete it?', actions: [{ type: 'post_message', task_id: input.focus.id, text: tidy((dict || change)[1]) }] };

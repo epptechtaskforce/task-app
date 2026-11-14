@@ -2,9 +2,9 @@
  * One round bubble floats over every screen. Tap it and talk: your question and the answer float next to it (only the last two),
  * the app stays visible behind. Touching the screen elsewhere does NOT close the chat. Tap the bubble to tuck the chat away
  * (minimise) and tap it again to pop it up and start listening. Nothing of the earlier conversation is shown (the assistant just
- * remembers it, so you can carry on); a small Clear button next to the chat forgets it. The open chat can be dragged by touching
- * it (the bubble comes along); touching the background behind it works as normal (scrolling, tapping).
- * Drag the bubble anywhere you like.
+ * remembers it, so you can carry on); a small Clear button next to the chat forgets it. Tap a message of the assistant and it listens
+ * again. Hold the bubble or a message for a moment and drag: the chat and bubble move together; touching the background behind works as
+ * normal. With every question the app also sends what is on screen (App.screen()), so the assistant and the person look at the same thing.
  * The assistant only PROPOSES actions (post a message, set progress, create a task...). They are shown in a small card
  * (Send / Edit / Delete for a message) and run, through the normal permission-checked calls, only after the person agrees.
  * All text is inserted with textContent (via h()), never as HTML.
@@ -72,48 +72,62 @@
     B.fab.classList.toggle('tag-left', right);
     B.stack.classList.toggle('above', above); B.stack.classList.toggle('below', !above); B.stack.classList.toggle('right', right); B.stack.classList.toggle('left', !right);
   }
+  // Dragging: HOLD your finger on the bubble or on any message for a moment (the phone gives a tiny buzz) and move it where you like,
+  // the bubble and its messages travel together. The bubble itself also follows a quick drag. A plain tap on the bubble opens/tucks the
+  // chat; a plain tap on a message makes the assistant listen again. Moving before the hold is just a scroll or swipe: nothing is dragged.
+  const HOLD = 380, SLOP = 8;
+  let holding = false;
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate(14); } catch (e) { /* not supported */ } }
   function wireDrag() {
     let d = null;
+    B.fab.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     B.fab.addEventListener('pointerdown', function (e) {
       if (e.button) return;
-      const p = getPos(); d = { sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+      const p = getPos(); d = { sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false, held: false };
+      d.timer = setTimeout(function () { if (d && !d.moved) { d.held = true; holding = true; buzz(); B.fab.classList.add('drag'); } }, HOLD);
       try { B.fab.setPointerCapture(e.pointerId); } catch (x) { /* ignore */ }
     });
     B.fab.addEventListener('pointermove', function (e) {
       if (!d) return;
       const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
-      if (!d.moved && Math.hypot(dx, dy) > 7) { d.moved = true; B.fab.classList.add('drag'); }
+      if (!d.moved && (d.held || Math.hypot(dx, dy) > 7)) { d.moved = true; B.fab.classList.add('drag'); }
       if (d.moved) { B.pos = clampPos({ x: d.ox + dx, y: d.oy + dy }); layout(); }
     });
     B.fab.addEventListener('pointerup', function (e) {
       if (!d) return;
-      const moved = d.moved; d = null; B.fab.classList.remove('drag');
+      clearTimeout(d.timer); const moved = d.moved, held = d.held; d = null; holding = false; B.fab.classList.remove('drag');
       try { B.fab.releasePointerCapture(e.pointerId); } catch (x) { /* ignore */ }
-      if (moved) savePos(); else tap();
+      if (moved) savePos(); else if (!held) tap();
     });
-    B.fab.addEventListener('pointercancel', function () { d = null; B.fab.classList.remove('drag'); });
+    B.fab.addEventListener('pointercancel', function () { if (d) clearTimeout(d.timer); d = null; holding = false; B.fab.classList.remove('drag'); });
     B.fab.addEventListener('click', function (e) { if (e.detail === 0) tap(); });   // keyboard: Enter / Space
   }
 
-  // The open conversation can be moved by touching it (the bubble comes along, as they belong together). Touches on the
-  // background around it are not caught by the chat at all, so the page behind scrolls and taps as usual.
   function wireStackDrag() {
+    B.stack.addEventListener('contextmenu', function (e) { if (e.target.closest && e.target.closest('.aib-msg, .aib-card') && !e.target.closest('textarea, input')) e.preventDefault(); });
+    // once the hold has happened, the finger moves the chat and must not scroll the message or the page
+    B.stack.addEventListener('touchmove', function (e) { if (holding && e.cancelable) e.preventDefault(); }, { passive: false });
     B.stack.addEventListener('pointerdown', function (e) {
       if (e.button || !e.target.closest) return;
-      if (!e.target.closest('.aib-msg, .aib-dp, .aib-card-head, .aib-card-text') || e.target.closest('button, a, input, textarea')) return;
-      const p = getPos(), d = { sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+      if (!e.target.closest('.aib-msg, .aib-card') || e.target.closest('button, a, input, textarea')) return;
+      const isMsg = !!e.target.closest('.aib-msg'), p = getPos(), d = { sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, held: false, dead: false };
+      d.timer = setTimeout(function () { if (!d.dead) { d.held = true; holding = true; buzz(); B.fab.classList.add('drag'); B.stack.classList.add('dragging'); } }, HOLD);
       const move = function (ev) {
         const dx = ev.clientX - d.sx, dy = ev.clientY - d.sy;
-        if (!d.moved && Math.hypot(dx, dy) > 7) { d.moved = true; B.fab.classList.add('drag'); B.stack.classList.add('dragging'); }
-        if (d.moved) { B.pos = clampPos({ x: d.ox + dx, y: d.oy + dy }); layout(); }
+        if (!d.held) { if (Math.hypot(dx, dy) > SLOP) { clearTimeout(d.timer); d.dead = true; } return; }   // moved before the hold: a scroll or swipe, not a drag
+        B.pos = clampPos({ x: d.ox + dx, y: d.oy + dy }); layout();
       };
-      const end = function () {
-        document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
-        B.fab.classList.remove('drag'); B.stack.classList.remove('dragging'); if (d.moved) savePos();
+      const finish = function (ev) {
+        clearTimeout(d.timer);
+        document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); document.removeEventListener('pointercancel', finish);
+        holding = false; B.fab.classList.remove('drag'); B.stack.classList.remove('dragging');
+        if (d.held) savePos(); else if (!d.dead && isMsg && ev.type === 'pointerup') tapMessage();
       };
-      document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
+      document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish); document.addEventListener('pointercancel', finish);
     });
   }
+  // A plain tap on one of the assistant's messages: it listens again (the message stays in view while you answer).
+  function tapMessage() { if (B.busy || B.live || B.rec) return; startListening(); }
 
   /* ============================== the two floating messages ============================== */
   function active() { return !!(B.botEl || B.typing || B.rec || B.live); }
@@ -278,7 +292,7 @@
     dissolve(B.botEl); B.botEl = null; sync();
     let r;
     try {
-      const payload = Object.assign({ history: B.history.slice(-10), pending: B.pending.map(function (p) { return p.label; }), taskId: B.where.task || undefined, archivedId: B.where.archived || undefined, text: o.text || undefined }, o.audio || {});
+      const payload = Object.assign({ history: B.history.slice(-10), pending: B.pending.map(function (p) { return p.label; }), taskId: B.where.task || undefined, archivedId: B.where.archived || undefined, screen: B.App.screen ? B.App.screen() : undefined, text: o.text || undefined }, o.audio || {});
       r = await Api.call('assistant', payload, { timeout: o.audio ? 50000 : 40000 });   // a firm limit: never wait forever
     } catch (e) {
       if (my !== B.token) return;
@@ -296,7 +310,7 @@
     store.save();
     if (r.confirm === 'yes' && B.pending.length) return confirmPending();           // it says "Done" itself
     putBot(r.reply);
-    free.forEach(function (a) { if (a.type === 'show_page') B.App.showPage(a); else openTask(a); });
+    free.forEach(function (a) { if (a.type === 'show_page') B.App.showPage(a); else if (a.type === 'fill_task') B.App.fillTask(a); else openTask(a); });
     say(String(r.reply).split('\n\n(Note:')[0], my, r.reply);          // the whole answer is read aloud, word for word
   }
   function say(text, my, shown) {
@@ -404,7 +418,7 @@
     const draw = function () {
       UI.clear(box);
       box.appendChild(h('h2', null, 'AI assistant'));
-      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Tap it again to tuck the chat away; tapping it once more pops it up and starts listening (the old messages are not shown, but the assistant still remembers them). Touch the chat to move it; touch the background to use the app behind it. The small Clear button next to the chat forgets it.'));
+      box.appendChild(h('p', { class: 'muted small' }, 'The round AI bubble floats over every screen. Tap it and talk, or drag it where you like. Tap it again to tuck the chat away; tapping it once more pops it up and starts listening (the old messages are not shown, but the assistant still remembers them). Tap one of its messages to answer it by voice. Hold your finger on the bubble or a message to move them; touch the background to use the app behind. The assistant sees the same screen you do. The small Clear button forgets the chat.'));
       const row = h('div', { class: 'row' });
       if (Speech.supported) {
         const on = Speech.enabled();

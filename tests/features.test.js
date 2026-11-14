@@ -340,3 +340,33 @@ test('ids are never shown or read aloud: they are stripped from the assistant re
   const b = app.ok('briefing', s.tok.mgr, { force: true }).briefing;
   assert.equal(JSON.stringify(b).replace(new RegExp('"taskId":"' + t.id + '"', 'g'), '').includes(t.id), false);   // the link field keeps the id, the words do not
 });
+
+test('companion: the assistant is told which screen the person is on (checked against what they may see), and fill_task fills the New task form safely', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  const mine = app.ok('createTask', s.tok.mgr, { title: 'Pump house roof', assigneeIds: [s.users.wk1.id] }).task;
+  const other = app.ok('createTask', s.tok.ceo, { title: 'Board pack', assigneeIds: [s.users.mgr.id] }).task;   // the worker has no part in this one
+  const screenOf = () => ai.calls.pop().screen;
+  app.ok('assistant', s.tok.wk1, { text: 'what is here?', screen: { kind: 'home', filter: 'late', q: ' roof ', shown: [mine.id, other.id, 'T-nope', mine.id] } });
+  let seen = screenOf();
+  assert.ok(/HOME screen/.test(seen) && seen.includes('only late') && seen.includes('"roof"') && seen.includes('Pump house roof'));
+  assert.equal(seen.includes('Board pack'), false);                                   // a task of somebody else cannot be smuggled in through the screen
+  app.ok('assistant', s.tok.mgr, { text: 'x', screen: { kind: 'new', draft: { title: 'Fix the gate', due: '2026-11-20', assigneeIds: [s.users.wk1.id, s.users.ceo.id] } } });
+  seen = screenOf();
+  assert.ok(seen.includes('NEW TASK form') && seen.includes('"Fix the gate"') && seen.includes('assigned to WK1') && seen.includes('fill_task'));
+  assert.equal(seen.includes('CEO'), false);                               // the manager may not assign to the CEO: not listed as chosen
+  app.ok('assistant', s.tok.wk1, { text: 'x', screen: { kind: 'task', slider: 40, draft: 'Almost done' } });
+  seen = screenOf();
+  assert.ok(seen.includes('40%') && seen.includes('Almost done'));
+  app.ok('assistant', s.tok.wk1, { text: 'x', screen: { kind: 'hacked', shown: [mine.id] } });
+  assert.equal(screenOf(), '');                                                       // an unknown screen is ignored
+  app.ok('assistant', s.tok.wk1, { text: 'x' });
+  assert.equal(screenOf(), '');
+  ai.reply = () => ({ reply: 'Filled.', actions: [
+    { type: 'fill_task', title: '  Fix the gate ', due_date: '2026-11-20', assignee_ids: [s.users.wk1.id, s.users.ceo.id, s.users.wk1.id] },
+    { type: 'fill_task', due_date: 'soon' }, { type: 'fill_task' }] });
+  const r = app.ok('assistant', s.tok.mgr, { text: 'fill it in' });
+  assert.equal(r.actions.length, 1);
+  const a = r.actions[0];
+  assert.deepEqual([a.type, a.title, a.dueDate, a.assigneeIds, a.needsConfirm], ['fill_task', 'Fix the gate', '2026-11-20', [s.users.wk1.id], false]);
+  assert.ok(r.reply.includes('not allowed'));                                         // told that someone was left out
+});

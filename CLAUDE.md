@@ -70,7 +70,20 @@ Browser (docs/, plain HTML/CSS/JS, GitHub Pages) --POST JSON, text/plain--> Goog
 - **Prompt and context.** `ASSISTANT_PROMPT_` and builders in `Adapters.gs`; context assembled in `Core.gs` (`aiContext`, `aiContextFit` tiers to keep prompts small for free-tier limits).
 - **The bubble** (`assistant.js`): tap = pop up and listen; tap again = tuck away (history stays in memory, nothing old is shown); small Clear button forgets the
   conversation; the open chat is draggable; there is no bubble for the user: what you say or type is never shown, only the AI's answer (read aloud when you spoke); a small keyboard button and the Clear button sit with the AI bubble.
+  **Gestures:** tap a message of the assistant = it listens again; hold (about 0.4 s, with a tiny buzz) on the bubble or any message, then drag = move bubble and messages together.
+  **Companion:** every question carries `App.screen()` (`kind` home/new/task/closed/history/account/admin plus a live look: list filter and shown tasks, the New task draft,
+  the progress slider, a half-typed message). Each view registers `S.peek` (and the New task form `S.fill`). `screenText()` in `Core.gs` turns it into words for the model
+  (ids checked against the person's own tasks and allowed assignees); the prompt's COMPANION paragraph tells the model to answer relative to that screen. `fill_task` fills the
+  New task form for the person (no confirmation; they press the create button).
   State lives in the single `B` object; history in `sessionStorage` (`aib:<userId>`), position in `localStorage`.
+
+## Installing the app (QR code)
+
+`docs/install.html` + `docs/js/install.js` is the page a QR code points to: one big button. Not installed: **Install** (one tap where the browser allows it via
+`beforeinstallprompt`; on iPhone a three-picture guide, since Safari has no install button). Installed: **Open** (tries to hand the address to the installed app, then tries to
+close the tab). Already running as the installed app: goes straight to the app. Limits that cannot be coded around: a web page cannot see an iPhone's home screen, and browsers only let a page
+close a tab it opened itself. Needs `manifest.webmanifest` (PNG icons, `related_applications` naming itself) and `sw.js` (a worker that caches nothing). The QR image itself contains the real
+address, so it lives only in the company branch (`docs/install-qr.svg`, printable `docs/qr.html`); make one with `pip install segno` then `segno.make('<url>/install.html', error='q').save('install-qr.svg', scale=12)`.
 
 ## Performance and reliability facts (Apps Script)
 

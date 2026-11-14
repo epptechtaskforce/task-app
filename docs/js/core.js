@@ -860,6 +860,23 @@ function createCore(env) {
       return { ok: { type: type, title: title, description: clip(a.description, LIMITS.description).trim(), dueDate: due, assigneeIds: ids, needsConfirm: true,
         label: 'Create the task ' + q(title) + ' for ' + ids.map(nameOf).join(', ') + (due ? ', due ' + niceDate(due) : '') }, partial: ids.length < given.length };
     }
+    if (type === 'fill_task') {   // fills in the New task form on screen for the person (nothing is created: they press the button themselves)
+      const out = { type: type, needsConfirm: false, label: 'Fill in the new task form' };
+      let any = false, partial = false;
+      if (a.title !== undefined && a.title !== null && clip(a.title, LIMITS.title).trim()) { out.title = clip(a.title, LIMITS.title).trim(); any = true; }
+      if (a.description !== undefined && a.description !== null) { out.description = clip(a.description, LIMITS.description).trim(); any = true; }
+      if (a.due_date !== undefined && a.due_date !== null) {
+        const d = String(a.due_date).trim();
+        if (!dueOk(d)) return { err: 'the due date was not clear' };
+        out.dueDate = d; any = true;
+      }
+      if (Array.isArray(a.assignee_ids)) {
+        const given = a.assignee_ids.map(String).filter(function (v, i, arr) { return arr.indexOf(v) === i; });
+        out.assigneeIds = given.filter(function (id) { return allowed[id]; }); partial = out.assigneeIds.length < given.length; any = true;
+      }
+      if (!any) return { err: 'there was nothing to fill in' };
+      return { ok: out, partial: partial };
+    }
     if (type === 'show_page') {   // navigation: the app moves to the place the person asked to see (nothing is changed, so no confirmation)
       const page = ['tasks', 'history', 'account'].indexOf(a.page) >= 0 ? a.page : 'tasks';
       const filter = page === 'tasks' && ['all', 'mine', 'byme', 'late', 'wait', 'active', 'new'].indexOf(a.filter) >= 0 ? a.filter : 'all';
@@ -923,6 +940,39 @@ function createCore(env) {
     return L.join('\n');
   }
 
+  // What the person is looking at right now, in words, so the assistant and the person look at the same screen (the companion idea).
+  // Everything here comes from the browser, so it is only used as text for the model: ids are checked against the person's own tasks.
+  function screenText(ctx, user, s, mineById, allowed) {
+    if (!s || typeof s !== 'object') return '';
+    const kind = ['home', 'new', 'task', 'closed', 'history', 'account', 'admin'].indexOf(s.kind) >= 0 ? s.kind : '';
+    if (!kind) return '';
+    const L = ['THE PERSON\'S SCREEN RIGHT NOW (you and the person are looking at the same screen; "here", "this", "these", "that one" mean what is on it):'];
+    const users = usersById(ctx), q = function (v) { return '"' + clip(v, 120) + '"'; };
+    if (kind === 'home') {
+      const f = { all: 'all their open tasks', mine: 'only tasks assigned to them', byme: 'only tasks they assigned to others', late: 'only late (overdue) tasks', wait: 'only tasks waiting for approval', active: 'only tasks in progress', 'new': 'only tasks not started yet' };
+      L.push('The HOME screen with their task list. The list shows ' + (f[s.filter] || f.all) + (clip(s.q, 80).trim() ? '; the search box says ' + q(clip(s.q, 80).trim()) : '') + '.');
+      const shown = (Array.isArray(s.shown) ? s.shown : []).map(String).filter(function (id, i, arr) { return mineById[id] && arr.indexOf(id) === i; }).slice(0, 25);
+      L.push(shown.length ? 'Tasks listed on the screen (' + shown.length + '): ' + shown.map(function (id) { return q(mineById[id].title) + ' (id=' + id + ')'; }).join('; ') : 'No task is listed on the screen at the moment.');
+      L.push('Here you can answer about their tasks, point tasks out, filter or search the list (show_page), open a task, or start a new one.');
+    } else if (kind === 'new') {
+      const d = s.draft && typeof s.draft === 'object' ? s.draft : {};
+      const title = clip(d.title, LIMITS.title).trim(), desc = clip(d.description, 300).trim(), due = /^\d{4}-\d{2}-\d{2}$/.test(String(d.due || '')) ? String(d.due) : '';
+      const who = (Array.isArray(d.assigneeIds) ? d.assigneeIds : []).map(String).filter(function (id, i, arr) { return allowed[id] && arr.indexOf(id) === i; }).map(function (id) { return users[id] ? users[id].name : ''; }).filter(Boolean);
+      L.push('The NEW TASK form (nothing is created yet). Filled in so far: title ' + (title ? q(title) : '(empty)') + '; assigned to ' + (who.length ? who.join(', ') : 'nobody yet') + '; due ' + (due ? niceDate(due) : 'not set') + '; details ' + (desc ? q(desc) : 'none') + '.');
+      L.push('Help them finish it: use the fill_task action to fill in or change the form for them (they press the create button themselves), and tell them what is still missing (a title and at least one person). Only use create_task if they clearly tell you to create it now.');
+    } else if (kind === 'task') {
+      L.push('The page of one open task (the task is named below), where they read its conversation and update progress.');
+      const sl = Math.round(Number(s.slider));
+      if (s.slider !== undefined && s.slider !== null && sl >= 0 && sl <= 100) L.push('Their progress slider currently shows ' + sl + '%.');
+      const draft = clip(s.draft, 300).trim();
+      if (draft) L.push('They have started typing this message (not sent yet): ' + q(draft));
+    } else if (kind === 'closed') L.push('The page of a COMPLETED task in History (read only; the task is named below).');
+    else if (kind === 'history') L.push('The HISTORY list of completed tasks' + (clip(s.q, 80).trim() ? '; the search box says ' + q(clip(s.q, 80).trim()) : '') + '.');
+    else if (kind === 'account') L.push('Their ACCOUNT page (profile, password, voice and display settings).');
+    else L.push('An ADMINISTRATOR page (users, job titles or the org chart). You cannot change anything there.');
+    return L.join('\n');
+  }
+
   A.assistant = { run: function (ctx, user, req) {
     needAi(ctx, user);
     const text = clip(req.text, LIMITS.maxAssistText).trim();
@@ -948,12 +998,13 @@ function createCore(env) {
       const ix = ctx.rows('ArchiveIndex').filter(function (x) { return x.id === String(req.archivedId) && x.participantIds.indexOf(user.id) >= 0; })[0];
       if (ix) { focus = { id: ix.id, title: ix.title }; context += '\n\n' + archivedText(ctx, ix); }
     }
-    let raw;
-    try { raw = env.ai.assistant({ context: context, history: history, text: text, audio: audio, pending: pending, focus: focus, files: files, userName: user.name }); }
-    catch (e) { env.log('assistant failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.'); }
-    raw = raw || {};
     const mineById = {}; openTasksOf(ctx, user).forEach(function (t) { mineById[t.id] = t; });
     const allowed = {}; assignableFor(ctx, user).forEach(function (p) { allowed[p.id] = 1; });
+    const screen = screenText(ctx, user, req.screen, mineById, allowed);
+    let raw;
+    try { raw = env.ai.assistant({ context: context, history: history, text: text, audio: audio, pending: pending, focus: focus, files: files, screen: screen, userName: user.name }); }
+    catch (e) { env.log('assistant failed: ' + e); throw fail('AI_FAILED', 'The assistant is not available right now. Please try again in a minute.'); }
+    raw = raw || {};
     const actions = [], problems = [];
     (Array.isArray(raw.actions) ? raw.actions : []).slice(0, 5).forEach(function (a) {
       const r = cleanAction(ctx, user, a, mineById, allowed);

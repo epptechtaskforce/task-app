@@ -2,7 +2,9 @@
 (function () {
   'use strict';
   const root = document.getElementById('app');
-  const S = { user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
+  // S.kind / S.peek: which screen is open and a live look at it (what is filled in, what is listed). The AI bubble asks for it on every
+  // question so that it and the person look at the same screen. S.fill lets it fill in the New task form; S.pendingFill waits for that form.
+  const S = { kind: '', peek: null, fill: null, pendingFill: null, user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
 
   /* ============================== helpers ============================== */
 
@@ -368,6 +370,8 @@
       return copy;
     }
 
+    S.peek = function () { return { filter: S.filter, q: S.q, shown: tasks.filter(matches).map(function (t) { return t.id; }) }; };   // what the AI bubble is told about this screen
+
     /* ---- one stacked bar and four big numbers: the whole picture, and each number is a filter ---- */
     function drawStats() {
       const counts = { late: 0, wait: 0, active: 0, 'new': 0 };
@@ -469,6 +473,7 @@
     const createLabel = h('span', null, 'Create task');
     const createBtn = h('button', { class: 'btn primary', type: 'button' }, icon('send', 18), createLabel);
     let dueVal = '';
+    const more = h('details', { class: 'more' }, h('summary', null, icon('plus', 15), 'Add details'), desc);
 
     // ---- due date ----
     const dueInput = h('input', { type: 'date', 'aria-label': 'Pick a due date' });
@@ -551,11 +556,22 @@
       title,
       h('div', { class: 'draft-label' }, icon('users', 14), 'Assigned to'), zone,
       h('div', { class: 'draft-label' }, icon('calendar', 14), 'Due'), dueRow,
-      h('details', { class: 'more' }, h('summary', null, icon('plus', 15), 'Add details'), desc)));
+      more));
     shell(h('div', { class: 'builder' }, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), draft, dock), 'tasks', bar);
     renderZone(); drawDue();
     if (preId && people.some(function (p) { return p.id === preId; })) toggle(people.filter(function (p) { return p.id === preId; })[0], true);
-    title.focus();
+
+    // The AI bubble sees this form (S.peek) and can fill it in for the person (S.fill); the person still presses the button.
+    S.peek = function () { return { draft: { title: title.value, description: desc.value, due: dueVal, assigneeIds: Object.keys(chosen) } }; };
+    const glow = function (el) { el.classList.remove('ai-fill'); void el.offsetWidth; el.classList.add('ai-fill'); };
+    S.fill = function (a) {
+      if (a.title) { title.value = a.title; glow(title); }
+      if (a.description !== undefined) { desc.value = a.description; if (a.description) { more.open = true; glow(desc); } }
+      if (a.dueDate !== undefined) { dueVal = a.dueDate; dueInput.value = dueVal; drawDue(); glow(dueRow); }
+      if (Array.isArray(a.assigneeIds)) { people.forEach(function (p) { toggle(p, a.assigneeIds.indexOf(p.id) >= 0); }); glow(zone); }
+    };
+    if (S.pendingFill) { const f = S.pendingFill; S.pendingFill = null; S.fill(f); }
+    if (!title.value) title.focus();
   }
 
   /* ============================== conversation pieces ============================== */
@@ -680,6 +696,7 @@
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
     const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
+    S.peek = function () { const sl = document.querySelector('.slider-box input[type=range]'), ta = document.querySelector('.composer textarea'); return { slider: sl ? Number(sl.value) : undefined, draft: ta ? ta.value : '' }; };   // what the AI bubble is told about this screen
     const onChanged = function () { refresh(true).catch(function () {}); };   // the AI bubble just posted or changed something here
     window.addEventListener('taskapp:changed', onChanged); onLeave(function () { window.removeEventListener('taskapp:changed', onChanged); });
     const isAssignee = function () { return task.role === 'assignee'; };
@@ -900,6 +917,7 @@
   function viewHistory() {
     const q = h('input', { type: 'search', placeholder: 'Search closed tasks by title, person or summary…', 'aria-label': 'Search history', value: S.histQ }); S.histQ = '';   // (the assistant may have filled it in)
     const list = h('div');
+    S.peek = function () { return { q: q.value }; };
     shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks, with their full conversation.'))), h('div', { class: 'search', style: 'margin-bottom:1rem' }, icon('search', 18), q), list), 'history');
     let timer = null;
     async function load() {
@@ -1147,7 +1165,7 @@
   /* ============================== router / boot ============================== */
 
   function route() {
-    stopAudio(); stopTimers(); runLeave(); unsettle();
+    stopAudio(); stopTimers(); runLeave(); unsettle(); S.peek = null; S.fill = null; S.kind = '';
     if (!S.user) return showLogin();
     if (S.user.mustChange) { Assistant.hide(); return viewMustChange(); }
     Profiles.refresh();
@@ -1158,6 +1176,8 @@
       Assistant.where({ task: p[0] === 'task' && p[1] ? decodeURIComponent(p[1]) : '', archived: p[0] === 'history' && p[1] ? decodeURIComponent(p[1]) : '' });
     }
     const adminOnly = function (fn) { return S.user.isAdmin ? fn() : go('#/tasks'); };
+    S.kind = { tasks: 'home', 'new': 'new', task: 'task', history: p[1] ? 'closed' : 'history', account: 'account', admin: 'admin' }[p[0]] || '';
+    if (S.kind !== 'new') S.pendingFill = null;
     switch (p[0]) {
       case 'tasks': return viewTasks();
       case 'assistant': return go('#/tasks');   // the AI is now the floating bubble
@@ -1206,7 +1226,20 @@
     same('#/tasks');
   }
 
-  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate, showTask: showTask, showPage: showPage, clearSpot: clearSpot };
+  // What is on screen right now, for the AI bubble (it is sent with every question; the server checks it).
+  function screen() {
+    const out = { kind: S.kind };
+    if (!out.kind) return undefined;
+    try { Object.assign(out, S.peek ? S.peek() : {}); } catch (e) { /* a missing detail is not worth failing a question */ }
+    return out;
+  }
+  // The assistant fills in the New task form (from anywhere: it opens the form first).
+  function fillTask(a) {
+    if (S.kind === 'new' && S.fill) return S.fill(a);
+    S.pendingFill = a; go('#/new');
+  }
+
+  const App = { S: S, shell: shell, go: go, onLeave: onLeave, invalidate: invalidate, showTask: showTask, showPage: showPage, clearSpot: clearSpot, screen: screen, fillTask: fillTask };
 
   async function boot() {
     UI.theme.apply(); UI.accent.apply();
