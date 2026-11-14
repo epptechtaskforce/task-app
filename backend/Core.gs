@@ -58,7 +58,7 @@ const LIMITS = {
   name: 80, title: 120, description: 2000, text: 4000, transcript: 8000, note: 300,
   maxAssignees: 20, maxAudioB64: 6000000, maxWavB64: 9000000, maxVoiceSecs: 150, maxLinks: 3000,
   bio: 300, photo: 20000,  // photo = a small square JPEG as a data: URL (the browser shrinks it to about 128 px before sending)
-  maxFileB64: 7000000,     // about 5 MB of file (base64 text is 4/3 bigger)
+  maxFileB64: 14000000,    // about 10 MB of file (base64 text is 4/3 bigger)
   thumb: 9000,             // small preview picture stored with a shared image
   fileName: 100, maxAssistB64: 3200000, maxAssistText: 1500
 };
@@ -648,7 +648,7 @@ function createCore(env) {
     if (!mime) throw fail('VALIDATION', 'That kind of file cannot be shared here. Use photos, PDF, Word, Excel, PowerPoint or text files.');
     const b64 = String(req.b64 || '');
     if (!b64) throw fail('VALIDATION', 'No file received');
-    if (b64.length > LIMITS.maxFileB64) throw fail('VALIDATION', 'That file is too big. The limit is 5 MB.');
+    if (b64.length > LIMITS.maxFileB64) throw fail('VALIDATION', 'That file is too big. The limit is 10 MB.');
     if (!/^[A-Za-z0-9+\/]+={0,2}$/.test(b64)) throw fail('VALIDATION', 'The file could not be read');
     if (FILE_MAGIC[ext] && b64.indexOf(FILE_MAGIC[ext]) !== 0) throw fail('VALIDATION', 'This does not look like a real .' + ext + ' file');
     const size = Math.floor(b64.length * 3 / 4) - (b64.slice(-2) === '==' ? 2 : b64.slice(-1) === '=' ? 1 : 0);

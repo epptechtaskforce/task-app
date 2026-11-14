@@ -534,7 +534,7 @@
   /* ---------- photos and documents ---------- */
   const FILE_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.rtf,.odt,.ods';
   const FILE_EXTS = 'jpg jpeg png webp gif pdf doc docx xls xlsx ppt pptx txt csv rtf odt ods'.split(' ');
-  const MAX_FILE_BYTES = 5 * 1024 * 1024;
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
   function fileExt(name) { const m = /\.([A-Za-z0-9]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
   function fileKind(name) {
     const e = fileExt(name);
@@ -575,7 +575,7 @@
     const isImg = type.indexOf('image/') === 0 || ['jpg', 'jpeg', 'png', 'webp', 'gif'].indexOf(e) >= 0;
     if (isImg) return prepareImage(file);
     if (FILE_EXTS.indexOf(e) < 0) throw new Error('"' + file.name + '" is not a file type that can be shared. Use photos, PDF, Word, Excel, PowerPoint or text files.');
-    if (file.size > MAX_FILE_BYTES) throw new Error('"' + file.name + '" is ' + fmtSize(file.size) + '. The limit is 5 MB.');
+    if (file.size > MAX_FILE_BYTES) throw new Error('"' + file.name + '" is ' + fmtSize(file.size) + '. The limit is 10 MB.');
     return { name: file.name, b64: await readB64(file) };
   }
   function pickFiles(kind) {
@@ -598,7 +598,7 @@
         return h('button', { type: 'button', class: 'attach-opt', onclick: function () { pickFiles(kind).then(answer); m.close(); } }, h('span', { class: 'ic' }, icon(ic, 22)), h('span', null, title, h('small', null, sub)));
       };
       m = modal({ title: 'Share a file', noFocus: true, onClose: function () { setTimeout(function () { answer([]); }, 300); },
-        body: h('div', { class: 'attach-sheet' }, opt('camera', 'Take a photo', 'Use the camera', 'camera'), opt('image', 'Photo from gallery', 'Pictures are shrunk automatically', 'photo'), opt('file', 'Document', 'PDF, Word, Excel, PowerPoint, text (up to 5 MB)', 'doc')) });
+        body: h('div', { class: 'attach-sheet' }, opt('camera', 'Take a photo', 'Use the camera', 'camera'), opt('image', 'Photo from gallery', 'Pictures are shrunk automatically', 'photo'), opt('file', 'Document', 'PDF, Word, Excel, PowerPoint, text (up to 10 MB)', 'doc')) });
     });
   }
   function b64Url(b64, mime) {

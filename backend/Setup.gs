@@ -258,6 +258,17 @@ function smokeTest() {
     check(/no Google account/i.test(refusal), 'sharing goes through the Drive web service, and an address without a Google account is refused in plain words: ' + refusal);
     const probed = epp.getFoldersByName('Smoke Person');
     check(!probed.hasNext() || probed.next().getViewers().length === 0, 'nothing was left shared after the refusal');
+    // the biggest document the app accepts (10 MB; as bytes "%PDF-1" and then "ABC" repeated), through Drive and into the archive zip
+    const tBig = must('createTask', boss1, { title: 'Big file task', assigneeIds: [u2.user.id] }).task;
+    const bigB64 = 'JVBERi0x' + new Array(3495001).join('QUJD'), bigBytes = 6 + 3 * 3495000;
+    const bm = must('postFile', staff1, { taskId: tBig.id, name: 'Big contract.pdf', b64: bigB64 }).message;
+    check(bm.file.size === bigBytes, 'a document of 10 MB is accepted: ' + bm.file.size + ' bytes');
+    check(must('getFile', boss1, { messageId: bm.id }).b64 === bigB64, 'the 10 MB document is read back from Drive unchanged');
+    check(call('postFile', staff1, { taskId: tBig.id, name: 'Too big.pdf', b64: 'JVBERi0x' + new Array(3500002).join('QUJD') }).code === 'VALIDATION', 'a document over 10 MB is refused');
+    must('setProgress', staff1, { taskId: tBig.id, progress: 100 });
+    const t0big = Date.now(); must('approveTask', boss1, { taskId: tBig.id });
+    const docBig = must('getArchived', staff1, { taskId: tBig.id }), zBig = zipOf(docBig), eBig = zBig ? entries(zBig) : {}, nBig = Object.keys(eBig).filter(function (n) { return n.indexOf('Files/') === 0; });
+    check(nBig.length === 1 && eBig[nBig[0]].length === bigBytes && eBig[nBig[0]].slice(0, 12) === '%PDF-1ABCABC', 'the 10 MB document is inside the zip, complete (approval took ' + Math.round((Date.now() - t0big) / 1000) + ' s)');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);
@@ -586,31 +597,26 @@ function simulationClean(confirmText) {
   Logger.log('Simulation removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '.');
 }
 
-// Real-Drive check of a BIG archive: `count` documents of about 5 MB each (the biggest file the app accepts) go through the app's own saveZip, which must
-// make the zip, open it again and find every file with the same size and content. Everything is made in a temporary folder and removed at the end.
-// Run it from the editor: archiveSizeTest5 (5 files), archiveSizeTest10, archiveSizeTest20, archiveSizeTest30. Nothing real is touched.
-function archiveSizeTest_(count) {
+// Real-Drive check of a BIG archive: `count` documents of `mb` MB each go through the app's own saveZip, which must make the zip(s), open them again and find
+// every file with the same size and content. Everything is made in a temporary folder and removed at the end. The files are copies of one block of random
+// bytes (they do not compress, like real photos and PDFs); the copy is made inside Drive, which is fast.
+// Run from the editor: archiveSizeTest30 (30 x 5 MB), archiveSizeTest200 (20 x 10 MB = 200 MB). Nothing real is touched.
+function archiveSizeTest_(count, mb) {
   const t0 = Date.now(), root = DriveApp.createFolder('ARCHIVE SIZE TEST (temporary)'), epp = root.createFolder('EPP'), loose = root.createFolder('loose');
   try {
-    const bytes = []; for (let i = 0; i < 5 * 1024 * 1024; i++) bytes.push(Math.floor(Math.random() * 256) - 128);     // about 5 MB of random bytes: they do not compress, like real photos and PDFs
-    const moves = [], trash = [];
-    for (let i = 0; i < count; i++) {
-      bytes[0] = i - 128; bytes[1] = 37;
-      const f = loose.createFile(Utilities.newBlob(bytes, 'application/pdf', 'big-' + i + '.pdf')); moves.push({ id: f.getId(), name: 'Files/big-' + i + '.pdf' }); trash.push(f.getId());
-    }
-    Logger.log('made ' + count + ' files of ' + Math.round(bytes.length / 1048576) + ' MB in ' + Math.round((Date.now() - t0) / 1000) + ' s');
+    const bytes = []; for (let i = 0; i < mb * 1024 * 1024; i++) bytes.push(Math.floor(Math.random() * 256) - 128);
+    const first = loose.createFile(Utilities.newBlob(bytes, 'application/pdf', 'big-0.pdf')), moves = [{ id: first.getId(), name: 'Files/big-0.pdf' }], trash = [first.getId()];
+    for (let i = 1; i < count; i++) { const f = first.makeCopy('big-' + i + '.pdf', loose); moves.push({ id: f.getId(), name: 'Files/big-' + i + '.pdf' }); trash.push(f.getId()); }
+    Logger.log('made ' + count + ' files of ' + mb + ' MB (' + (count * mb) + ' MB) in ' + Math.round((Date.now() - t0) / 1000) + ' s');
     const arch = new DriveArchive_(root.getId(), epp.getId()), t1 = Date.now();
     const saved = arch.saveZip({ person: 'Size Test', zipName: 'EPP-9999 - size test.zip', files: [{ name: 'Summary.txt', content: 'x', mime: 'text/plain' }, { name: 'Conversation.txt', content: 'y', mime: 'text/plain' }], moves: moves, trashIds: trash });
-    const zip = DriveApp.getFileById(saved.fileId);
-    Logger.log('OK: ' + saved.parts + ' zip file(s) for ' + count + ' documents (the first one ' + Math.round(zip.getSize() / 1048576) + ' MB), made and checked in ' + Math.round((Date.now() - t1) / 1000) + ' s; the loose files were then trashed: ' + trash.every(function (id) { return DriveApp.getFileById(id).isTrashed(); }));
+    Logger.log('OK: ' + saved.parts + ' zip file(s) for ' + count + ' documents, made and checked in ' + Math.round((Date.now() - t1) / 1000) + ' s; the loose files were then trashed: ' + trash.every(function (id) { return DriveApp.getFileById(id).isTrashed(); }));
   } catch (e) {
-    Logger.log('FAILED with ' + count + ' files: ' + e);
+    Logger.log('FAILED with ' + count + ' files of ' + mb + ' MB: ' + e);
   } finally { root.setTrashed(true); }
 }
-function archiveSizeTest5() { archiveSizeTest_(5); }
-function archiveSizeTest10() { archiveSizeTest_(10); }
-function archiveSizeTest20() { archiveSizeTest_(20); }
-function archiveSizeTest30() { archiveSizeTest_(30); }
+function archiveSizeTest30() { archiveSizeTest_(30, 5); }
+function archiveSizeTest200() { archiveSizeTest_(20, 10); }
 
 /* ------------------------------ AI helpers ------------------------------ */
 
