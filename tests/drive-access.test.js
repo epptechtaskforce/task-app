@@ -12,7 +12,7 @@ function fakeDrive(owner) {
   const NONE = 'NONE', VIEW = 'VIEW', EDIT = 'EDIT', PRIVATE = 'PRIVATE', LINK = 'ANYONE_WITH_LINK';
   const mkFolder = (name) => {
     const f = { name, viewers: new Set(), editors: new Set(), access: PRIVATE, children: {}, id: 'ID-' + name,
-      getName: () => name, getId: () => f.id,
+      getName: () => name, getId: () => f.id, getOwner: () => ({ getEmail: () => owner }),
       getAccess: (e) => f.editors.has(e) ? EDIT : f.viewers.has(e) ? VIEW : NONE,
       getSharingAccess: () => f.access, setSharing: (a) => { f.access = a; },
       addViewer: (e) => { f.editors.delete(e); f.viewers.add(e); }, removeViewer: (e) => { f.viewers.delete(e); },
@@ -36,7 +36,7 @@ function fakeDrive(owner) {
   return { root, epp, drive, calls, fetch, session: { getEffectiveUser: () => ({ getEmail: () => owner }) } };
 }
 function archiveWith(fake) {
-  const ctx = { DriveApp: fake.drive, Session: fake.session, ScriptApp: { getOAuthToken: () => 'token-123' }, UrlFetchApp: { fetch: (u, o) => fake.fetch(u, o) }, PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty: () => {} }) } };
+  const ctx = { DriveApp: fake.drive, ScriptApp: { getOAuthToken: () => 'token-123' }, UrlFetchApp: { fetch: (u, o) => fake.fetch(u, o) }, PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty: () => {} }) } };
   vm.createContext(ctx);
   vm.runInContext(src + '\n;this.DriveArchive_ = DriveArchive_;', ctx);
   return new ctx.DriveArchive_('archive-root', 'ID-EPP');
@@ -95,4 +95,8 @@ test('unshareFolder: withdraws the access, and says so when it is still there', 
   assert.equal(fake.epp.children.Kamala.viewers.size, 0);
   const folder = fake.epp.children.Kamala; folder.addViewer('k@gmail.com'); folder.removeViewer = () => {};         // access that cannot be removed
   assert.throws(() => a.unshareFolder({ person: 'Kamala', email: 'k@gmail.com' }), /still there/);
+});
+
+test('Adapters.gs does not use calls that need a Google permission the project was never given (they only fail on the real Drive)', () => {
+  assert.equal(/getEffectiveUser|getActiveUser/.test(src), false);
 });
