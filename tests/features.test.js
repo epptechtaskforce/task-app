@@ -226,7 +226,7 @@ test('voice notes: the AI is told who is in the task, to help it spell names', (
 test('assistant: the whole answer is what gets spoken; the speak action needs a voice and fails politely without one', () => {
   const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
   ai.reply = () => ({ reply: 'You have two tasks. One is late and needs a call today. The other is fine.', spoken: 'Two tasks, one is late.', actions: [] });
-  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken, 'You have two tasks. One is late and needs a call today. The other is fine.');   // not a shortened version
+  assert.equal(app.ok('assistant', s.tok.mgr, { text: 'status?' }).spoken.replace(/\s+/g, ' '), 'You have two tasks. One is late and needs a call today. The other is fine.');   // every word is spoken, not a shortened version (shown as points, spoken without the dashes)
   ai.reply = () => ({ reply: 'Done.', actions: [{ type: 'open_task', task_id: 'T-nope' }] });
   const withNote = app.ok('assistant', s.tok.mgr, { text: 'x' });
   assert.ok(withNote.reply.includes('(Note:') && withNote.spoken === 'Done.');                                                                                     // the note is never read aloud
@@ -464,4 +464,34 @@ test('screen: a dash after a progress bar is dropped, and the install tip is hid
   const read = (f) => require('fs').readFileSync(require('path').join(__dirname, '..', 'docs', 'js', f), 'utf8');
   assert.ok(/part = part\.replace\(\/\^\\s\*\[-/.test(read('assistant.js')));
   assert.ok(/display-mode: standalone\)'\)\.matches\) \|\| navigator\.standalone === true\) \? null : h\('div', \{ class: 'card tip' \}/.test(read('app.js')));
+});
+
+test('answer shape: whichever AI service answers, several facts reach the screen as a headline and points', () => {
+  const ai = spyAi(); const app = makeApp({ ai }); const s = seed(app);
+  const ask = (reply) => { ai.reply = () => ({ reply, actions: [] }); return app.ok('assistant', s.tok.mgr, { text: 'what is going on?' }).reply; };
+  const lines = (r) => r.split('\n');
+  // a plain paragraph becomes a headline and points
+  let r = ask('The pump house roof is half done. Two sheets are still missing. The supplier promised delivery on Friday. Nothing else is blocking it.');
+  assert.deepEqual(lines(r), ['The pump house roof is half done.', '- Two sheets are still missing.', '- The supplier promised delivery on Friday.', '- Nothing else is blocking it.']);
+  // the mix a model really sends (paragraph, points, then a stray sentence): only the headline stays a sentence
+  r = ask('The weekend shifts are planned. The manager noted mismatches and it was sent back.\n- [good] Saturday is covered.\n- [late] Sunday still needs two people.\nThe manager sent it back again today.');
+  assert.deepEqual(lines(r), ['The weekend shifts are planned.', '- The manager noted mismatches and it was sent back.', '- [good] Saturday is covered.', '- [late] Sunday still needs two people.', '- The manager sent it back again today.']);
+  // numbered lists, bold marks, headings and tags without a dash become points
+  r = ask('## Status\n**Roof** is half done.\n1. Sheets are missing\n[wait] Waiting for the supplier');
+  assert.deepEqual(lines(r), ['Status', '- Roof is half done.', '- Sheets are missing', '- [wait] Waiting for the supplier']);
+  // one-fact answers, short two-sentence answers and questions are left alone
+  assert.equal(ask('Your next task is due on Friday.'), 'Your next task is due on Friday.');
+  assert.equal(ask('Hello Kamala. How can I help?'), 'Hello Kamala. How can I help?');
+  // a closing question stays a plain line; the note about what could not be done stays after the points
+  r = ask('I will post this message to the team. It says the roof is done. The tiles are ordered. Shall I go ahead?');
+  assert.deepEqual(lines(r), ['I will post this message to the team.', '- It says the roof is done.', '- The tiles are ordered.', 'Shall I go ahead?']);
+  // already well-formed answers are not changed
+  const good = 'Two things need you.\n- [late] Pump house roof [35%] is 3 days late\n- [wait] Gate lock [100%] waits for your approval';
+  assert.equal(ask(good), good);
+  // the spoken version has no tags and no markup
+  ai.reply = () => ({ reply: good, actions: [] });
+  assert.equal(/\[late\]|\[wait\]|\*\*|^-/m.test(app.ok('assistant', s.tok.mgr, { text: 'x' }).spoken), false);   // no tags, no markup, no dash in front of a point
+  // the prompt tells the model how to explain a conversation
+  const adapters = require('fs').readFileSync(require('path').join(__dirname, '..', 'backend', 'Adapters.gs'), 'utf8');
+  assert.ok(adapters.includes('EXPLAINING A CONVERSATION') && adapters.includes('Never write a paragraph') && adapters.includes('Waiting for:'));
 });

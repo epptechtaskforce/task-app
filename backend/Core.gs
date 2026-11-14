@@ -1030,9 +1030,32 @@ function createCore(env) {
     if (!t || t.split(' ').length > 4 || /\b(change|edit|instead|make|shorter|longer|add)\b/.test(t)) return false;
     return /^(no|nope|nah|cancel|stop|delete|don't|dont|do not|never mind|nevermind|leave it|forget it|scrap that|discard)\b/.test(t);
   }
+  // However the model words its answer, a reply with several facts reaches the screen as ONE headline sentence and points ("- "). The prompt asks for this
+  // (FORMAT), but the free AI services do not all obey it, and the answer changes whenever the app falls back to another service. A one-fact answer
+  // (one or two short sentences), a closing question ("Shall I go ahead?") and the "(Note: ...)" line are left alone.
+  const POINT_RE = /^(?:[-\u2022*]|\d+[.)])\s+/, TAG_RE = /^\[(?:late|urgent|bad|overdue|blocked|wait|watch|pending|good|ok|done|info|note)\]/i;
+  function shapeReply(text) {
+    let t = String(text || '').replace(/\*\*|__/g, '').replace(/^#+\s*/gm, '').trim();
+    const at = t.indexOf('\n\n(Note:'), note = at >= 0 ? t.slice(at) : '';
+    if (at >= 0) t = t.slice(0, at);
+    const sentences = function (x) { return x.replace(/([.!?])\s+(?=[A-Z\[(])/g, '$1\n').split('\n').map(function (y) { return y.trim(); }).filter(Boolean); };
+    const lines = t.split(/\n+/).map(function (l) { return l.trim(); }).filter(Boolean);
+    const isPoint = function (l) { return POINT_RE.test(l) || TAG_RE.test(l); };
+    if (!lines.some(isPoint) && t.length <= 240 && sentences(t).length <= 2) return t + note;
+    const out = [];
+    lines.forEach(function (l) {
+      if (isPoint(l)) { out.push('- ' + l.replace(POINT_RE, '')); return; }
+      sentences(l).forEach(function (sn) {
+        if (!out.length) out.push(sn);                                  // the first sentence is the headline
+        else if (/\?$/.test(sn)) out.push(sn);                          // a closing question stays a plain line
+        else out.push('- ' + sn);
+      });
+    });
+    return out.join('\n') + note;
+  }
   // The reply as it is spoken: the picture tags ([late], [35%]) are for the screen only.
   function speakable(text) {
-    return String(text || '').replace(/\[(?:late|urgent|bad|overdue|blocked|wait|watch|pending|good|ok|done|info|note)\]\s*/gi, '').replace(/\[(\d{1,3})%\]/g, '$1 percent');
+    return String(text || '').replace(/\[(?:late|urgent|bad|overdue|blocked|wait|watch|pending|good|ok|done|info|note)\]\s*/gi, '').replace(/\[(\d{1,3})%\]/g, '$1 percent').replace(/^[ \t]*[-\u2022*][ \t]+/gm, '');   // no tags, and no dash in front of a point
   }
   // Does this reply claim that something was sent / done?
   function claimsDone(reply) {
@@ -1086,7 +1109,7 @@ function createCore(env) {
       const r = cleanAction(ctx, user, a, mineById, allowed);
       if (r.ok) { actions.push(r.ok); if (r.partial) problems.push('I left out someone you are not allowed to assign tasks to'); } else problems.push(r.err);
     });
-    let reply = noIds(clip(raw.reply, 2500)).trim() || 'Sorry, I did not catch that. Could you say it again?';
+    let reply = shapeReply(noIds(clip(raw.reply, 2500)).trim()) || 'Sorry, I did not catch that. Could you say it again?';
     if (problems.length) reply += '\n\n(Note: ' + problems.filter(function (p, i, arr) { return arr.indexOf(p) === i; }).join('; ') + '.)';
     const confirm = decided;
     // Something is still waiting for the person's OK and nothing has been done: the answer must not say it has been
