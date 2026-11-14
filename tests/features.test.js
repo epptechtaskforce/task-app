@@ -454,4 +454,13 @@ test('points and pictures: the reply keeps its tags for the screen, the spoken v
   // the model is told how to write them
   const adapters = require('fs').readFileSync(require('path').join(__dirname, '..', 'backend', 'Adapters.gs'), 'utf8');
   assert.ok(adapters.includes('FORMAT: the reply is drawn as points') && adapters.includes('[late]') && adapters.includes('[35%]'));
+  // every task point carries a tag, "late" is only for overdue tasks (waiting for approval is [wait]), and no dash follows a percent
+  assert.ok(adapters.includes('EVERY point starts with a tag') && adapters.includes('a task waiting for approval is never [late]') && adapters.includes('only the late ones'));
+  assert.ok(adapters.includes('with no dash before the note'));
+});
+
+test('screen: a dash after a progress bar is dropped, and the install tip is hidden inside the installed app', () => {
+  const read = (f) => require('fs').readFileSync(require('path').join(__dirname, '..', 'docs', 'js', f), 'utf8');
+  assert.ok(/part = part\.replace\(\/\^\\s\*\[-/.test(read('assistant.js')));
+  assert.ok(/display-mode: standalone\)'\)\.matches\) \|\| navigator\.standalone === true\) \? null : h\('div', \{ class: 'card tip' \}/.test(read('app.js')));
 });

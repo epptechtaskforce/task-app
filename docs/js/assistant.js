@@ -160,7 +160,9 @@
       if (tag && TONES[tag[1].toLowerCase()]) { if (bullet) tone = TONES[tag[1].toLowerCase()]; src = src.slice(tag[0].length); }
       const head = !bullet && !note && hasBullets && !headDone; if (head) headDone = true;
       const kids = [];
-      src.split(/(\[\d{1,3}%\])/).forEach(function (part) {
+      // models like to write "name [55%] - note": the bar already separates them, so a dash that follows a bar is dropped
+      src.split(/(\[\d{1,3}%\])/).forEach(function (part, i, all) {
+        if (i > 0 && /^\[\d{1,3}%\]$/.test(all[i - 1])) part = part.replace(/^\s*[-–—:,;]+\s*/, '');
         const pm = /^\[(\d{1,3})%\]$/.exec(part);
         if (pm) { const pc = Math.min(100, Number(pm[1])); kids.push(h('span', { class: 'aib-pct', style: '--p:' + pc + '%;' + delay(), 'aria-label': pc + ' percent' }, h('span', { class: 'bar' }, h('i')), h('b', null, pc + '%'))); return; }
         if (!part) return;
