@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Scan to install</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: grid; place-items: center; font: 800 2rem/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #5e173f; background: #fff; text-align: center; padding: 24px; box-sizing: border-box; }
+  .poster { display: flex; flex-direction: column; align-items: center; gap: 22px; }
+  .poster img.app { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 10px 24px -8px rgba(94, 23, 63, .5); }
+  .poster img.qr { width: min(78vw, 420px); height: auto; image-rendering: pixelated; }
+  .arrow { width: 44px; height: 44px; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <div class="poster">
+    <img class="app" src="icon-512.png" alt="">
+    <div>Task Manager</div>
+    <img class="qr" src="install-qr.svg" alt="QR code: scan with the phone camera to install Task Manager">
+    <svg class="arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15m0 0l-6-6m6 6l6-6"/></svg>
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-label="Phone camera"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><circle cx="12" cy="12" r="3.2"/><path d="M10 5.5h4"/></svg>
+  </div>
+</body>
+</html>
