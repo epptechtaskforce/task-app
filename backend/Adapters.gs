@@ -394,6 +394,26 @@ DriveArchive_.prototype.saveZip = function (o) {
   (o.trashIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
   return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + file.getName(), fileId: file.getId(), folderId: person.getId() };
 };
+// Gives one person read-and-download access to ONE folder: "EPP/<person>". Viewer only (cannot change, delete, move or share anything) and never by
+// link. It refuses the account that owns the Drive and any account that already reaches the EPP folder or the root of the Drive (that would be wider),
+// and it checks afterwards that Google really recorded view-only access; if not, it takes it back and says so.
+DriveArchive_.prototype.shareFolder = function (o) {
+  const email = String(o.email || '').trim().toLowerCase();
+  if (!email) throw new Error('No Google account email');
+  const owner = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
+  if (email === owner) throw new Error('That is the account that owns the app; it needs no access');
+  const epp = this.eppFolder(), folder = this.personFolder(o.person), P = DriveApp.Permission;
+  if (epp.getAccess(email) !== P.NONE || DriveApp.getRootFolder().getAccess(email) !== P.NONE) throw new Error('That Google account already has wider access to this Drive');
+  if (folder.getSharingAccess() !== DriveApp.Access.PRIVATE) folder.setSharing(DriveApp.Access.PRIVATE, P.NONE);      // never open to anyone with a link
+  folder.addViewer(email);
+  if (folder.getAccess(email) !== P.VIEW) { try { folder.removeViewer(email); } catch (e) { /* nothing more to undo */ } throw new Error('Google Drive did not record view-only access, so nothing was shared'); }
+  return { folderId: folder.getId() };
+};
+DriveArchive_.prototype.unshareFolder = function (o) {
+  const email = String(o.email || '').trim().toLowerCase(), folder = this.personFolder(o.person);
+  folder.removeViewer(email);
+  if (folder.getAccess(email) !== DriveApp.Permission.NONE) throw new Error('The access is still there: remove it in Google Drive (Share) for ' + email);
+};
 // The text files (Summary.txt, Conversation.txt) inside a task's zip: used only when the assistant looks at that one task.
 DriveArchive_.prototype.readZip = function (idx, wanted) {
   const out = {};

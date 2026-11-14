@@ -93,7 +93,7 @@
   function navModel() {
     const u = S.user, pure = isPureAdmin();
     const work = pure ? [] : [{ k: 'tasks', href: '#/tasks', label: 'Tasks', ic: 'tasks' }, { k: 'history', href: '#/history', label: 'History', ic: 'history' }];
-    const admin = u.isAdmin ? [{ k: 'users', href: '#/admin/users', label: 'Users', ic: 'users' }, { k: 'titles', href: '#/admin/titles', label: 'Job titles', ic: 'briefcase' }, { k: 'org', href: '#/admin/org', label: 'Org chart', ic: 'org' }] : [];
+    const admin = u.isAdmin ? [{ k: 'users', href: '#/admin/users', label: 'Users', ic: 'users' }, { k: 'titles', href: '#/admin/titles', label: 'Job titles', ic: 'briefcase' }, { k: 'org', href: '#/admin/org', label: 'Org chart', ic: 'org' }, { k: 'drive', href: '#/admin/drive', label: 'Drive access', ic: 'history' }] : [];
     const account = { k: 'account', href: '#/account', label: 'Account', ic: 'user' };
     return { work: work, admin: admin, account: account };
   }
@@ -103,7 +103,7 @@
   function shell(content, active, opts) {
     opts = opts || {};
     const u = S.user, m = navModel();
-    const adminKeys = ['users', 'titles', 'org'];
+    const adminKeys = ['users', 'titles', 'org', 'drive'];
 
     const sideLink = function (n) { return h('a', { href: n.href, class: (n.k === active ? 'active' : '') + (n.k === 'assistant' ? ' ai-link' : ''), 'data-nav': n.k, 'aria-current': n.k === active ? 'page' : false }, icon(n.ic, 20), n.label, n.k === 'tasks' ? unreadBadge() : null); };
     const sidebar = h('aside', { class: 'sidebar' },
@@ -951,7 +951,8 @@
       h('div', { class: 'sec-title' }, h('h3', null, 'Where it is saved')),
       h('p', { class: 'arch-path' }, 'Google Drive › EPP › ' + (ar.person || '') + ' › ' + (ar.zipName || '')),
       h('p', { class: 'muted small' }, 'The whole conversation (voice messages written out), every shared document and a full summary are inside that zip file. Whoever has access to the Drive folder can open it.'),
-      h('div', { class: 'row' }, ar.folderUrl ? h('a', { class: 'btn small', href: ar.folderUrl, target: '_blank', rel: 'noopener' }, 'Open the folder in Google Drive') : null, ar.fileUrl ? h('a', { class: 'btn small', href: ar.fileUrl, target: '_blank', rel: 'noopener' }, 'Open the zip') : null));
+      h('div', { class: 'row' }, ar.folderUrl ? h('a', { class: 'btn small', href: ar.folderUrl, target: '_blank', rel: 'noopener' }, 'Open the folder in Google Drive') : null, ar.fileUrl ? h('a', { class: 'btn small', href: ar.fileUrl, target: '_blank', rel: 'noopener' }, 'Open the zip') : null),
+      ar.canOpen ? null : h('p', { class: 'muted small' }, ar.mine ? 'To open it in Google Drive, ask for access in Account → Google Drive access.' : 'It is kept in the folder of the person who assigned it. Only that person can open it in Google Drive.'));
     const docCard = docs.length ? h('div', { class: 'card' }, h('div', { class: 'sec-title' }, h('h3', null, 'Shared documents (' + docs.length + ')')),
       h('ul', { class: 'doc-list' }, docs.map(function (d) { return h('li', null, h('strong', null, d.name), h('span', { class: 'muted small' }, ' · ' + d.by + ' · ' + d.at + (d.size ? ' · ' + Math.max(1, Math.round(d.size / 1024)) + ' KB' : ''))); }))) : null;
     return h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
@@ -1126,8 +1127,71 @@
 
   /* ============================== account & profile ============================== */
 
+  /* ============================== admin: Google Drive access ============================== */
+  // People who give tasks to others keep their finished tasks in their own Drive folder. Here the admin allows (or withdraws) read-and-download access
+  // to that ONE folder. The Google email is typed by the person themself on their Account page; the admin can only allow or refuse it.
+  async function viewDrive() {
+    const box = h('div', null, UI.skeleton('card', 2));
+    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Drive access'), h('p', { class: 'sub' }, 'People who give tasks to others keep the finished ones in their own folder in Google Drive. Here you allow a person to read and download that one folder. Nothing else.'))), box), 'drive');
+    async function load() {
+      let r;
+      try { r = await Api.call('adminDriveList'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
+      UI.clear(box);
+      if (!r.people.length) return box.appendChild(UI.emptyState('inbox', 'No one yet', 'People who can give tasks to others will appear here.'));
+      const card = h('div', { class: 'card' });
+      r.people.forEach(function (p) {
+        const act = function (action, title, text, label, done) {
+          return async function () {
+            if (!(await UI.confirm(title, text, label))) return;
+            await guarded(async function () { await Api.call(action, { userId: p.userId }, { timeout: 60000 }); UI.toast(done); await load(); });
+          };
+        };
+        const chip = p.status === 'granted' ? UI.chip('Allowed', 'ok', 'check') : p.status === 'requested' ? UI.chip('Asked', 'warn') : UI.chip('Has not asked');
+        const buttons = [];
+        if (p.status === 'requested') buttons.push(
+          h('button', { class: 'btn small primary', type: 'button', onclick: act('adminDriveGrant', 'Allow access?', p.name + ' (' + p.email + ') will be able to read and download everything in ' + p.folder + ', and nothing else. Google will email them a link.', 'Allow', 'Access allowed') }, 'Allow'),
+          h('button', { class: 'btn small', type: 'button', onclick: act('adminDriveRevoke', 'Refuse this request?', p.name + ' will not get access to Google Drive.', 'Refuse', 'Request refused') }, 'Refuse'));
+        if (p.status === 'granted') buttons.push(h('button', { class: 'btn small', type: 'button', onclick: act('adminDriveRevoke', 'Withdraw access?', p.name + ' (' + p.email + ') will no longer be able to open ' + p.folder + '.', 'Withdraw', 'Access withdrawn') }, 'Withdraw'));
+        card.appendChild(h('div', { class: 'list-row user' }, UI.avatar(p.name, '', p.userId),
+          h('div', { class: 'info' }, h('strong', null, p.name), h('span', { class: 'muted small' }, (p.jobTitle ? p.jobTitle + ' · ' : '') + p.folder + (p.email ? ' · ' + p.email : ''))),
+          h('div', { class: 'tags' }, chip), h('div', { class: 'row', style: 'gap:.4rem' }, buttons)));
+      });
+      box.appendChild(card);
+      box.appendChild(h('div', { class: 'note' }, 'Allowed people can open, read and download what is in their folder. They cannot change, delete, move or share anything, and they cannot see anything else in the Drive. Only the person can enter their Google email (on their Account page): you can allow or refuse it, not change it.'));
+    }
+    load();
+  }
+
   function viewAccount() {
     const me = S.user;
+    // ---- Google Drive access (only for people who give tasks to others: they have an archive folder) ----
+    const driveBox = h('div', { class: 'card', style: 'display:none' });
+    (async function () {
+      let r;
+      try { r = await Api.call('driveStatus'); } catch (e) { return; }
+      if (!r.eligible && !r.status) return;
+      const draw = function (st) {
+        UI.clear(driveBox);
+        driveBox.appendChild(h('h3', null, 'Google Drive access'));
+        if (st.status === 'granted') {
+          driveBox.appendChild(h('p', null, 'You can read and download the finished tasks you gave to others. You cannot change anything there.'));
+          driveBox.appendChild(h('p', { class: 'muted small' }, 'Google account: ' + st.email));
+          driveBox.appendChild(h('a', { class: 'btn small', href: st.folderUrl, target: '_blank', rel: 'noopener' }, 'Open my archive folder'));
+        } else if (st.status === 'requested') {
+          driveBox.appendChild(h('p', null, 'Waiting for the admin to allow it.'));
+          driveBox.appendChild(h('p', { class: 'muted small' }, 'Google account: ' + st.email));
+        } else {
+          const email = h('input', { type: 'email', placeholder: 'name@gmail.com', autocomplete: 'email', maxlength: 120, 'aria-label': 'Your Google account email' }), err = h('div');
+          driveBox.appendChild(h('p', { class: 'muted small' }, 'The finished tasks you gave to others are kept as zip files in a folder in Google Drive. Ask for access to read and download them. You will only ever see that one folder.'));
+          driveBox.appendChild(h('form', { onsubmit: async function (ev) {
+            ev.preventDefault(); UI.clear(err);
+            try { draw(Object.assign({ eligible: true }, await Api.call('requestDriveAccess', { email: email.value }))); UI.toast('Request sent to the admin'); }
+            catch (e) { err.appendChild(errBox(e)); }
+          } }, h('label', null, 'Your Google account email', email), h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:.6rem' }, 'Request access'), err));
+        }
+      };
+      draw(r); driveBox.style.display = '';
+    })();
     const o = UI.passwordField({ autocomplete: 'current-password' }), n = UI.passwordField({ autocomplete: 'new-password' }), r = UI.passwordField({ autocomplete: 'new-password' });
     const err = h('div');
     const form = h('form', { onsubmit: async function (ev) {
@@ -1186,6 +1250,7 @@
         })()),
       isPureAdmin() || !S.canUseAi ? null : Assistant.settingsCard(),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
+      driveBox,
       h('div', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('strong', null, 'App version'), h('div', { class: 'muted small' }, (window.Updater && window.Updater.version) || 'demo')),
         h('button', { class: 'btn small', type: 'button', onclick: async function () {
           const r = window.Updater ? await window.Updater.check(false) : 'unknown';
@@ -1223,6 +1288,7 @@
         if (p[1] === 'users') return adminOnly(viewUsers);
         if (p[1] === 'titles') return adminOnly(viewTitles);
         if (p[1] === 'org') return adminOnly(viewOrg);
+        if (p[1] === 'drive') return adminOnly(viewDrive);
         return go('#/tasks');
       case 'account': return viewAccount();
       default: return go('#/tasks');

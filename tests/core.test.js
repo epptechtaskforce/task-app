@@ -299,7 +299,7 @@ test('archive zip: summary says who/what/when, conversation is complete, names a
   // one zip, in the folder of the person who assigned the task, with the archive number and readable characters only
   assert.equal(doc.archive.path, 'EPP/MGR/EPP-0001 - Pump roof gate A - 2026-11-13.zip');
   assert.equal(doc.archive.person, 'MGR'); assert.equal(doc.archive.zipName, 'EPP-0001 - Pump roof gate A - 2026-11-13.zip');
-  assert.ok(doc.archive.folderUrl.indexOf('https://drive.google.com/drive/folders/') === 0 && doc.archive.fileUrl.indexOf('https://drive.google.com/file/d/') === 0);
+  assert.equal(doc.archive.canOpen, false); assert.equal(doc.archive.mine, true); assert.equal(doc.archive.folderUrl + doc.archive.fileUrl, '');   // Drive links only once the admin has allowed access
   assert.deepEqual(Object.keys(zip.files).sort(), ['Conversation.txt', 'Summary.txt']);
   // summary: number, place, purpose, who, when, how long, what is inside
   for (const bit of ['Archive ID:   EPP-0001', 'Stored in:    Google Drive > EPP > MGR > EPP-0001 - Pump roof gate A - 2026-11-13.zip', 'Pump: roof / gate "A"?', 'Fix the roof of the pump house', 'Assigned by:  MGR', 'WK1, WK2', 'Started:      2026-11-12', 'Completed:    2026-11-13', '(1 day)', 'Due date:     2026-11-20', 'Approved by:  MGR', 'IN THIS ZIP', '2 shared documents and pictures'])
@@ -365,6 +365,51 @@ test('default password: new accounts and admin resets start with 1111, which onl
   // wrong guesses of 1111 still lock the account like any other password
   for (let i = 0; i < 5; i++) app.call('login', null, { username: 'newperson', password: '0000' });
   app.err('login', null, { username: 'newperson', password: '1111' }, 'LOCKED');
+});
+
+test('drive access: only people who assign ask; the admin allows or withdraws; only that one folder, view-only; nobody else gets links', () => {
+  const app = makeApp(); const s = seed(app);
+  const shares = app.env._shares;
+  // wk1 gives tasks to nobody: no folder, nothing to ask for
+  assert.equal(app.ok('driveStatus', s.tok.wk1, {}).eligible, false);
+  app.err('requestDriveAccess', s.tok.wk1, { email: 'wk1@gmail.com' }, 'VALIDATION');
+  // mgr assigns (arrows to wk1, wk2): can ask, with a real-looking email
+  assert.deepEqual(app.ok('driveStatus', s.tok.mgr, {}), { eligible: true, status: '', email: '', folderUrl: '' });
+  for (const bad of ['', 'nope', 'a@b', 'two words@gmail.com', 'x'.repeat(130) + '@gmail.com']) app.err('requestDriveAccess', s.tok.mgr, { email: bad }, 'VALIDATION');
+  assert.equal(app.ok('requestDriveAccess', s.tok.mgr, { email: '  Manager.Name@Gmail.com ' }).status, 'requested');
+  assert.equal(app.ok('driveStatus', s.tok.mgr, {}).email, 'manager.name@gmail.com');
+  // the admin sees the request first; nobody else may use the admin actions
+  const list = app.ok('adminDriveList', s.A, {}).people;
+  assert.equal(list[0].name, 'MGR'); assert.equal(list[0].status, 'requested'); assert.equal(list[0].folder, 'EPP / MGR'); assert.equal(list[0].email, 'manager.name@gmail.com');
+  assert.ok(list.every((p) => p.name !== 'WK1' && p.name !== 'WK2'), 'people who assign nothing are not listed');
+  for (const act of ['adminDriveList', 'adminDriveGrant', 'adminDriveRevoke']) app.err(act, s.tok.mgr, { userId: s.users.mgr.id }, 'FORBIDDEN');
+  // nothing is shared until the admin allows it
+  assert.deepEqual(shares, {});
+  app.err('adminDriveGrant', s.A, { userId: s.users.ceo.id }, 'VALIDATION');                              // the CEO never asked: the admin cannot grant on their behalf
+  app.err('adminDriveGrant', s.A, { userId: s.users.wk1.id }, 'VALIDATION');
+  app.ok('adminDriveGrant', s.A, { userId: s.users.mgr.id });
+  assert.deepEqual(shares, { MGR: { 'manager.name@gmail.com': 'VIEW' } });                                // ONE folder, ONE person, view only
+  const st = app.ok('driveStatus', s.tok.mgr, {});
+  assert.equal(st.status, 'granted'); assert.ok(st.folderUrl.startsWith('https://drive.google.com/drive/folders/'));
+  app.err('requestDriveAccess', s.tok.mgr, { email: 'another@gmail.com' }, 'VALIDATION');                  // the Google account cannot be swapped silently
+  // the History page offers the Drive links to the person whose folder it is (once allowed), and to nobody else
+  const t = app.ok('createTask', s.tok.mgr, { title: 'Pump check', assigneeIds: [s.users.wk1.id] }).task;
+  app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 }); app.ok('approveTask', s.tok.mgr, { taskId: t.id });
+  const mine = app.ok('getArchived', s.tok.mgr, { taskId: t.id }).archive, theirs = app.ok('getArchived', s.tok.wk1, { taskId: t.id }).archive;
+  assert.equal(mine.canOpen, true); assert.ok(mine.folderUrl && mine.fileUrl);
+  assert.equal(theirs.canOpen, false); assert.equal(theirs.mine, false); assert.equal(theirs.folderUrl + theirs.fileUrl, '');
+  // withdrawing removes the access and the links; a refused request leaves nothing behind
+  app.ok('adminDriveRevoke', s.A, { userId: s.users.mgr.id });
+  assert.deepEqual(shares, { MGR: {} });
+  assert.equal(app.ok('driveStatus', s.tok.mgr, {}).status, '');
+  assert.equal(app.ok('getArchived', s.tok.mgr, { taskId: t.id }).archive.canOpen, false);
+  app.ok('requestDriveAccess', s.tok.ceo, { email: 'ceo@gmail.com' });
+  app.ok('adminDriveRevoke', s.A, { userId: s.users.ceo.id });                                              // refuse
+  assert.deepEqual(shares, { MGR: {} }); assert.equal(app.ok('driveStatus', s.tok.ceo, {}).status, '');
+  app.err('adminDriveRevoke', s.A, { userId: s.users.ceo.id }, 'NOT_FOUND');
+  // everything is in the audit log
+  const log = app.env.store.all('AuditLog').map((a) => a.action);
+  for (const a of ['drive.request', 'drive.grant', 'drive.revoke', 'drive.refuse']) assert.ok(log.includes(a), a);
 });
 
 test('maintenance removes expired sessions', () => {

@@ -120,6 +120,10 @@ python -m http.server 8765 --directory docs   # then http://localhost:8765/?demo
   Never put company names, usernames, URLs, keys or data in `main`. `HANDOVER.md` is deliberately git-ignored.
 - Editing tips for AI assistants on Windows: write large files with the file-write tool; do not build JS/regex with backslashes inside shell heredocs (they get mangled).
 
+## Drive access to one's archive folder
+
+Table `DriveAccess` (userId, email, status requested|granted, folderId...). Actions: `driveStatus`, `requestDriveAccess` (only people who have an arrow going out; the email is typed by the person; cannot be swapped while granted), admin-only `adminDriveList` / `adminDriveGrant` (needs a request first) / `adminDriveRevoke` (withdraw or refuse). Granting calls `env.archive.shareFolder({person: niceName(name,60), email})` which shares ONLY `EPP/<person>` as Viewer, keeps it private (no link), refuses the owner account and any account that already reaches the EPP folder or Drive root, and verifies the recorded permission is VIEW (else it takes it back). `getArchived` returns Drive links and `canOpen` only to the person whose folder it is, after the grant. Never add a code path that shares another folder, an editor role, or a link. Tests: `tests/drive-access.test.js` (fake Drive) and the `drive access` test in `tests/core.test.js`.
+
 ## Simulation (Setup.gs)
 
 `simulateCompany` makes ~100 tasks over 13 weeks for the real accounts: the plan `simPlan_` (pure, seeded, tested in `tests/simulation.test.js`, including a run through Core's real rules) is executed through `core.handle` with the clock set back (`env.now` override), virtual in-memory sessions and a stub AI; it runs in ~3-minute chunks, stores progress in script property `SIM_STATE`, and re-schedules itself with a one-off trigger until done. `simulationClean('REMOVE THE SIMULATION')` removes only its ids. Never run `setup()` to "start over": use `wipeWorkData(...)`.
