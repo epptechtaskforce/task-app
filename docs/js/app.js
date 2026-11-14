@@ -945,6 +945,20 @@
   // A task archived as a zip file: the app shows the main details; the whole conversation and the files are in the zip in Google Drive.
   function archivedDetails(doc) {
     const t = doc.task, ar = doc.archive || {}, docs = doc.documents || [];
+    // Without access, the person whose folder it is asks for it here, with the Google account they use (typed once, remembered on this device).
+    // Nobody else gets buttons: it is not their folder.
+    const gmail = function () { try { return localStorage.getItem('taskapp.gmail') || ''; } catch (e) { return ''; } };
+    const accessBox = function () {
+      if (!ar.mine) return h('p', { class: 'muted small' }, 'It is kept in the folder of the person who assigned it. Only that person can open it in Google Drive.');
+      if (ar.status === 'requested') return h('div', null, h('p', null, 'Waiting for the admin to allow it.'), h('p', { class: 'muted small' }, 'Google account: ' + ar.email));
+      const email = h('input', { type: 'email', placeholder: 'name@gmail.com', autocomplete: 'email', maxlength: 120, value: gmail(), style: 'width:100%', 'aria-label': 'Your Google account email' }), err = h('div');
+      return h('form', { onsubmit: async function (ev) {
+        ev.preventDefault(); UI.clear(err);
+        try { await Api.call('requestDriveAccess', { email: email.value }); try { localStorage.setItem('taskapp.gmail', email.value.trim().toLowerCase()); } catch (e2) { /* not remembered */ } UI.toast('Request sent to the admin'); viewArchived(doc.id); }
+        catch (e) { err.appendChild(errBox(e)); }
+      } }, h('p', { class: 'muted small' }, 'To open this in Google Drive, ask for access with your Google account. You will only ever see your own folder, to read and download.'),
+      h('label', { style: 'display:grid;gap:.3rem' }, 'Your Google account email', email), h('button', { class: 'btn primary small', type: 'submit', style: 'margin-top:.5rem' }, 'Request access'), err);
+    };
     const where = h('div', { class: 'card arch-where' },
       h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, ar.code || '–')),
         ar.code ? h('button', { class: 'btn small', type: 'button', onclick: function () { try { navigator.clipboard.writeText(ar.code); UI.toast('Copied ' + ar.code); } catch (e) { UI.toast('Archive ID: ' + ar.code); } } }, 'Copy ID') : null),
@@ -952,7 +966,7 @@
       h('p', { class: 'arch-path' }, 'Google Drive › EPP › ' + (ar.person || '') + ' › ' + (ar.zipName || '')),
       h('p', { class: 'muted small' }, 'The whole conversation (voice messages written out), every shared document and a full summary are inside that zip file. Whoever has access to the Drive folder can open it.'),
       h('div', { class: 'row' }, ar.folderUrl ? h('a', { class: 'btn small', href: ar.folderUrl, target: '_blank', rel: 'noopener' }, 'Open the folder in Google Drive') : null, ar.fileUrl ? h('a', { class: 'btn small', href: ar.fileUrl, target: '_blank', rel: 'noopener' }, 'Open the zip') : null),
-      ar.canOpen ? null : h('p', { class: 'muted small' }, ar.mine ? 'To open it in Google Drive, ask for access in Account → Google Drive access.' : 'It is kept in the folder of the person who assigned it. Only that person can open it in Google Drive.'));
+      ar.canOpen ? null : accessBox());
     const docCard = docs.length ? h('div', { class: 'card' }, h('div', { class: 'sec-title' }, h('h3', null, 'Shared documents (' + docs.length + ')')),
       h('ul', { class: 'doc-list' }, docs.map(function (d) { return h('li', null, h('strong', null, d.name), h('span', { class: 'muted small' }, ' · ' + d.by + ' · ' + d.at + (d.size ? ' · ' + Math.max(1, Math.round(d.size / 1024)) + ' KB' : ''))); }))) : null;
     return h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
@@ -1164,34 +1178,6 @@
 
   function viewAccount() {
     const me = S.user;
-    // ---- Google Drive access (only for people who give tasks to others: they have an archive folder) ----
-    const driveBox = h('div', { class: 'card', style: 'display:none' });
-    (async function () {
-      let r;
-      try { r = await Api.call('driveStatus'); } catch (e) { return; }
-      if (!r.eligible && !r.status) return;
-      const draw = function (st) {
-        UI.clear(driveBox);
-        driveBox.appendChild(h('h3', null, 'Google Drive access'));
-        if (st.status === 'granted') {
-          driveBox.appendChild(h('p', null, 'You can read and download the finished tasks you gave to others. You cannot change anything there.'));
-          driveBox.appendChild(h('p', { class: 'muted small' }, 'Open it with the Google account ' + st.email + ' (the one you gave).'));
-          driveBox.appendChild(h('a', { class: 'btn small', href: st.folderUrl, target: '_blank', rel: 'noopener' }, 'Open my archive folder'));
-        } else if (st.status === 'requested') {
-          driveBox.appendChild(h('p', null, 'Waiting for the admin to allow it.'));
-          driveBox.appendChild(h('p', { class: 'muted small' }, 'Google account: ' + st.email));
-        } else {
-          const email = h('input', { type: 'email', placeholder: 'name@gmail.com', autocomplete: 'email', maxlength: 120, 'aria-label': 'Your Google account email' }), err = h('div');
-          driveBox.appendChild(h('p', { class: 'muted small' }, 'The finished tasks you gave to others are kept as zip files in a folder in Google Drive. Ask for access to read and download them. You will only ever see that one folder. No email is sent: once the admin allows it, the button to open it appears here.'));
-          driveBox.appendChild(h('form', { onsubmit: async function (ev) {
-            ev.preventDefault(); UI.clear(err);
-            try { draw(Object.assign({ eligible: true }, await Api.call('requestDriveAccess', { email: email.value }))); UI.toast('Request sent to the admin'); }
-            catch (e) { err.appendChild(errBox(e)); }
-          } }, h('label', null, 'Your Google account email', email), h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:.6rem' }, 'Request access'), err));
-        }
-      };
-      draw(r); driveBox.style.display = '';
-    })();
     const o = UI.passwordField({ autocomplete: 'current-password' }), n = UI.passwordField({ autocomplete: 'new-password' }), r = UI.passwordField({ autocomplete: 'new-password' });
     const err = h('div');
     const form = h('form', { onsubmit: async function (ev) {
@@ -1250,7 +1236,6 @@
         })()),
       isPureAdmin() || !S.canUseAi ? null : Assistant.settingsCard(),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
-      driveBox,
       h('div', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('strong', null, 'App version'), h('div', { class: 'muted small' }, (window.Updater && window.Updater.version) || 'demo')),
         h('button', { class: 'btn small', type: 'button', onclick: async function () {
           const r = window.Updater ? await window.Updater.check(false) : 'unknown';

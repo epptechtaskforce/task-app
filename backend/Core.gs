@@ -1231,7 +1231,7 @@ function createCore(env) {
         version: 3, detailsOnly: true, id: idx.id,
         task: { id: idx.id, title: idx.title, description: idx.purpose || '', creator: brief(ctx, idx.creatorId), assignees: ids.slice(1).map(function (id) { return brief(ctx, id); }), createdAt: idx.createdAt, closedAt: idx.closedAt, approvedBy: idx.creatorName, summary: idx.summaryText ? { summary_en: idx.summaryText } : null },
         documents: idx.docs || [], messageCount: idx.messageCount,
-        archive: { code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id }
+        archive: { code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id, status: idx.creatorId === user.id && access ? access.status : '', email: idx.creatorId === user.id && access ? access.email : '' }
       };
     }
     const doc = readArchiveDoc(idx);   // the stored copy keeps what the AI understood from voice messages; the browser only gets the audio
