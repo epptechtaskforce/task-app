@@ -629,7 +629,7 @@
     if (btn) btn.disabled = true;
     try {
       const key = (o.archived ? 'a' : 'l') + m.id;
-      if (!fileUrls[key]) { const r = await Api.call('getFile', o.archived ? { archived: true, taskId: o.taskId, messageId: m.id } : { messageId: m.id }, { timeout: 120000 }); fileUrls[key] = { url: UI.b64Url(r.b64, r.mime), name: r.name }; }
+      if (!fileUrls[key]) { const r = await Api.call('getFile', o.archived ? { archived: true, taskId: o.taskId, messageId: m.id } : { messageId: m.id }, { timeout: 200000 }); fileUrls[key] = { url: UI.b64Url(r.b64, r.mime), name: r.name }; }
       const f = fileUrls[key];
       if (m.file.isImage) UI.lightbox(f.url, f.name); else { UI.saveUrl(f.url, f.name); UI.toast('Downloaded ' + f.name); }
     } catch (e) { if (e.code !== 'AUTH') UI.toast(e.message || 'Could not open this file.', 'bad'); }
@@ -758,7 +758,7 @@
 
     async function approve() {
       if (!(await UI.confirm('Close this task?', 'It will be saved as a zip file in Google Drive (conversation, documents and summary) and listed in History. This cannot be undone.', 'Agree & close', 'ok'))) return;
-      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 90000 }); UI.confetti(); UI.toast('Task closed and archived'); go('#/tasks'); });
+      await guarded(async function () { await Api.call('approveTask', { taskId: id }, { timeout: 300000 }); UI.confetti(); UI.toast('Task closed and archived'); go('#/tasks'); });
     }
     function sendBack() {
       const note = h('textarea', { maxlength: 300, placeholder: 'What still needs to be done? (optional)' });
@@ -857,7 +857,7 @@
         showPending(temp);
         try {
           const p = await UI.prepareFile(f);
-          await Api.call('postFile', { taskId: id, name: p.name, b64: p.b64, thumb: p.thumb, w: p.w, h: p.h }, { timeout: 170000 });
+          await Api.call('postFile', { taskId: id, name: p.name, b64: p.b64, thumb: p.thumb, w: p.w, h: p.h }, { timeout: 280000 });
         } catch (e) { if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); }
         await refresh(true).catch(function () { /* the next poll will show it */ });
         dropPending(temp);

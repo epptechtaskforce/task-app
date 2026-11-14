@@ -68,7 +68,9 @@ test('files: documents and photos are checked by type and content, and only task
   assert.equal(post(s.tok.wk1, { name: 'fake.pdf', b64: PNG_B64 }).code, 'VALIDATION');
   assert.equal(post(s.tok.wk1, { name: 'noext', b64: PDF_B64 }).code, 'VALIDATION');
   assert.equal(post(s.tok.wk1, { name: 'a.pdf', b64: 'JVBERi0<script>' }).code, 'VALIDATION');
-  assert.equal(post(s.tok.wk1, { name: 'big.pdf', b64: 'JVBERi' + 'A'.repeat(7000000) }).code, 'VALIDATION');
+  assert.equal(post(s.tok.wk1, { name: 'big.pdf', b64: 'JVBERi' + 'A'.repeat(14000000) }).code, 'VALIDATION');
+  // a document of about 10 MB is accepted (the limit is 10 MB), one just over it is not
+  assert.equal(post(s.tok.wk1, { name: 'ten.pdf', b64: 'JVBERi' + 'A'.repeat(13900000) }).ok, true);
   // a preview that is not a small JPEG is dropped, not stored
   const noThumb = app.ok('postFile', s.tok.wk1, { taskId: task.id, name: 'x.png', b64: PNG_B64, thumb: 'data:image/svg+xml;base64,AAAA' });
   assert.equal(noThumb.message.file.thumb, '');
