@@ -112,7 +112,7 @@ function smokeTest() {
     const admin = must('login', null, { username: 'smoke-admin', password: 'Smoke-Test-2' }).token;
     check(call('login', null, { username: 'smoke-admin', password: 'wrong' }).code === 'AUTH', 'wrong password is rejected');
 
-    const boss = must('adminSaveJobTitle', admin, { title: 'Boss', level: 1 }).id;
+    const boss = must('adminSaveJobTitle', admin, { title: 'Senior General Manager', level: 1 }).id;
     const staff = must('adminSaveJobTitle', admin, { title: 'Staff', level: 2 }).id;
     const u1 = must('adminSaveUser', admin, { name: 'Boss One', username: 'boss1', jobTitleId: boss });
     const u2 = must('adminSaveUser', admin, { name: 'Staff One', username: 'staff1', jobTitleId: staff });
