@@ -646,7 +646,10 @@
     if (m.type === 'system') return h('div', { class: 'msg-sys' }, m.text);
     const mine = m.senderId === S.user.id;
     let body;
-    if (m.type === 'voice') {
+    if (m.type === 'voice' && m.audioRemoved && m.transcript) {
+      // history only: the audio was not kept (to save space), so what was said is shown instead
+      body = h('div', null, h('div', { class: 'voice-gone' }, icon('mic', 14), 'Voice message · ' + UI.duration(m.audioSecs)), h('div', { class: 'txt vtr' }, m.transcript));
+    } else if (m.type === 'voice') {
       const play = m.hasAudio ? h('button', { class: 'play', type: 'button', 'data-id': m.id, 'aria-label': 'Play voice message', onclick: function (e) { togglePlay(e.currentTarget, m, o); } }) : null;
       if (play) setPlayIcon(play, S.playing && S.playing.id === m.id ? 'pause' : 'play');
       body = h('div', { class: 'voice' + (S.playing && S.playing.id === m.id ? ' playing' : '') }, play, waveform(m.id), h('span', { class: 'dur' }, UI.duration(m.audioSecs)));   // audio only; the AI keeps what was said in its own memory of the task
@@ -946,7 +949,7 @@
     try { doc = await Api.call('getArchived', { taskId: id }, { timeout: 60000 }); }
     catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/history' }, '← Back to history'))), 'history', barOpts); }
     const t = doc.task;
-    const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
+    const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioRemoved: !!m.audioRemoved, transcript: m.transcript, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
     const chat = h('div', { class: 'chat' });
     renderChat(chat, msgs, { archived: true, taskId: id });
     shell(h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
@@ -954,7 +957,10 @@
         h('div', { style: 'margin-top:.8rem' },
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'From'), h('span', { class: 'names' }, personBtn(t.creator))),
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, t.assignees.map(function (a) { return personBtn(a); }))),
-          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'Approved'), h('span', { class: 'names' }, t.approvedBy))),
+          h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'Approved'), h('span', { class: 'names' }, t.approvedBy)),
+          // the whole conversation, the files and a summary are kept as plain files in the Drive archive folder
+          doc.archive ? h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'Saved'), h('span', { class: 'names drive-path' }, h('span', null, 'Google Drive › Archive › ' + String(doc.archive.path || '').split('/').join(' › ')),
+            doc.archive.folderUrl ? h('a', { href: doc.archive.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in Google Drive') : null)) : null),
         t.description ? h('div', { class: 'desc' }, t.description) : null)),
       t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chat), 'history', barOpts);
   }

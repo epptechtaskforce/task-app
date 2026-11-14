@@ -14,7 +14,7 @@ No server of your own, nothing to install for the users (it installs from a QR c
 **Work**
 - A manager assigns a task to one or several people **below them** in the org pyramid; everyone on the task shares **one conversation**.
 - Assignees drag a **progress slider**. At 100% the task waits for the manager, who **approves** it or **sends it back**.
-- Approved tasks move to **History** with their start and finish dates, the full conversation and the files.
+- Approved tasks move to **History** with their start and finish dates, who did what, and a pointer to the Drive folder that holds the full conversation and the files (see *Long-term archive* below).
 - An **AI summary** at the top of every task shows where it stands (health, what is done, blockers, next steps).
 - The **home screen is made to be glanced at**: simple cards (a progress doughnut, the title, who -> whom as faces, one time badge), a "Today" strip of coloured tiles
   and a week of dots. Colours carry the meaning (red late, amber waiting for approval, blue going, grey not started), words are kept to a minimum.
@@ -64,7 +64,7 @@ recipe, conventions) read [`CLAUDE.md`](CLAUDE.md): it is written for anyone, hu
 - A person can only assign tasks to people their **arrows** point to; arrows only point **down** the pyramid; skipping layers is allowed; a person can have several managers.
 - Admins manage accounts and the org chart but **cannot read other people's tasks**.
 - Only assignees move the slider; only the person who assigned the task can approve or send it back.
-- Closed tasks are written to the archive first, then removed from the live sheet (the sheet stays small).
+- Closed tasks are written to the Drive archive first, then removed from the live sheet (the sheet stays small): see *Long-term archive*.
 - Text typed by users can never run as a spreadsheet formula. (A plain-text cell format is *not* enough: Google Sheets still evaluates `=...` there. The Sheets adapter prefixes risky text with an apostrophe, and `smokeTest()` checks this on a real sheet.)
 - The AI never changes data by itself: it proposes, the person confirms, the server validates. Task text and messages are treated as untrusted input (prompt injection).
 - Free-tier Apps Script loses roughly one request in ten and each takes a few seconds, so reads and sign-in are re-sent automatically (the first answer wins); writes are never re-sent.
@@ -94,6 +94,25 @@ npm test                 # all tests: rules, features, AI providers, API client,
 node tools/sync-core.js  # after editing backend/Core.gs, refresh docs/js/core.js
 python -m http.server 8765 --directory docs   # then open http://localhost:8765/?demo=1
 ```
+
+## Long-term archive
+
+When a manager approves a task, the app writes **one readable folder** to the archive folder in Google Drive, then removes the task from the live sheet (so the sheet stays small however long the app is used):
+
+```
+Archive / 2026 / 11 / 2026-11-14 Submit the compliance checklist [taskId] /
+    Summary.txt          what the task was for, who assigned it, who did it, started / completed / how many days, the AI summary, what is in the folder
+    Conversation.txt     every message in order; voice messages are written out ("Said: ...", plus the key points)
+    Files/               every shared document and picture, named "2026-11-12 09-10 Name - original name.pdf"
+    task.json            the same information for the app (do not edit)
+    Voice (no transcript)/   only if a voice message could not be transcribed: its audio is kept so nothing is lost
+```
+
+- **Voice audio is not kept**: it is the biggest thing in a task. Once what was said is written down, the audio goes to the Drive trash (Drive empties it after 30 days); the words stay in `Conversation.txt` and are shown in History.
+- **History in the app** keeps only a few lines per task (title, people, dates, short summary, the folder path and an "Open in Google Drive" link for whoever owns the Drive folder). Participants can still read the conversation and open the files inside the app.
+- Anyone with access to the Drive archive folder can read everything without the app: open Drive, go to the folder named in the History page, read the text files and open the files.
+- Older archives (made before this change) are still readable in the app; they keep `conversation.html` and their voice audio.
+- Backups: the nightly job copies the database sheet to the backup folder (newest 14 kept). The archive folder itself is plain files: copy it to another drive now and then for a second copy.
 
 ## Known limits
 - Google Sheets is the database: fine for dozens of users, not thousands. Closed tasks leave the sheet, which keeps it small.

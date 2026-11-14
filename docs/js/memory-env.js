@@ -193,7 +193,7 @@
    */
   function createMemoryEnv(options) {
     options = options || {};
-    const files = {}, archives = {}, counters = {};
+    const files = {}, archives = {}, folders = {}, counters = {};
     let counter = 0;
     let timer = null, filesDirty = false;
     const saveNow = function (s) {
@@ -244,12 +244,18 @@
           const json = o.files.filter(function (f) { return f.name === 'task.json'; })[0];
           const id = 'AR' + randomHex(6);
           archives[id] = json.content;
-          return { storage: 'memory', path: o.folder, fileId: id };
+          // like Drive: the text files are written, shared files move (and are renamed), written-down voice audio is thrown away
+          const folder = { files: {}, moved: [], trashed: [] };
+          o.files.forEach(function (f) { folder.files[f.name] = f.content; });
+          (o.moves || []).forEach(function (mv) { folder.moved.push({ id: mv.id, name: mv.name || '', sub: mv.sub || '' }); });
+          (o.discardIds || []).forEach(function (fid) { folder.trashed.push(fid); delete files[fid]; });
+          folders[o.folder] = folder;
+          return { storage: 'memory', path: o.folder, fileId: id, folderId: 'FD' + randomHex(6) };
         },
         read: function (idx) { if (!archives[idx.fileId]) throw new Error('Archive not found'); return archives[idx.fileId]; }
       },
       ai: options.ai || fakeAi(),
-      _files: files, _archives: archives
+      _files: files, _archives: archives, _folders: folders
     };
     return env;
   }

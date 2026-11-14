@@ -144,7 +144,16 @@ function smokeTest() {
     const doc = must('getArchived', staff1, { taskId: task.id });
     // created (system) + risky texts + voice + progress (system) = 3 + risky.length
     check(doc.messages.length === 3 + risky.length && doc.task.title === 'Smoke task', 'archived conversation (' + doc.messages.length + ' messages) can be opened from Drive');
-    check(must('getAudio', staff1, { archived: true, taskId: task.id, messageId: v.message.id }).b64 === fake, 'voice file still playable after archiving');
+    check(call('getAudio', staff1, { archived: true, taskId: task.id, messageId: v.message.id }).ok === false, 'voice audio is not kept after archiving (the words are)');
+    const vm = doc.messages.filter(function (m) { return m.type === 'voice'; })[0];
+    check(vm && vm.transcript === 'The work is finished' && vm.audioFileId === '', 'the archived chat keeps what the voice message said');
+    check(doc.archive && /^\d{4}\/\d{2}\/\d{4}-\d{2}-\d{2} Smoke task \[/.test(doc.archive.path) && doc.archive.folderUrl.indexOf('https://drive.google.com/drive/folders/') === 0, 'the archive says where it is saved in Drive: ' + (doc.archive && doc.archive.path));
+    const folderOf = function (path) { let f = archive; path.split('/').forEach(function (part) { f = f.getFoldersByName(part).next(); }); return f; };
+    const textOf = function (f, name) { return f.getFilesByName(name).next().getBlob().getDataAsString('UTF-8'); };
+    const f1 = folderOf(doc.archive.path);
+    check(textOf(f1, 'Conversation.txt').indexOf('Said: The work is finished') >= 0 && textOf(f1, 'Conversation.txt').indexOf('=1+1') >= 0, 'Conversation.txt in the Drive folder has the messages and the voice words');
+    check(textOf(f1, 'Summary.txt').indexOf('Assigned by:  Boss One') >= 0 && textOf(f1, 'Summary.txt').indexOf('Done by:      Staff One') >= 0, 'Summary.txt in the Drive folder says who did what');
+    check(!voice.getFiles().hasNext(), 'no voice audio is left in the live voice folder');
     check(call('getArchived', admin, { taskId: task.id }).ok === false, 'admin cannot read other people\'s archived tasks');
 
     // profiles: picture + bio. First simulate a spreadsheet made before profiles existed (no Profiles sheet).
@@ -175,11 +184,18 @@ function smokeTest() {
     check(as.spoken.length > 0, 'the answer is also given as text to speak');
     check(must('speak', boss1, { text: 'Hello there' }).mime.indexOf('audio/') === 0, 'the speak action returns audio');
     check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
+    const idxSheet = SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex');
+    idxSheet.getRange(1, 14, 1, 3).clearContent();            // pretend this sheet was made before the newest columns existed
     must('setProgress', staff1, { taskId: t2.id, progress: 100 });
     must('approveTask', boss1, { taskId: t2.id });
+    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 3).getValues()[0].join('|') === 'folderId|purpose|fileCount', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
     const doc2 = must('getArchived', staff1, { taskId: t2.id });
     const fm2 = doc2.messages.filter(function (m) { return m.type === 'file'; })[0];
     check(!!fm2 && must('getFile', staff1, { archived: true, taskId: t2.id, messageId: fm2.id }).b64 === pdf, 'a shared document is still readable after the task is archived');
+    const f2 = folderOf(doc2.archive.path), files2 = f2.getFoldersByName('Files').next().getFiles(), fn2 = [];
+    while (files2.hasNext()) fn2.push(files2.next().getName());
+    check(fn2.length === 1 && /^\d{4}-\d{2}-\d{2} \d{2}-\d{2} Staff - Smoke report\.pdf$/.test(fn2[0]), 'the shared document is in the Files folder with a readable name: ' + fn2.join(', '));
+    check(textOf(f2, 'Conversation.txt').indexOf('Files/' + fn2[0]) >= 0 && textOf(f2, 'Summary.txt').indexOf('1 shared document and picture') >= 0, 'the text files point to the document');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);

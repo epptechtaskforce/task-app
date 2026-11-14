@@ -48,7 +48,7 @@ Browser (docs/, plain HTML/CSS/JS, GitHub Pages) --POST JSON, text/plain--> Goog
 - Admins manage accounts and the org chart but **cannot read other people's tasks**; a "pure admin" has no job title and no AI.
 - Only assignees move the progress slider; 100% sends the task to the creator for approval; only the creator approves
   (task moves to the History archive with its conversation) or sends it back (progress 90%).
-- Closed tasks are written to the archive (Drive JSON + `ArchiveIndex` row) first, then removed from the live sheet.
+- Closed tasks are written to the archive first, then removed from the live sheet. `archiveTask` (Core.gs) makes one Drive folder `Archive/<yyyy>/<MM>/<yyyy-MM-dd Title [id]>/` with `Summary.txt`, `Conversation.txt` (voice messages written out), `task.json` (the app reads this), `Files/` (shared files moved + renamed readably) and `Voice (no transcript)/`. Voice audio whose transcript exists is trashed (large; words kept); one without a transcript is kept. The `ArchiveIndex` row is only a few lines (people, dates, `summaryText`, `purpose`, `fileCount`, `folderId`). Order matters: text files first, then moves, then trashing, then the live rows are removed. New table columns are appended at the END (positional reads); `ensureColumns` writes the header once.
 - User text must never run as a spreadsheet formula (the Sheets adapter prefixes risky text with an apostrophe).
 - The app is **English only**. Sinhala/Tamil speech is translated to English; voice messages in a task chat show only as audio,
   while the English transcript and key points are kept hidden as the AI's memory of the task.

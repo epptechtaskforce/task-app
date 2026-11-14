@@ -28,7 +28,7 @@
  *   env.files.readAudio(fileId)    -> {b64, mime}
  *   env.files.saveFile({taskId, messageId, name, mime, b64}) -> fileId     (photos and documents shared in a task)
  *   env.files.readFile(fileId)     -> {b64, mime}
- *   env.archive.save({folder, files:[{name,content,mime}], audioFileIds}) -> {storage, path, fileId}
+ *   env.archive.save({folder, files:[{name,content,mime}], moves:[{id,name?,sub?}], discardIds}) -> {storage, path, fileId, folderId}
  *   env.archive.read({storage, path, fileId}) -> JSON text of task.json
  *   env.ai.transcribe(b64, mime, hints) -> {english, language, key_points}   (always English; Sinhala is translated)
  *   env.ai.summarize(input)        -> {summary_en, progress_note, health, blockers, next_steps}
@@ -79,7 +79,7 @@ const TABLES = {
   Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
   Attachments:  { key: 'id', cols: { id: 's', taskId: 's', name: 's', mime: 's', size: 'n', fileId: 's', thumb: 's', w: 'n', h: 'n', createdAt: 'n' } },   // id = the id of the message that carries the file
   Briefings:    { key: 'userId', cols: { userId: 's', sig: 's', at: 'n', data: 'j' } },                                                               // the last home-page overview made for each person
-  ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n' } },
+  ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n', folderId: 's', purpose: 's', fileCount: 'n' } },
   AuditLog:     { key: 'id', cols: { id: 's', at: 'n', userId: 's', action: 's', detail: 's' } }
 };
 
@@ -1136,29 +1136,61 @@ function createCore(env) {
   A.getArchived = { run: function (ctx, user, req) {
     const idx = archiveIndexFor(ctx, user, req.taskId);
     const doc = JSON.parse(env.archive.read(idx));   // the stored copy keeps what the AI understood from voice messages; the browser only gets the audio
-    (doc.messages || []).forEach(function (m) { if (m.type === 'voice') { delete m.transcript; delete m.translation; } });
+    (doc.messages || []).forEach(function (m) { if (m.type === 'voice' && m.audioFileId) { delete m.transcript; delete m.translation; } });   // audio still there: shown as audio only. Audio removed to save space: the words are all that is left, so they are shown.
+    doc.archive = { path: idx.path, folderUrl: idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '' };
     return doc;
   } };
 
   function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'task'; }
-  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
-  function renderArchiveHtml(doc) {
-    const t = doc.task;
-    const msgs = doc.messages.map(function (m) {
-      const body = m.type === 'file' && m.file
-        ? '<em>Shared file: ' + esc(m.file.name) + ' (' + Math.max(1, Math.round(m.file.size / 1024)) + ' KB)</em>' + (m.text ? '<div>' + esc(m.text) + '</div>' : '')
-        : m.type === 'voice'
-        ? '<em>Voice message (' + m.audioSecs + 's)</em><div>' + esc(m.transcript || 'No transcript available') + '</div>' + (m.translation ? '<div class="tr">Key points: ' + esc(m.translation) + '</div>' : '')
-        : '<div>' + esc(m.text) + '</div>';
-      return '<div class="m ' + esc(m.type) + '"><div class="who">' + esc(m.senderName) + ' &middot; ' + esc(m.time) + '</div>' + body + '</div>';
-    }).join('\n');
-    const s = t.summary && t.summary.summary_en ? '<h2>AI summary</h2><p>' + esc(t.summary.summary_en) + '</p>' : '';
-    return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(t.title) + '</title>' +
-      '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#1c2430}.m{border:1px solid #dde2ea;border-radius:10px;padding:10px;margin:8px 0}.m.system{background:#f3f5f8;color:#586272;font-size:.9em}.who{font-size:.8em;color:#6b7685}.tr{color:#6b7685;font-size:.9em}dl{display:grid;grid-template-columns:140px 1fr;gap:4px 12px}dt{color:#6b7685}</style></head><body>' +
-      '<h1>' + esc(t.title) + '</h1><dl><dt>Assigned by</dt><dd>' + esc(t.creator.name) + '</dd><dt>Assigned to</dt><dd>' + esc(t.assignees.map(function (a) { return a.name; }).join(', ')) + '</dd>' +
-      '<dt>Started</dt><dd>' + esc(t.startedText) + '</dd><dt>Completed</dt><dd>' + esc(t.completedText) + '</dd><dt>Progress</dt><dd>' + t.progress + '%</dd></dl>' +
-      (t.description ? '<p>' + esc(t.description) + '</p>' : '') + s + '<h2>Conversation</h2>' + msgs + '</body></html>';
+  // Names that read well in Google Drive (and on Windows): no slashes, colons, quotes or line breaks.
+  function niceName(s, max) { return String(s == null ? '' : s).replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max || 60).trim() || 'untitled'; }
+  function sizeText(n) { const k = Number(n || 0) / 1024; return k >= 1024 ? (k / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(k)) + ' KB'; }
+  function mmss(s) { s = Math.max(0, Math.round(Number(s) || 0)); return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+  function names(list) { return list.map(function (a) { return a.name; }).join(', '); }
+  function indent(s) { return String(s == null ? '' : s).replace(/\r?\n/g, '\n    '); }
+
+  // Conversation.txt: the whole conversation as plain text. Voice messages are written out (the audio itself is not kept).
+  function renderConversationText(doc) {
+    const t = doc.task, L = [];
+    L.push('CONVERSATION - ' + t.title, 'Assigned by ' + t.creator.name + ' to ' + names(t.assignees), 'Started ' + t.startedText + ', completed ' + t.completedText, new Array(61).join('='), '');
+    doc.messages.forEach(function (m) {
+      const at = '[' + m.time + '] ';
+      if (m.type === 'system') L.push(at + '(' + indent(m.text) + ')');
+      else if (m.type === 'voice') {
+        L.push(at + m.senderName + ' sent a voice message (' + mmss(m.audioSecs) + ')');
+        L.push('    Said: ' + (indent(m.transcript) || '(no transcript available' + (m.audioFileId ? '; the audio is kept in the folder "Voice (no transcript)"' : '') + ')'));
+        if (m.translation) L.push('    Key points: ' + indent(m.translation));
+      } else if (m.type === 'file' && m.file) {
+        L.push(at + m.senderName + ' shared a file: ' + (m.file.archivedAs ? 'Files/' + m.file.archivedAs : m.file.name) + ' (' + sizeText(m.file.size) + ')');
+        if (m.text) L.push('    ' + indent(m.text));
+      } else L.push(at + m.senderName + ': ' + indent(m.text));
+    });
+    return L.join('\n') + '\n';
+  }
+
+  // Summary.txt: one short page that says what the task was, who did what and when, and what is in the folder.
+  function renderSummaryText(doc) {
+    const t = doc.task, s = t.summary, L = [], join = function (a) { return (Array.isArray(a) ? a : []).filter(Boolean).join('; '); };
+    const files = doc.messages.filter(function (m) { return m.file; }), voices = doc.messages.filter(function (m) { return m.type === 'voice'; });
+    const days = Math.max(0, Math.round((t.closedAt - t.createdAt) / 86400000));
+    L.push('TASK SUMMARY', new Array(61).join('='), 'Task:         ' + t.title, 'Purpose:      ' + (t.description ? indent(t.description) : '(no description)'),
+      'Assigned by:  ' + t.creator.name, 'Done by:      ' + names(t.assignees), 'Started:      ' + t.startedText, 'Completed:    ' + t.completedText + ' (' + days + (days === 1 ? ' day' : ' days') + ')',
+      'Due date:     ' + (t.dueDate || '(none)'), 'Approved by:  ' + t.approvedBy, '');
+    if (s && s.summary_en) {
+      L.push('HOW IT WENT', indent(s.summary_en));
+      if (s.progress_note) L.push('So far: ' + indent(s.progress_note));
+      if (join(s.blockers)) L.push('Blockers: ' + join(s.blockers));
+      if (join(s.next_steps)) L.push('Next steps: ' + join(s.next_steps));
+      L.push('');
+    }
+    L.push('IN THIS FOLDER',
+      '  Conversation.txt  the whole conversation (' + countContent(doc.messages) + ' messages' + (voices.length ? ', ' + voices.length + ' voice message' + (voices.length === 1 ? '' : 's') + ' written out' : '') + ')',
+      '  Files/            ' + (files.length ? files.length + ' shared document' + (files.length === 1 ? '' : 's') + ' and picture' + (files.length === 1 ? '' : 's') : 'nothing was shared'));
+    files.forEach(function (m) { L.push('                    - ' + (m.file.archivedAs || m.file.name) + ' (' + sizeText(m.file.size) + ')'); });
+    L.push('  task.json         the same information for the app (please do not edit)');
+    if (voices.some(function (m) { return !m.audioFileId; })) L.push('', 'Voice messages are not kept as audio, to save space: what was said is written in Conversation.txt.');
+    return L.join('\n') + '\n';
   }
 
   function archiveTask(ctx, closer, t) {
@@ -1166,19 +1198,38 @@ function createCore(env) {
     const hasFiles = msgs.some(function (m) { return m.type === 'file'; });
     const fileOf = function (m) { const a = hasFiles && m.type === 'file' ? attachmentOf(ctx, m.id) : null; return a ? { name: a.name, mime: a.mime, size: a.size, thumb: a.thumb, w: a.w, h: a.h, fileId: a.fileId } : undefined; };
     const doc = {
-      version: 1, id: t.id,
+      version: 2, id: t.id,
       task: { id: t.id, title: t.title, description: t.description, creator: brief(ctx, t.creatorId), assignees: t.assigneeIds.map(function (id) { return brief(ctx, id); }), createdAt: t.createdAt, closedAt: closedAt, startedText: env.formatDate(t.createdAt), completedText: env.formatDate(closedAt), dueDate: t.dueDate, progress: 100, approvedBy: closer.name, summary: t.summary || null },
       messages: msgs.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderId ? brief(ctx, m.senderId).name : 'System', type: m.type, text: m.text, transcript: m.transcript, translation: m.translation, lang: m.lang, status: m.status, audioFileId: m.audioFileId, audioMime: m.audioMime, audioSecs: m.audioSecs, createdAt: m.createdAt, time: env.formatDate(m.createdAt), file: fileOf(m) }; })
     };
+    // What happens to the stored files: shared documents and pictures move into "Files" with names a person can read; a voice message is
+    // large, so once its words are written down the audio is thrown away (to the Drive trash). One without a transcript is kept, never lost.
+    const moves = [], discard = [], taken = {};
+    doc.messages.forEach(function (m) {
+      const stamp = String(m.time).replace(':', '-') + ' ' + niceName(String(m.senderName).split(' ')[0], 20);
+      if (m.file && m.file.fileId) {
+        let nm = niceName(stamp + ' - ' + m.file.name, 120), n = 1;
+        while (taken[nm.toLowerCase()]) nm = niceName(stamp + ' - (' + (++n) + ') ' + m.file.name, 120);
+        taken[nm.toLowerCase()] = 1; m.file.archivedAs = nm;
+        moves.push({ id: m.file.fileId, name: nm, sub: 'Files' });
+      }
+      if (m.type === 'voice' && m.audioFileId) {
+        if (String(m.transcript || '').trim()) { discard.push(m.audioFileId); m.audioFileId = ''; m.audioRemoved = true; }
+        else moves.push({ id: m.audioFileId, sub: 'Voice (no transcript)' });
+      }
+    });
+    if (env.store.ensureColumns) { try { env.store.ensureColumns('ArchiveIndex'); } catch (e) { env.log('ensureColumns failed: ' + e); } }   // an older sheet gets the newer columns the first time (never a reason to stop an approval)
     const d = env.formatDate(closedAt);
-    const folder = d.slice(0, 4) + '/' + d.slice(5, 7) + '/' + t.id + '-' + slug(t.title);
+    const folder = d.slice(0, 4) + '/' + d.slice(5, 7) + '/' + d.slice(0, 10) + ' ' + niceName(t.title, 50) + ' [' + t.id + ']';
     const saved = env.archive.save({
       folder: folder,
-      files: [{ name: 'task.json', content: JSON.stringify(doc, null, 1), mime: 'application/json' }, { name: 'conversation.html', content: renderArchiveHtml(doc), mime: 'text/html' }],
-      audioFileIds: msgs.map(function (m) { return m.audioFileId; }).concat(doc.messages.map(function (m) { return m.file ? m.file.fileId : ''; })).filter(Boolean)   // voice notes and shared files move into the archive folder
+      files: [{ name: 'task.json', content: JSON.stringify(doc, null, 1), mime: 'application/json' }, { name: 'Summary.txt', content: renderSummaryText(doc), mime: 'text/plain' }, { name: 'Conversation.txt', content: renderConversationText(doc), mime: 'text/plain' }],
+      moves: moves, discardIds: discard
     });
-    const participantIds = [t.creatorId].concat(t.assigneeIds);
-    insert(ctx, 'ArchiveIndex', { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: doc.task.assignees.map(function (a) { return a.name; }).join(', '), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(t.summary && t.summary.summary_en, 400), messageCount: countContent(msgs) });
+    const participantIds = [t.creatorId].concat(t.assigneeIds), nFiles = doc.messages.filter(function (m) { return m.file; }).length;
+    // The History list keeps only a few lines per task (who, what, when); everything else is in the Drive folder.
+    const gist = t.summary && t.summary.summary_en ? t.summary.summary_en : 'Assigned by ' + doc.task.creator.name + ' to ' + names(doc.task.assignees) + (t.description ? '. ' + t.description : '');
+    insert(ctx, 'ArchiveIndex', { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: names(doc.task.assignees), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(gist, 400), messageCount: countContent(msgs), folderId: saved.folderId || '', purpose: clip(t.description, 200), fileCount: nFiles });
     // Only after the archive is safely written do we remove the live rows.
     removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
     if (hasFiles) removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
@@ -1243,7 +1294,7 @@ function createCore(env) {
     });
   }
 
-  return { handle: handle, setup: setup, maintenance: maintenance, TABLES: TABLES, _renderArchiveHtml: renderArchiveHtml };
+  return { handle: handle, setup: setup, maintenance: maintenance, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS };

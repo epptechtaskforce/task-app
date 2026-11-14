@@ -196,6 +196,21 @@ SheetsStore_.prototype.sheet = function (name) {
   return this.sheets[name];
 };
 SheetsStore_.prototype.cols = function (name) { return Object.keys(TABLES[name].cols); };
+// A newer version of the app may add columns at the END of a table. The code reads by position, so an older sheet keeps working; this
+// writes the missing header cells (and the plain-text format) the first time it matters. Anything else that differs is left alone.
+SheetsStore_.prototype.ensureColumns = function (name) {
+  const sh = this.sheet(name), cols = this.cols(name);
+  if (sh.getMaxColumns() < cols.length) sh.insertColumnsAfter(sh.getMaxColumns(), cols.length - sh.getMaxColumns());
+  const existing = sh.getRange(1, 1, 1, cols.length).getValues()[0];
+  let have = 0;
+  while (have < cols.length && existing[have] !== '') have++;
+  if (have >= cols.length) return false;
+  for (let i = 0; i < have; i++) if (existing[i] !== cols[i]) return false;
+  for (let i = have; i < cols.length; i++) if (existing[i] !== '') return false;
+  sh.getRange(1, have + 1, 1, cols.length - have).setNumberFormat('@').setValues([cols.slice(have)]).setFontWeight('bold');
+  sh.getRange(2, have + 1, Math.max(sh.getMaxRows() - 1, 1), cols.length - have).setNumberFormat('@');
+  return true;
+};
 SheetsStore_.prototype.init = function (schema) {
   const ss = this.ss;
   Object.keys(schema).forEach(function (name) {
@@ -333,7 +348,8 @@ DriveFiles_.prototype.saveFile = function (o) {
 DriveFiles_.prototype.readFile = DriveFiles_.prototype.readAudio;
 
 /* ============================== Drive: archive ============================== */
-// Layout:  Archive/<yyyy>/<MM>/<taskId>-<slug>/{task.json, conversation.html, voice files}
+// Layout:  Archive/<yyyy>/<MM>/<yyyy-MM-dd Title [taskId]>/{Summary.txt, Conversation.txt, task.json, Files/, Voice (no transcript)/}
+// (older archives: <taskId>-<slug>/{task.json, conversation.html, voice and files}). Voice audio is not kept once its words are written down.
 
 function DriveArchive_(rootId) { this.rootId = rootId; }
 DriveArchive_.prototype.folderFor = function (path, create) {
@@ -351,12 +367,26 @@ DriveArchive_.prototype.save = function (o) {
   if (!this.rootId) throw new Error('ARCHIVE_FOLDER_ID is not set. Run setup() first.');
   const folder = this.folderFor(o.folder, true);
   let taskJsonId = '';
+  // 1. the text files first, so that whatever goes wrong later, the written record exists
   o.files.forEach(function (f) {
     const file = folder.createFile(f.name, f.content, f.mime);
     if (f.name === 'task.json') taskJsonId = file.getId();
   });
-  o.audioFileIds.forEach(function (id) { DriveApp.getFileById(id).moveTo(folder); }); // keeps the same file id
-  return { storage: 'gdrive', path: o.folder, fileId: taskJsonId };
+  // 2. shared documents, pictures (and voice without a transcript) move into the folder; moving keeps the same file id
+  const subs = {};
+  (o.moves || []).concat((o.audioFileIds || []).map(function (id) { return { id: id }; })).forEach(function (mv) {
+    let target = folder;
+    if (mv.sub) {
+      if (!subs[mv.sub]) { const it = folder.getFoldersByName(mv.sub); subs[mv.sub] = it.hasNext() ? it.next() : folder.createFolder(mv.sub); }
+      target = subs[mv.sub];
+    }
+    const file = DriveApp.getFileById(mv.id);
+    file.moveTo(target);
+    if (mv.name) file.setName(mv.name);
+  });
+  // 3. last: voice audio that is already written down goes to the Drive trash (Drive empties it after 30 days)
+  (o.discardIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
+  return { storage: 'gdrive', path: o.folder, fileId: taskJsonId, folderId: folder.getId() };
 };
 DriveArchive_.prototype.read = function (idx) {
   if (idx.fileId) {

@@ -228,7 +228,7 @@ test('voice messages: stored, transcribed, and a failing AI does not lose the au
   };
   const app = makeApp({ ai }); const s = seed(app);
   const t = app.ok('createTask', s.tok.mgr, { title: 'Voice test', assigneeIds: [s.users.wk1.id] }).task;
-  const audio = Buffer.from('fake-audio-bytes').toString('base64');
+  const audio = Buffer.from('fake-audio-bytes').toString('base64'), audio2 = Buffer.from('other-audio-bytes-2').toString('base64');
   app.err('postVoice', s.tok.wk1, { taskId: t.id, audioB64: '', mime: 'audio/webm' }, 'VALIDATION');
   app.err('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio, mime: 'text/html' }, 'VALIDATION');
   const ok = app.ok('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio, wavB64: audio, mime: 'audio/webm;codecs=opus', secs: 12.4 });
@@ -238,20 +238,33 @@ test('voice messages: stored, transcribed, and a failing AI does not lose the au
   assert.equal(JSON.stringify(app.ok('getTask', s.tok.mgr, { taskId: t.id })).includes('The work is finished'), false);
   assert.equal(JSON.stringify(app.ok('listTasks', s.tok.mgr, {})).includes('The work is finished'), false);
   failing = true;
-  const bad = app.ok('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio, wavB64: audio, mime: 'audio/webm', secs: 5 });
+  const bad = app.ok('postVoice', s.tok.wk1, { taskId: t.id, audioB64: audio2, wavB64: audio2, mime: 'audio/webm', secs: 5 });
   assert.equal(bad.message.status, 'failed'); assert.equal(bad.transcribeFailed, true); assert.equal(bad.message.hasAudio, true);
   // audio can be played back by participants only
-  assert.equal(app.ok('getAudio', s.tok.mgr, { messageId: bad.message.id }).b64, audio);
+  assert.equal(app.ok('getAudio', s.tok.mgr, { messageId: bad.message.id }).b64, audio2);
   app.err('getAudio', s.tok.wk2, { messageId: bad.message.id }, 'NOT_FOUND');
   app.err('getAudio', s.tok.ceo, { messageId: bad.message.id }, 'NOT_FOUND');
   // transcripts are included in the conversation view
   const msgs = app.ok('getTask', s.tok.mgr, { taskId: t.id }).messages.filter(m => m.type === 'voice');
   assert.equal(msgs.length, 2);
-  // after archiving, audio is still reachable through the archive
+  // after archiving: audio whose words are written down is thrown away (large, and the words are kept); audio without a transcript is kept
   app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 });
   app.ok('approveTask', s.tok.mgr, { taskId: t.id });
-  assert.equal(app.ok('getAudio', s.tok.wk1, { archived: true, taskId: t.id, messageId: ok.message.id }).b64, audio);
-  app.err('getAudio', s.tok.ceo, { archived: true, taskId: t.id, messageId: ok.message.id }, 'NOT_FOUND');
+  app.err('getAudio', s.tok.wk1, { archived: true, taskId: t.id, messageId: ok.message.id }, 'NOT_FOUND');
+  assert.equal(app.ok('getAudio', s.tok.wk1, { archived: true, taskId: t.id, messageId: bad.message.id }).b64, audio2);
+  app.err('getAudio', s.tok.ceo, { archived: true, taskId: t.id, messageId: bad.message.id }, 'NOT_FOUND');
+  // the archived chat shows the words of the removed audio, and keeps hiding the "AI memory" of audio that is still there
+  const doc = app.ok('getArchived', s.tok.wk1, { taskId: t.id });
+  const kept = doc.messages.find(m => m.id === bad.message.id), gone = doc.messages.find(m => m.id === ok.message.id);
+  assert.equal(gone.transcript, 'The work is finished'); assert.equal(gone.audioFileId, ''); assert.equal(gone.audioRemoved, true);
+  assert.ok(kept.audioFileId); assert.equal(kept.transcript, undefined);
+  // the Drive folder: summary + conversation as text (with the words of the voice message), the discarded audio is gone from storage
+  const folder = app.env._folders[doc.archive.path];
+  assert.ok(folder.files['Summary.txt'] && folder.files['Conversation.txt'] && folder.files['task.json']);
+  assert.ok(folder.files['Conversation.txt'].includes('Said: The work is finished') && folder.files['Conversation.txt'].includes('Key points: Work reported finished.'));
+  assert.equal(folder.trashed.length, 1);
+  assert.equal(folder.moved.filter(m => m.sub === 'Voice (no transcript)').length, 1);
+  assert.ok(folder.files['Conversation.txt'].includes('the audio is kept in the folder "Voice (no transcript)"'));
 });
 
 test('AI summary: cached until new messages arrive; failures are reported cleanly', () => {
@@ -275,15 +288,34 @@ test('AI summary: cached until new messages arrive; failures are reported cleanl
   assert.equal(app.ok('getTask', s.tok.mgr, { taskId: t.id }).task.summary.summary_en, 'Going well'); // old summary kept
 });
 
-test('archive html escapes user content', () => {
+test('archive text files: summary says who/what/when, conversation is complete, folder and file names are readable', () => {
   const app = makeApp(); const s = seed(app);
-  const t = app.ok('createTask', s.tok.mgr, { title: '<img src=x onerror=alert(1)>', assigneeIds: [s.users.wk1.id] }).task;
-  app.ok('postMessage', s.tok.wk1, { taskId: t.id, text: '<script>alert(1)</script>' });
-  const html = app.core._renderArchiveHtml(JSON.parse(JSON.stringify({
-    task: { title: '<b>x</b>', creator: { name: 'A&B' }, assignees: [{ name: 'W' }], startedText: 's', completedText: 'c', progress: 100, description: '<i>d</i>' },
-    messages: [{ type: 'text', text: '<script>alert(1)</script>', senderName: '<u>n</u>', time: 't' }]
-  })));
-  assert.ok(!html.includes('<script>')); assert.ok(!html.includes('<b>x</b>')); assert.ok(html.includes('&lt;script&gt;'));
+  const t = app.ok('createTask', s.tok.mgr, { title: 'Pump: roof / gate "A"?', description: 'Fix the roof of the pump house', assigneeIds: [s.users.wk1.id, s.users.wk2.id], dueDate: '2026-11-20' }).task;
+  app.tick(60000); app.ok('postMessage', s.tok.wk1, { taskId: t.id, text: 'Line one\nLine two' });
+  const pdf = Buffer.from('%PDF-1.4 tiny').toString('base64');
+  app.tick(60000); app.ok('postFile', s.tok.wk1, { taskId: t.id, name: 'Roof plan.pdf', mime: 'application/pdf', b64: pdf, caption: 'the plan' });
+  app.tick(60000); app.ok('postFile', s.tok.wk2, { taskId: t.id, name: 'Roof plan.pdf', mime: 'application/pdf', b64: pdf });
+  app.tick(86400000); app.ok('setProgress', s.tok.wk1, { taskId: t.id, progress: 100 });
+  app.ok('approveTask', s.tok.mgr, { taskId: t.id });
+  const doc = app.ok('getArchived', s.tok.mgr, { taskId: t.id });
+  const folder = app.env._folders[doc.archive.path], sum = folder.files['Summary.txt'], conv = folder.files['Conversation.txt'];
+  // the folder name is for people: date, title, id, and no characters Drive or Windows dislike
+  assert.ok(/^2026\/11\/2026-11-13 Pump roof gate A \[[^\]]+\]$/.test(doc.archive.path), doc.archive.path);
+  assert.ok(doc.archive.folderUrl.indexOf('https://drive.google.com/drive/folders/') === 0);
+  // summary: purpose, who, when, how long, what is inside
+  for (const bit of ['Pump: roof / gate "A"?', 'Fix the roof of the pump house', 'Assigned by:  MGR', 'WK1, WK2', 'Started:      2026-11-12', 'Completed:    2026-11-13', '(1 day)', 'Due date:     2026-11-20', 'Approved by:  MGR', 'Conversation.txt', '2 shared documents and pictures'])
+    assert.ok(sum.includes(bit), 'Summary.txt should include: ' + bit + '\n' + sum);
+  // conversation: every message, multi-line text indented, files named as in the Files folder
+  assert.ok(conv.includes('WK1: Line one\n    Line two'));
+  const names = folder.moved.filter(m => m.sub === 'Files').map(m => m.name);
+  assert.equal(names.length, 2); assert.notEqual(names[0], names[1]);                                  // same original name twice: both kept
+  assert.ok(names.every(n => /^2026-11-1\d \d\d-\d\d WK\d - (\(2\) )?Roof plan\.pdf$/.test(n)), names.join(' | '));
+  names.forEach(n => assert.ok(conv.includes('Files/' + n) && sum.includes(n)));
+  assert.ok(conv.includes('the plan'));
+  // the History list stays small: a few lines per task
+  const row = app.env.store.all('ArchiveIndex')[0];
+  assert.equal(row.purpose, 'Fix the roof of the pump house'); assert.equal(row.fileCount, 2); assert.ok(row.folderId);
+  assert.ok(row.summaryText.includes('Assigned by MGR to WK1, WK2'));
 });
 
 test('maintenance removes expired sessions', () => {
