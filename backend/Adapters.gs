@@ -394,6 +394,18 @@ DriveArchive_.prototype.saveZip = function (o) {
   (o.trashIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
   return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + file.getName(), fileId: file.getId(), folderId: person.getId() };
 };
+// One call to the Google Drive web service (v3) with the script's own permission. DriveApp cannot share WITHOUT Google emailing the person, so the
+// permission itself is made through this call with sendNotificationEmail=false: nobody receives any message, the person simply opens the folder from the app.
+function driveApi_(method, path, query, body) {
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/' + path + (query ? '?' + query : ''), {
+    method: method, contentType: 'application/json', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true, payload: body ? JSON.stringify(body) : undefined
+  });
+  const code = res.getResponseCode(), text = res.getContentText();
+  let json = {}; try { json = text ? JSON.parse(text) : {}; } catch (e) { /* not JSON */ }
+  if (code >= 300) throw new Error((json.error && json.error.message) || ('Google Drive answered ' + code));
+  return json;
+}
+
 // Gives one person read-and-download access to ONE folder: "EPP/<person>". Viewer only (cannot change, delete, move or share anything) and never by
 // link. It refuses the account that owns the Drive and any account that already reaches the EPP folder or the root of the Drive (that would be wider),
 // and it checks afterwards that Google really recorded view-only access; if not, it takes it back and says so.
@@ -405,7 +417,11 @@ DriveArchive_.prototype.shareFolder = function (o) {
   const epp = this.eppFolder(), folder = this.personFolder(o.person), P = DriveApp.Permission;
   if (epp.getAccess(email) !== P.NONE || DriveApp.getRootFolder().getAccess(email) !== P.NONE) throw new Error('That Google account already has wider access to this Drive');
   if (folder.getSharingAccess() !== DriveApp.Access.PRIVATE) folder.setSharing(DriveApp.Access.PRIVATE, P.NONE);      // never open to anyone with a link
-  folder.addViewer(email);
+  try { driveApi_('post', 'files/' + folder.getId() + '/permissions', 'sendNotificationEmail=false&supportsAllDrives=false', { role: 'reader', type: 'user', emailAddress: email }); }   // 'reader' = Viewer; no email is sent
+  catch (e) {
+    if (/no Google account|invitation|notify/i.test(String(e && e.message || e))) throw new Error('That email address has no Google account. Use a Gmail or Google Workspace address.');
+    throw e;
+  }
   if (folder.getAccess(email) !== P.VIEW) { try { folder.removeViewer(email); } catch (e) { /* nothing more to undo */ } throw new Error('Google Drive did not record view-only access, so nothing was shared'); }
   return { folderId: folder.getId() };
 };

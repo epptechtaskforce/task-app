@@ -22,10 +22,21 @@ function fakeDrive(owner) {
   };
   const root = mkFolder('root'), epp = mkFolder('EPP'); root.children.EPP = epp;
   const drive = { Permission: { NONE, VIEW, EDIT }, Access: { PRIVATE, ANYONE_WITH_LINK: LINK }, getRootFolder: () => root, getFolderById: (id) => (id === 'ID-EPP' ? epp : null) };
-  return { root, epp, drive, session: { getEffectiveUser: () => ({ getEmail: () => owner }) } };
+  const calls = [];
+  // the Drive web service: records every call and adds the permission the way Google would
+  const fetch = (url, opts) => {
+    const m = /files\/(ID-[^/]+)\/permissions\?(.*)$/.exec(url), body = JSON.parse(opts.payload || '{}'), folder = m && Object.values(epp.children).find((f) => f.id === m[1]);
+    calls.push({ url, query: m && m[2], method: opts.method, auth: opts.headers.Authorization, body });
+    const reply = (code, obj) => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(obj) });
+    if (fetch.fail) return reply(400, { error: { message: fetch.fail } });
+    if (!folder) return reply(404, { error: { message: 'not found' } });
+    (body.role === 'writer' ? folder.editors : folder.viewers).add(body.emailAddress);
+    return reply(200, { id: 'perm1' });
+  };
+  return { root, epp, drive, calls, fetch, session: { getEffectiveUser: () => ({ getEmail: () => owner }) } };
 }
 function archiveWith(fake) {
-  const ctx = { DriveApp: fake.drive, Session: fake.session, PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty: () => {} }) } };
+  const ctx = { DriveApp: fake.drive, Session: fake.session, ScriptApp: { getOAuthToken: () => 'token-123' }, UrlFetchApp: { fetch: (u, o) => fake.fetch(u, o) }, PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty: () => {} }) } };
   vm.createContext(ctx);
   vm.runInContext(src + '\n;this.DriveArchive_ = DriveArchive_;', ctx);
   return new ctx.DriveArchive_('archive-root', 'ID-EPP');
@@ -42,6 +53,21 @@ test('shareFolder: one person, one folder, view-only, not by link; nothing else 
   assert.equal(fake.epp.children.Other.viewers.size, 0);                       // another person's folder is untouched
   assert.equal(fake.epp.viewers.size + fake.root.viewers.size, 0);             // never the EPP folder or the root
   assert.equal(fake.epp.children.Kamala.editors.size, 0);                      // never an editor
+  // no email is sent: the permission is made through the Drive web service with notifications switched off, as a plain reader, for that one folder
+  assert.equal(fake.calls.length, 1);
+  const call = fake.calls[0];
+  assert.equal(call.method, 'post'); assert.equal(call.auth, 'Bearer token-123');
+  assert.ok(/files\/ID-Kamala\/permissions\?/.test(call.url) && /sendNotificationEmail=false/.test(call.query), call.url);
+  assert.deepEqual(call.body, { role: 'reader', type: 'user', emailAddress: 'kamala@gmail.com' });
+});
+
+test('shareFolder: an address without a Google account is refused in plain words, and nothing is shared', () => {
+  const fake = fakeDrive('owner@gmail.com'), a = archiveWith(fake);
+  fake.fetch.fail = 'You are trying to invite x@example.com. Since there is no Google account associated with this email address, you must check the "Notify people" box to invite this recipient.';
+  assert.throws(() => a.shareFolder({ person: 'Kamala', email: 'x@example.com' }), /no Google account\. Use a Gmail or Google Workspace address/);
+  assert.equal(fake.epp.children.Kamala.viewers.size, 0);
+  fake.fetch.fail = 'Some other Google problem';
+  assert.throws(() => a.shareFolder({ person: 'Kamala', email: 'y@gmail.com' }), /Some other Google problem/);
 });
 
 test('shareFolder: refuses the owner, an empty email, and an account that already reaches more of the Drive', () => {
@@ -57,7 +83,7 @@ test('shareFolder: refuses the owner, an empty email, and an account that alread
 
 test('shareFolder: if Google does not record view-only access, it is taken back and the admin is told', () => {
   const fake = fakeDrive('owner@gmail.com'), a = archiveWith(fake);
-  const folder = a.personFolder('Kamala'); folder.addViewer = (e) => { folder.editors.add(e); };      // pretend Drive made them an editor
+  const folder = a.personFolder('Kamala'); const real = fake.fetch; fake.fetch = (u, o) => real(u, Object.assign({}, o, { payload: JSON.stringify({ role: 'writer', emailAddress: 'k@gmail.com' }) }));   // pretend Drive made them an editor
   assert.throws(() => a.shareFolder({ person: 'Kamala', email: 'k@gmail.com' }), /did not record view-only/);
   folder.editors.clear();
 });

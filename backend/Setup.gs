@@ -204,6 +204,14 @@ function smokeTest() {
     check(docName.length === 1 && (e2['Conversation.txt'] || '').indexOf(docName[0]) >= 0 && (e2['Summary.txt'] || '').indexOf('1 shared document and picture') >= 0, 'the text files point to the document');
     check(doc2.documents.length === 1 && doc2.documents[0].name === 'Smoke report.pdf', 'the History details list the shared document by name');
     check(!voice.getFiles().hasNext(), 'the loose copy of the shared document was thrown away after the zip was written');
+    // sharing a folder WITHOUT any email: the call to the Drive web service must be well formed and authorised. A made-up address has no Google
+    // account, so Google refuses it in plain words (and sends nothing); nothing may be left shared.
+    const probe = makeEnv_({ eppFolderId: epp.getId() }).archive;
+    let refusal = '';
+    try { probe.shareFolder({ person: 'Smoke Person', email: 'no-such-account-' + Date.now() + '@example.com' }); } catch (e) { refusal = String(e && e.message || e); }
+    check(/no Google account/i.test(refusal), 'sharing goes through the Drive web service, and an address without a Google account is refused in plain words: ' + refusal);
+    const probed = epp.getFoldersByName('Smoke Person');
+    check(!probed.hasNext() || probed.next().getViewers().length === 0, 'nothing was left shared after the refusal');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);
