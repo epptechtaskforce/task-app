@@ -110,3 +110,9 @@ test('the app: nothing about Google Drive on the Account page; the two buttons a
   const det = app.slice(app.indexOf('function archivedDetails('), app.indexOf('async function viewArchived('));
   assert.ok(det.includes('Open the folder in Google Drive') && det.includes('Open the zip') && det.includes('Request access') && det.includes("requestDriveAccess"));
 });
+
+test('the History page has the same groups as the task list and a date range (source check)', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'app.js'), 'utf8');
+  const v = app.slice(app.indexOf('function viewHistory()'), app.indexOf('// A task archived as a zip file:'));
+  for (const bit of ["'All'", "'Assigned to me'", "'Assigned by me'", 'Choose date', 'Completed from', 'Show more', 'listHistory']) assert.ok(v.includes(bit), bit);
+});

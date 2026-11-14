@@ -1213,13 +1213,23 @@ function createCore(env) {
     return idx;
   }
 
+  // History, sorted newest first, and sorted into the same groups as the task list: all, assigned to me, assigned by me, plus the day it was completed.
+  // `counts` are for the groups after the search and the dates (so the numbers on the buttons match what each button would show).
   A.listHistory = { run: function (ctx, user, req) {
     const q = String(req.q || '').trim().toLowerCase();
     const limit = Math.max(1, Math.min(Number(req.limit) || 30, 100)), offset = Math.max(0, Number(req.offset) || 0);
+    const day = function (v) { const t = String(v || ''); if (t && !/^\d{4}-\d{2}-\d{2}$/.test(t)) throw fail('VALIDATION', 'Choose the date again'); return t; };
+    let from = day(req.from), to = day(req.to);
+    if (from && to && from > to) { const t = from; from = to; to = t; }                       // dates picked the wrong way round still work
+    const role = ['mine', 'byme'].indexOf(req.role) >= 0 ? req.role : 'all';
     let rows = ctx.rows('ArchiveIndex').filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; });
     if (q) rows = rows.filter(function (x) { return (x.title + ' ' + x.creatorName + ' ' + x.assigneeNames + ' ' + x.summaryText + ' ' + (x.archiveNo ? archiveCode(x.archiveNo) : '') + ' ' + (x.docs || []).map(function (d) { return d.name; }).join(' ')).toLowerCase().indexOf(q) >= 0; });
+    if (from || to) rows = rows.filter(function (x) { const d = env.formatDate(x.closedAt).slice(0, 10); return (!from || d >= from) && (!to || d <= to); });   // the day it was completed, company time
+    const byMe = function (x) { return x.creatorId === user.id; }, toMe = function (x) { return x.participantIds.slice(1).indexOf(user.id) >= 0; };
+    const counts = { all: rows.length, mine: rows.filter(toMe).length, byme: rows.filter(byMe).length };
+    if (role === 'mine') rows = rows.filter(toMe); else if (role === 'byme') rows = rows.filter(byMe);
     rows.sort(function (a, b) { return b.closedAt - a.closedAt; });
-    return { total: rows.length, items: rows.slice(offset, offset + limit).map(function (x) { return { id: x.id, title: x.title, creatorName: x.creatorName, assigneeNames: x.assigneeNames, createdAt: x.createdAt, closedAt: x.closedAt, summaryText: x.summaryText, messageCount: x.messageCount, archiveCode: x.archiveNo ? archiveCode(x.archiveNo) : '', docCount: x.fileCount || 0 }; }) };
+    return { total: rows.length, counts: counts, items: rows.slice(offset, offset + limit).map(function (x) { return { id: x.id, title: x.title, creatorName: x.creatorName, assigneeNames: x.assigneeNames, createdAt: x.createdAt, closedAt: x.closedAt, summaryText: x.summaryText, messageCount: x.messageCount, archiveCode: x.archiveNo ? archiveCode(x.archiveNo) : '', docCount: x.fileCount || 0 }; }) };
   } };
 
   A.getArchived = { run: function (ctx, user, req) {

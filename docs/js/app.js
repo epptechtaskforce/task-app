@@ -919,23 +919,51 @@
 
   function viewHistory() {
     const q = h('input', { type: 'search', placeholder: 'Search closed tasks by title, person or summary…', 'aria-label': 'Search history', value: S.histQ }); S.histQ = '';   // (the assistant may have filled it in)
-    const list = h('div');
+    // the same groups as the task list (all / assigned to me / assigned by me) and the day it was completed; remembered while you move around, fresh for each person
+    if (!S.hist || S.histOwner !== S.user.id) { S.hist = { role: 'all', from: '', to: '' }; S.histOwner = S.user.id; }
+    const H = S.hist, list = h('div'), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show completed tasks' });
+    const from = h('input', { type: 'date', value: H.from, 'aria-label': 'Completed from' }), to = h('input', { type: 'date', value: H.to, 'aria-label': 'Completed until' });
+    const datePanel = h('div', { class: 'card', style: 'display:' + (H.from || H.to ? 'flex' : 'none') + ';gap:.7rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:.8rem' },
+      h('label', { style: 'display:grid;gap:.25rem' }, 'Completed from', from), h('label', { style: 'display:grid;gap:.25rem' }, 'until', to),
+      h('button', { class: 'btn small', type: 'button', onclick: function () { H.from = H.to = ''; from.value = to.value = ''; datePanel.style.display = 'none'; load(); } }, 'Clear dates'));
     S.peek = function () { return { q: q.value }; };
-    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks: who, what, when, and where each archive is saved in Google Drive.'))), h('div', { class: 'search', style: 'margin-bottom:1rem' }, icon('search', 18), q), list), 'history');
-    let timer = null;
-    async function load() {
-      UI.clear(list); list.appendChild(UI.skeleton('card', 3));
+    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks: who, what, when, and where each archive is saved in Google Drive.'))), h('div', { class: 'search' }, icon('search', 18), q), filters, datePanel, list), 'history');
+    let timer = null, items = [], counts = { all: 0, mine: 0, byme: 0 };
+    const niceDay = function (d) { return UI.date(Date.parse(d + 'T12:00:00')); };
+    function drawFilters() {
+      UI.clear(filters);
+      if ((counts.mine && counts.byme) || H.role !== 'all') [['all', 'All'], ['mine', 'Assigned to me'], ['byme', 'Assigned by me']].forEach(function (f) {
+        filters.appendChild(h('button', { type: 'button', class: H.role === f[0] ? 'on' : '', 'aria-pressed': H.role === f[0], onclick: function () { H.role = f[0]; load(); } }, f[1], h('span', { class: 'n' }, counts[f[0]])));
+      });
+      const dated = !!(H.from || H.to), label = dated ? (H.from ? niceDay(H.from) : 'start') + ' – ' + (H.to ? niceDay(H.to) : 'today') : 'Choose date';
+      filters.appendChild(h('button', { type: 'button', class: dated ? 'on' : '', 'aria-pressed': datePanel.style.display !== 'none', onclick: function () { datePanel.style.display = datePanel.style.display === 'none' ? 'flex' : 'none'; drawFilters(); } }, label));
+    }
+    function applyDates() {
+      H.from = from.value; H.to = to.value;
+      if (H.from && H.to && H.from > H.to) { const t = H.from; H.from = H.to; H.to = t; from.value = H.from; to.value = H.to; }   // picked the wrong way round: swapped
+      load();
+    }
+    from.addEventListener('change', applyDates); to.addEventListener('change', applyDates);
+    function drawList(total) {
+      UI.clear(list);
+      if (!items.length) {
+        const filtered = q.value || H.role !== 'all' || H.from || H.to;
+        return list.appendChild(filtered ? UI.emptyState('search', 'No matches', 'No closed tasks match this search, group or date.', h('button', { class: 'btn small', type: 'button', onclick: function () { q.value = ''; H.role = 'all'; H.from = H.to = ''; from.value = to.value = ''; datePanel.style.display = 'none'; load(); } }, 'Show everything')) : UI.emptyState('done', 'Nothing here yet', 'Finished tasks land here once the manager approves them.'));
+      }
+      items.forEach(function (t, i) {
+        list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id, style: '--i:' + Math.min(i, 12) }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
+          h('div', { class: 'people' }, UI.avatarStack([t.creatorName]), h('span', { class: 't' }, t.creatorName + ' → ' + t.assigneeNames)),
+          h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null),
+          t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
+      });
+      if (total > items.length) list.appendChild(h('div', { style: 'text-align:center;margin:.6rem 0 1rem' }, h('button', { class: 'btn small', type: 'button', onclick: function () { load(true); } }, 'Show more (' + (total - items.length) + ' left)')));
+    }
+    async function load(more) {
+      if (!more) { items = []; UI.clear(list); list.appendChild(UI.skeleton('card', 3)); }
       try {
-        const r = await Api.call('listHistory', { q: q.value, limit: 50 });
-        UI.clear(list);
-        if (!r.items.length) return list.appendChild(q.value ? UI.emptyState('search', 'No matches', 'No closed tasks match your search.') : UI.emptyState('done', 'Nothing here yet', 'Finished tasks land here once the manager approves them.'));
-        r.items.forEach(function (t, i) {
-          list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id, style: '--i:' + Math.min(i, 12) }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
-            h('div', { class: 'people' }, UI.avatarStack([t.creatorName]), h('span', { class: 't' }, t.creatorName + ' → ' + t.assigneeNames)),
-            h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null),
-            t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
-        });
-        if (r.total > r.items.length) list.appendChild(h('p', { class: 'muted small', style: 'text-align:center' }, 'Showing the latest ' + r.items.length + ' of ' + r.total + '. Use search to narrow down.'));
+        const r = await Api.call('listHistory', { q: q.value, role: H.role, from: H.from, to: H.to, limit: 50, offset: items.length });
+        counts = r.counts; items = items.concat(r.items);
+        drawFilters(); drawList(r.total);
       } catch (e) { UI.clear(list); list.appendChild(errBox(e)); }
     }
     q.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(load, 350); });
