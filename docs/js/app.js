@@ -1149,7 +1149,7 @@
         const chip = p.status === 'granted' ? UI.chip('Allowed', 'ok', 'check') : p.status === 'requested' ? UI.chip('Asked', 'warn') : UI.chip('Has not asked');
         const buttons = [];
         if (p.status === 'requested') buttons.push(
-          h('button', { class: 'btn small primary', type: 'button', onclick: act('adminDriveGrant', 'Allow access?', p.name + ' (' + p.email + ') will be able to read and download everything in ' + p.folder + ', and nothing else. Google will email them a link.', 'Allow', 'Access allowed') }, 'Allow'),
+          h('button', { class: 'btn small primary', type: 'button', onclick: act('adminDriveGrant', 'Allow access?', p.name + ' (' + p.email + ') will be able to read and download everything in ' + p.folder + ', and nothing else. No email is sent: they open it from the app.', 'Allow', 'Access allowed') }, 'Allow'),
           h('button', { class: 'btn small', type: 'button', onclick: act('adminDriveRevoke', 'Refuse this request?', p.name + ' will not get access to Google Drive.', 'Refuse', 'Request refused') }, 'Refuse'));
         if (p.status === 'granted') buttons.push(h('button', { class: 'btn small', type: 'button', onclick: act('adminDriveRevoke', 'Withdraw access?', p.name + ' (' + p.email + ') will no longer be able to open ' + p.folder + '.', 'Withdraw', 'Access withdrawn') }, 'Withdraw'));
         card.appendChild(h('div', { class: 'list-row user' }, UI.avatar(p.name, '', p.userId),
@@ -1175,14 +1175,14 @@
         driveBox.appendChild(h('h3', null, 'Google Drive access'));
         if (st.status === 'granted') {
           driveBox.appendChild(h('p', null, 'You can read and download the finished tasks you gave to others. You cannot change anything there.'));
-          driveBox.appendChild(h('p', { class: 'muted small' }, 'Google account: ' + st.email));
+          driveBox.appendChild(h('p', { class: 'muted small' }, 'Open it with the Google account ' + st.email + ' (the one you gave).'));
           driveBox.appendChild(h('a', { class: 'btn small', href: st.folderUrl, target: '_blank', rel: 'noopener' }, 'Open my archive folder'));
         } else if (st.status === 'requested') {
           driveBox.appendChild(h('p', null, 'Waiting for the admin to allow it.'));
           driveBox.appendChild(h('p', { class: 'muted small' }, 'Google account: ' + st.email));
         } else {
           const email = h('input', { type: 'email', placeholder: 'name@gmail.com', autocomplete: 'email', maxlength: 120, 'aria-label': 'Your Google account email' }), err = h('div');
-          driveBox.appendChild(h('p', { class: 'muted small' }, 'The finished tasks you gave to others are kept as zip files in a folder in Google Drive. Ask for access to read and download them. You will only ever see that one folder.'));
+          driveBox.appendChild(h('p', { class: 'muted small' }, 'The finished tasks you gave to others are kept as zip files in a folder in Google Drive. Ask for access to read and download them. You will only ever see that one folder. No email is sent: once the admin allows it, the button to open it appears here.'));
           driveBox.appendChild(h('form', { onsubmit: async function (ev) {
             ev.preventDefault(); UI.clear(err);
             try { draw(Object.assign({ eligible: true }, await Api.call('requestDriveAccess', { email: email.value }))); UI.toast('Request sent to the admin'); }
