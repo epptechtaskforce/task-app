@@ -9,6 +9,50 @@ No server of your own, nothing to install for the users (it installs from a QR c
 
 **Try it without any setup:** open the site with `?demo=1` (a fake company; everything stays in your browser).
 
+## Screenshots
+
+| Home: what needs you today | A task: progress, people, files, one conversation |
+|---|---|
+| ![Home screen of a manager](docs/screenshots/home.jpg) | ![A task with a voice message and a photo](docs/screenshots/task.jpg) |
+
+| Org chart: who may give tasks to whom | History: approved tasks, archived to Drive |
+|---|---|
+| ![Org chart with six layers and arrows that skip layers](docs/screenshots/org-chart.jpg) | ![History of approved tasks](docs/screenshots/history.jpg) |
+
+## The demo company (and its organization)
+
+The demo is **Acme Foods**, a made-up company of 18 people on **six layers**, shaped like a real group: the top layers assign straight down past the layers in between.
+Everybody and everything in it is invented. Open the demo, pick any account on the sign-in page (the password is shown) and try the role: the CEO sees what the CEO may assign,
+an Assistant Manager only sees tasks given to them, and the Administrator manages people, job titles and the org chart but can never read anyone's tasks.
+
+```mermaid
+flowchart TD
+  CEO["CEO (1)"] --> COO["COO (1)"]
+  CEO --> SGM["Senior General Managers (2)"]
+  CEO --> GM["General Managers (3)"]
+  COO --> SGM
+  COO --> GM
+  SGM --> GM
+  SGM --> M["Managers (5)"]
+  SGM --> AM["Assistant Managers (6)"]
+  GM --> M
+  GM --> AM
+  M --> AM
+```
+
+An arrow means "may assign tasks to". Arrows only go down, a person can have several managers, and the server enforces all of it (the browser is never trusted).
+
+## Engineering highlights
+
+- **One core, three hosts.** All business rules live in one pure-JavaScript file (`backend/Core.gs`) that runs in Google Apps Script, in the browser demo and in the Node tests. It only talks to an `env` object, so storage, files, AI and clock are swappable.
+- **Free to run, no server of your own.** GitHub Pages + Google Apps Script + Sheets/Drive. The hard parts of that stack are handled in code: about 2 s per call, lost requests, a script lock, a 6-minute limit.
+- **Feels instant on a slow backend.** Reads show the last known answer and refresh behind it; writes show the result first and save in the background, undo with the reason if refused, and never treat a lost connection as a refusal. Quick taps are coalesced, so only the newest value is sent.
+- **Web Push written from scratch.** Apps Script has no ECDH, ECDSA or AES-GCM, so the message encryption (RFC 8291) and VAPID signing (RFC 8292) are implemented in pure JavaScript with BigInt and proven against Node's crypto in the tests.
+- **Archiving you can trust.** An approved task is filed by a background job as one zip per task; the zip is read back and compared to what went in (names, sizes, byte fingerprints) before the originals are trashed. Failures are never hidden: they show on the task and to the administrator, with Retry / Save what remains / Delete.
+- **AI that only proposes.** A floating assistant sees the same screen as you and answers in that context, but every action it suggests is validated against what you may do and needs your OK. Task text is treated as untrusted input.
+- **Tested.** 190+ tests, no dependencies (`npm test`), plus an in-Drive smoke test that runs the whole app against a temporary sheet and folders.
+- **Details that matter on a phone.** Installable from a QR code, self-updating, tap-through and double-tap guards, long-press menus to edit or delete your own tasks and messages.
+
 ## What it does
 
 **Work**

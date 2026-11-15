@@ -5,28 +5,44 @@
   'use strict';
 
   /* ============================== people ============================== */
-  const TITLES = [['Chairman', 1], ['General Manager', 2], ['Supervisor', 3], ['Field Officer', 4]];
+  // Six layers, like a real group of companies: the top layers assign straight down past the ones in between (the arrows of the org chart skip layers).
+  const TITLES = [['CEO', 1], ['COO', 2], ['Senior General Manager', 3], ['General Manager', 4], ['Manager', 5], ['Assistant Manager', 6]];
   // [username, name, job title, short bio]
   const PEOPLE = [
-    ['nimal.perera', 'Nimal Perera', 'Chairman', 'Chairman. Ask me about strategy and budgets.'],
-    ['kamala.silva', 'Kamala Silva', 'General Manager', 'General Manager, Operations. Keeps the harvest and packing schedules running.'],
-    ['dinesh.rathnayake', 'Dinesh Rathnayake', 'General Manager', 'General Manager, Packing and Logistics. Cold chain and dispatch.'],
-    ['sunil.fernando', 'Sunil Fernando', 'Supervisor', 'Supervisor of the field teams. Irrigation and quality checks.'],
-    ['nadeesha.wickrama', 'Nadeesha Wickrama', 'Supervisor', 'Quality supervisor. Lab samples, grading and audits.'],
-    ['ruwan.jayasinghe', 'Ruwan Jayasinghe', 'Field Officer', 'Field officer, Blocks A to C.'],
-    ['ishara.dias', 'Ishara Dias', 'Field Officer', 'Field officer. Ask me about drip lines.'],
-    ['kasun.bandara', 'Kasun Bandara', 'Field Officer', 'Field officer, Blocks D and E. Fences, equipment, seedlings.'],
-    ['thilini.herath', 'Thilini Herath', 'Field Officer', 'Packing house and stock records.'],
-    ['mahesh.kumara', 'Mahesh Kumara', 'Field Officer', 'Dispatch and cold room.']
+    ['nimal.perera', 'Nimal Perera', 'CEO', 'Chief Executive Officer. Ask me about strategy and budgets.'],
+    ['anura.jayawardena', 'Anura Jayawardena', 'COO', 'Chief Operating Officer. Runs day-to-day operations across estates, packing and logistics.'],
+    ['kamala.silva', 'Kamala Silva', 'Senior General Manager', 'Senior General Manager, Operations. Keeps the harvest and packing schedules running.'],
+    ['dinesh.rathnayake', 'Dinesh Rathnayake', 'Senior General Manager', 'Senior General Manager, Packing and Logistics. Cold chain and dispatch.'],
+    ['chamari.gunasekara', 'Chamari Gunasekara', 'General Manager', 'General Manager, Estates. Land, water and the field teams.'],
+    ['rohan.wijesinghe', 'Rohan Wijesinghe', 'General Manager', 'General Manager, Quality and Compliance. Audits, certificates and lab work.'],
+    ['sanduni.abeywickrama', 'Sanduni Abeywickrama', 'General Manager', 'General Manager, Finance and Procurement. Budgets, suppliers and invoices.'],
+    ['sunil.fernando', 'Sunil Fernando', 'Manager', 'Manager of the field teams. Irrigation and spraying.'],
+    ['nadeesha.wickrama', 'Nadeesha Wickrama', 'Manager', 'Quality manager. Lab samples, grading and audits.'],
+    ['lakmini.ranasinghe', 'Lakmini Ranasinghe', 'Manager', 'Manager of the packing house. Lines, labels and hygiene.'],
+    ['pradeep.liyanage', 'Pradeep Liyanage', 'Manager', 'Manager of dispatch and the cold chain.'],
+    ['tharindu.senanayake', 'Tharindu Senanayake', 'Manager', 'Manager of procurement and stores.'],
+    ['ruwan.jayasinghe', 'Ruwan Jayasinghe', 'Assistant Manager', 'Assistant manager, Blocks A to C.'],
+    ['ishara.dias', 'Ishara Dias', 'Assistant Manager', 'Assistant manager. Ask me about drip lines.'],
+    ['kasun.bandara', 'Kasun Bandara', 'Assistant Manager', 'Assistant manager, Blocks D and E. Fences, equipment, seedlings.'],
+    ['thilini.herath', 'Thilini Herath', 'Assistant Manager', 'Packing house and stock records.'],
+    ['mahesh.kumara', 'Mahesh Kumara', 'Assistant Manager', 'Dispatch and cold room.'],
+    ['amaya.dissanayake', 'Amaya Dissanayake', 'Assistant Manager', 'Finance records and supplier accounts.']
   ];
-  const SHORT = { nimal: 'nimal.perera', kamala: 'kamala.silva', dinesh: 'dinesh.rathnayake', sunil: 'sunil.fernando', nadeesha: 'nadeesha.wickrama', ruwan: 'ruwan.jayasinghe', ishara: 'ishara.dias', kasun: 'kasun.bandara', thilini: 'thilini.herath', mahesh: 'mahesh.kumara' };
-  // who may give tasks to whom (the "tether" arrows of the org chart)
+  const SHORT = { nimal: 'nimal.perera', anura: 'anura.jayawardena', kamala: 'kamala.silva', dinesh: 'dinesh.rathnayake', chamari: 'chamari.gunasekara', rohan: 'rohan.wijesinghe', sanduni: 'sanduni.abeywickrama', sunil: 'sunil.fernando', nadeesha: 'nadeesha.wickrama', lakmini: 'lakmini.ranasinghe', pradeep: 'pradeep.liyanage', tharindu: 'tharindu.senanayake', ruwan: 'ruwan.jayasinghe', ishara: 'ishara.dias', kasun: 'kasun.bandara', thilini: 'thilini.herath', mahesh: 'mahesh.kumara', amaya: 'amaya.dissanayake' };
+  // who may give tasks to whom (the "tether" arrows of the org chart): always from a higher layer to a lower one, often skipping layers
   const ARROWS = {
-    nimal: ['kamala', 'dinesh', 'sunil', 'nadeesha'],
-    kamala: ['sunil', 'nadeesha', 'ruwan', 'ishara', 'kasun'],
-    dinesh: ['nadeesha', 'thilini', 'mahesh'],
+    nimal: ['anura', 'kamala', 'dinesh', 'chamari', 'rohan', 'sanduni', 'sunil', 'nadeesha'],
+    anura: ['kamala', 'dinesh', 'chamari', 'rohan', 'sanduni'],
+    kamala: ['chamari', 'rohan', 'sunil', 'nadeesha', 'ruwan', 'ishara', 'kasun'],
+    dinesh: ['rohan', 'nadeesha', 'lakmini', 'pradeep', 'thilini', 'mahesh'],
+    chamari: ['sunil', 'ruwan', 'ishara', 'kasun'],
+    rohan: ['nadeesha', 'lakmini', 'kasun'],
+    sanduni: ['tharindu', 'amaya', 'pradeep'],
     sunil: ['ruwan', 'ishara', 'kasun', 'mahesh'],
-    nadeesha: ['thilini', 'mahesh', 'kasun', 'ruwan']
+    nadeesha: ['thilini', 'mahesh', 'kasun', 'ruwan'],
+    lakmini: ['thilini', 'mahesh'],
+    pradeep: ['mahesh', 'thilini'],
+    tharindu: ['amaya', 'thilini']
   };
 
   /* ============================== tasks ============================== */
@@ -81,11 +97,19 @@
     { t: 'Dispatch checklist for the Colombo order', d: 'Check labels, temperature, seals and paperwork before the truck leaves.', by: 'dinesh', to: ['mahesh'], day: 6, hour: 9, due: -3, ev: [
       ['s', 5, 12, 'mahesh', 'Labels and seals checked. Truck arrives at 4 pm.'], ['i', 4, 17, 'mahesh', 'truck', 'Truck loaded and sealed'], ['p', 3, 9, 'mahesh', 100], ['ok', 3, 12]] },
 
+    { t: 'Quarterly operations review pack', d: 'One deck for the board: yields, costs and dispatch performance for the quarter.', by: 'anura', to: ['kamala', 'dinesh'], day: 30, hour: 9, due: -24, ev: [
+      ['s', 29, 11, 'kamala', 'Yield and cost sheets are ready, sending them to Dinesh.'], ['f', 28, 15, 'dinesh', 'quotes-pdf', 'Dispatch performance and packaging costs'], ['s', 28, 16, 'anura', 'Good. I will merge them into one deck tonight.'], ['p', 27, 10, 'kamala', 100], ['ok', 27, 14]] },
+    { t: 'Audit readiness checklist for the export certificate', d: 'Walk through every point of the checklist with the packing house and mark what is missing.', by: 'rohan', to: ['nadeesha'], day: 24, hour: 9, due: -17, ev: [
+      ['s', 23, 12, 'nadeesha', 'Two points open: the calibration records and the pest log signatures.'], ['i', 20, 11, 'nadeesha', 'extinguisher', 'Signed pest log and the new calibration labels'], ['p', 19, 10, 'nadeesha', 100], ['ok', 19, 15]] },
+
     /* ---------- finished, waiting for the manager to approve ---------- */
     { t: 'Prepare the packing schedule for Friday', d: 'Match the truck slots with the harvest forecast.', by: 'kamala', to: ['sunil', 'ruwan'], day: 4, hour: 9, due: 0, ev: [
       ['s', 3, 11, 'sunil', 'Drafted and shared with the packing house.'], ['i', 2, 14, 'ruwan', 'crates', 'Crate stacks for the first truck'], ['p', 0, 8, 'sunil', 100]] },
     { t: 'Monthly lab results summary', d: 'Summarise the pesticide residue and sugar results from the lab for the file.', by: 'nadeesha', to: ['thilini'], day: 3, hour: 10, due: 1, unread: true, ev: [
       ['s', 2, 12, 'thilini', 'All residue results are well under the limit.'], ['f', 1, 15, 'thilini', 'lab-pdf', 'Lab summary for this month'], ['p', 1, 16, 'thilini', 100]] },
+
+    { t: 'Packing house hygiene inspection report', d: 'Inspect the lines, wash stations and storage areas and write the findings on one page.', by: 'rohan', to: ['lakmini'], day: 5, hour: 9, due: 1, ev: [
+      ['s', 4, 12, 'lakmini', 'Inspection done. Two wash stations need new soap dispensers.'], ['f', 2, 15, 'lakmini', 'lab-pdf', 'Hygiene inspection findings'], ['p', 1, 10, 'lakmini', 100]] },
 
     /* ---------- in progress ---------- */
     { t: 'Check irrigation in Block C', d: 'Walk the lines and report any leaks or blocked drippers.', by: 'kamala', to: ['ruwan', 'ishara'], day: 6, hour: 9, due: 2, ev: [
@@ -122,7 +146,14 @@
     { t: 'Send the Q4 budget draft', d: '', by: 'nimal', to: ['kamala'], day: 0, hour: 8, due: 2, unread: true, ev: [] },
     { t: 'Plan the weekend harvest shifts', d: 'Two shifts on Saturday, one on Sunday. Check who can work.', by: 'kamala', to: ['sunil', 'ruwan'], day: 0, hour: 9, due: 1, unread: true, ev: [] },
     { t: 'Arrange transport for the Sunday dispatch', d: 'Confirm the truck, the driver and the loading time with the packing house.', by: 'dinesh', to: ['mahesh'], day: 1, hour: 16, due: 1, unread: true, ev: [
-      ['s', 0, 8, 'mahesh', 'I called the transporter. Will confirm the time this afternoon.']] }
+      ['s', 0, 8, 'mahesh', 'I called the transporter. Will confirm the time this afternoon.']] },
+    { t: 'Plan the dry-season irrigation schedule', d: 'Water budget per block for the next eight weeks, shared with the field teams.', by: 'chamari', to: ['sunil'], day: 5, hour: 9, due: 6, ev: [
+      ['s', 4, 11, 'sunil', 'Starting with the pump hours per block.'], ['f', 2, 14, 'sunil', 'plan-pdf', 'Draft water budget per block'], ['s', 2, 16, 'chamari', 'Keep Block E on the lowest budget until the seedlings settle.'], ['p', 2, 17, 'sunil', 40]] },
+    { t: 'Reconcile supplier invoices for October', d: 'Match every invoice with the goods received and flag any difference above 2 percent.', by: 'sanduni', to: ['tharindu', 'amaya'], day: 8, hour: 10, due: -1, ev: [
+      ['s', 7, 12, 'tharindu', 'Received notes collected for 14 of 19 suppliers.'], ['s', 5, 10, 'amaya', 'Two invoices differ by more than 2 percent. Checking them with the suppliers.'], ['p', 3, 11, 'tharindu', 55]] },
+    { t: 'Choose the cold-chain monitoring vendor', d: 'Compare the two vendors on cost, alarm features and installation time, and recommend one.', by: 'anura', to: ['sanduni', 'rohan'], day: 4, hour: 10, due: 9, ev: [
+      ['s', 3, 11, 'rohan', 'Vendor A has SMS alarms. Vendor B only has a dashboard.'], ['s', 2, 15, 'sanduni', 'Vendor A costs 18 percent more. Getting a second quote.'], ['p', 1, 11, 'rohan', 20]] },
+    { t: 'Draft the staff training calendar', d: 'Safety, grading and hygiene sessions for the next quarter, one page.', by: 'nimal', to: ['anura'], day: 0, hour: 8, due: 14, ev: [] }
   ];
 
   /* ============================== sample pictures (drawn here) ============================== */
