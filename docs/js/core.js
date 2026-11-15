@@ -1915,6 +1915,25 @@ function createCore(env) {
       return out;
     });
   }
+  // removeAllAccountsExcept: a clean start for the people. Keeps ONE administrator (and that person's profile, sign-ins and phones) and removes every
+  // other account together with what hangs on it: the org chart (arrows and versions), Drive-access requests, profiles, phones, notification choices and
+  // sign-ins. Job titles and settings stay. Run wipeWorkData first: this does not touch tasks, messages or Drive files. Nothing changes if the
+  // named person is not an active administrator. Returns the number of rows removed per table.
+  function removeAllAccountsExcept(username) {
+    const ctx = makeCtx(); username = String(username || '').toLowerCase();
+    return ctx.write(function () {
+      const keep = ctx.rows('Users').filter(function (u) { return u.username === username && u.isAdmin && u.active; })[0];
+      if (!keep) throw new Error('No active administrator with the username ' + username + ': nothing was changed');
+      const others = function (r) { return r.userId !== keep.id; }, out = {};
+      out.Users = removeWhere(ctx, 'Users', function (u) { return u.id !== keep.id; });
+      out.Links = removeWhere(ctx, 'Links', function () { return true; });
+      out.LinkVersions = removeWhere(ctx, 'LinkVersions', function () { return true; });
+      out.DriveAccess = removeWhere(ctx, 'DriveAccess', function () { return true; });
+      ['Profiles', 'NotifyPrefs', 'Sessions', 'PushSubs'].forEach(function (t) { out[t] = removeWhere(ctx, t, others); });
+      audit(ctx, null, 'users.cleanStart', JSON.stringify(out) + ' (kept ' + keep.username + ')');
+      return out;
+    });
+  }
   // addAdminAccount: one more administrator (a "pure admin": no job title, no tasks, no AI), with its own temporary password.
   function addAdminAccount(name, username, tempPassword) {
     const ctx = makeCtx();
@@ -1931,7 +1950,7 @@ function createCore(env) {
     });
   }
 
-  return { handle: handle, setup: setup, maintenance: maintenance, issueTempPasswords: issueTempPasswords, resetToDefault: resetToDefault, addAdminAccount: addAdminAccount, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
+  return { handle: handle, setup: setup, maintenance: maintenance, issueTempPasswords: issueTempPasswords, resetToDefault: resetToDefault, removeAllAccountsExcept: removeAllAccountsExcept, addAdminAccount: addAdminAccount, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS, HISTORY_COLUMNS: HISTORY_COLUMNS };

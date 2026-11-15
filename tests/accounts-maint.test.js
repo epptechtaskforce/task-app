@@ -51,6 +51,27 @@ test('resetToDefault: back to 1111, which only opens the change-password step', 
   assert.throws(() => core.resetToDefault(['nobody']), /No active person/);
 });
 
+test('removeAllAccountsExcept: only the administrator is left, with job titles and settings; refuses when the person is not an active admin', () => {
+  const { core, call, mk, env, A } = boot();
+  const boss = call('adminSaveJobTitle', A, { title: 'Director', level: 1 }).data.id;
+  const sam = call('adminSaveUser', A, { name: 'sam', username: 'sam', jobTitleId: boss }).data.user; mk('tia');
+  assert.equal(call('adminSaveLinks', A, { links: [{ fromId: sam.id, toId: mk('uma').user.id }] }).ok, true);
+  core.addAdminAccount('Dilshan', 'dilshan', 'Temp-pass-9');
+  const sT = call('login', null, { username: 'sam', password: '1111' }).data.token;
+  assert.ok(env.store.all('Links').length >= 1);
+  assert.throws(() => core.removeAllAccountsExcept('sam'), /No active administrator/);
+  assert.equal(env.store.all('Users').length, 5, 'a refused call changes nothing');
+  const out = core.removeAllAccountsExcept('Admin');
+  assert.equal(out.Users, 4);
+  assert.deepEqual(env.store.all('Users').map((u) => u.username), ['admin']);
+  assert.equal(env.store.all('Links').length, 0); assert.equal(env.store.all('LinkVersions').length, 0);
+  assert.equal(env.store.all('JobTitles').length, 2, 'job titles stay');
+  assert.equal(call('me', sT).ok, false, 'removed people are signed out');
+  assert.equal(call('me', A).ok, true, 'the administrator stays signed in');
+  assert.equal(call('login', null, { username: 'dilshan', password: 'Temp-pass-9' }).ok, false);
+  assert.ok(env.store.all('AuditLog').some((a) => a.action === 'users.cleanStart'));
+});
+
 test('addAdminAccount: a pure administrator with its own temporary password; no duplicate names', () => {
   const { core, call, A } = boot();
   const r = core.addAdminAccount('Dilshan', 'Dilshan', 'Temp-pass-9');
