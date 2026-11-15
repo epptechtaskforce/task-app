@@ -408,6 +408,20 @@ function wipeWorkData(confirmText) {
   Logger.log('Kept: job titles, user accounts, the org chart, profiles, settings and sign-ins.');
 }
 
+// ------------------------------ first sign-in passwords ------------------------------
+// resetUnclaimedAccounts()  Every active person (not an administrator) who has NEVER signed in gets their OWN one-time temporary password, shown ONCE in
+//                           the execution log: hand each one to that person. Until then the shared default 1111 would let anybody who knows a username
+//                           take the account over. Each person must still choose a new password at first sign-in. Safe to run again (it only touches
+//                           people who never signed in; a person who has signed in is never touched).
+function resetUnclaimedAccounts() {
+  const env = makeEnv_({}), core = createCore(env);
+  const names = env.store.all('Users').filter(function (u) { return u.active && !u.isAdmin && !u.lastLogin; }).map(function (u) { return u.username; });
+  if (!names.length) { Logger.log('Everybody has signed in already; nothing to do.'); return; }
+  const out = core.issueTempPasswords(names, generatePassword_);
+  out.forEach(function (x) { Logger.log(x.username + '  (' + x.name + ')  temporary password: ' + x.tempPassword); });
+  Logger.log(out.length + ' people have their own temporary password now. Write them down: they are not shown again.');
+}
+
 // ------------------------------ launch check ------------------------------
 // launchCheck()  Read-only report of everything that must be right before the real launch: settings, accounts, triggers, backups, Drive, AI keys, data size.
 //                Writes nothing and prints no secrets. Lines starting CHECK need a look.
