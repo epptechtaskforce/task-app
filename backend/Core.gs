@@ -1897,6 +1897,23 @@ function createCore(env) {
       return out;
     });
   }
+  // resetToDefault: the same as the admin's Reset button (password 1111, a new one must be chosen at first sign-in), for several people at once.
+  function resetToDefault(usernames) {
+    const ctx = makeCtx();
+    return ctx.write(function () {
+      const out = [];
+      (usernames || []).forEach(function (name) {
+        const u = ctx.rows('Users').filter(function (x) { return x.username === String(name).toLowerCase() && x.active; })[0];
+        if (!u) throw new Error('No active person with the username ' + name);
+        setPassword(ctx, u.id, DEFAULT_PASSWORD, true);
+        removeWhere(ctx, 'Sessions', function (x) { return x.userId === u.id; });
+        removeWhere(ctx, 'PushSubs', function (x) { return x.userId === u.id; });
+        audit(ctx, null, 'user.resetPassword', u.username);
+        out.push({ username: u.username, name: u.name });
+      });
+      return out;
+    });
+  }
   // addAdminAccount: one more administrator (a "pure admin": no job title, no tasks, no AI), with its own temporary password.
   function addAdminAccount(name, username, tempPassword) {
     const ctx = makeCtx();
@@ -1913,7 +1930,7 @@ function createCore(env) {
     });
   }
 
-  return { handle: handle, setup: setup, maintenance: maintenance, issueTempPasswords: issueTempPasswords, addAdminAccount: addAdminAccount, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
+  return { handle: handle, setup: setup, maintenance: maintenance, issueTempPasswords: issueTempPasswords, resetToDefault: resetToDefault, addAdminAccount: addAdminAccount, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS, HISTORY_COLUMNS: HISTORY_COLUMNS };

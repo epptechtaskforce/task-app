@@ -422,6 +422,16 @@ function resetUnclaimedAccounts() {
   Logger.log(out.length + ' people have their own temporary password now. Write them down: they are not shown again.');
 }
 
+// resetUnclaimedToDefault()  Every active person (administrators too) who has NEVER signed in gets the shared default 1111 again (the company's chosen
+//                            way to hand out accounts; it only opens the change-password step). People who have signed in are never touched.
+function resetUnclaimedToDefault() {
+  const env = makeEnv_({}), core = createCore(env);
+  const names = env.store.all('Users').filter(function (u) { return u.active && !u.lastLogin; }).map(function (u) { return u.username; });
+  if (!names.length) { Logger.log('Everybody has signed in already; nothing to do.'); return; }
+  const out = core.resetToDefault(names);
+  Logger.log('Password 1111 (change at first sign-in) for: ' + out.map(function (x) { return x.username; }).join(', '));
+}
+
 // ------------------------------ launch check ------------------------------
 // launchCheck()  Read-only report of everything that must be right before the real launch: settings, accounts, triggers, backups, Drive, AI keys, data size.
 //                Writes nothing and prints no secrets. Lines starting CHECK need a look.
