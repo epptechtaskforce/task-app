@@ -29,3 +29,4 @@ Thumbs.db
 
 # a local copy of the install QR code (it holds the real company address; the company branch has its own copy)
 QR code/
+private/
