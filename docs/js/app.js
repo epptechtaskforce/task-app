@@ -571,6 +571,8 @@
       createBtn.disabled = true;
       try {
         const r = await Api.call('createTask', { title: title.value, description: desc.value, dueDate: dueVal, assigneeIds: ids });
+        // Put the new task at the top of the saved list, so its page opens at once with the title and people (the conversation follows from the server).
+        try { const key = 'tasks:' + S.user.id, l = Api.cacheGet(key) || { tasks: [] }; l.tasks = [r.task].concat((l.tasks || []).filter(function (t) { return t.id !== r.task.id; })); Api.cacheSet(key, l); } catch (e2) { /* only a speed-up */ }
         UI.confetti(); UI.toast('Task assigned'); go('#/task/' + r.task.id);
       } catch (e) { UI.toast(e.message, 'bad'); createBtn.disabled = false; }
     });
@@ -749,7 +751,9 @@
           dragging = false;
           if (v === task.progress) return;
           if (v === 100 && !(await UI.confirm('Mark as 100% done?', 'Your manager will be asked to confirm that the work is complete.', 'Yes, it is done'))) { slider.value = task.progress; show(task.progress); return; }
-          await guarded(async function () { task = (await Api.call('setProgress', { taskId: id, progress: v })).task; await refresh(true); if (v === 100) UI.confetti(); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated'); });
+          // The answer already holds the updated task: show it and say "done" now. The conversation (it gets a "set progress" line) is fetched in the
+          // background instead of making the person wait for a second round trip of about 2 s.
+          await guarded(async function () { task = (await Api.call('setProgress', { taskId: id, progress: v })).task; if (v === 100) UI.confetti(); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated'); refresh(true).catch(function () { /* the next poll will show it */ }); });
           drawHead();
         }
         slider.addEventListener('input', function () { dragging = true; show(slider.value); });
@@ -863,10 +867,16 @@
         // show the message straight away (the server takes a second or two), and put the text back if sending fails
         const temp = pendingRow(h('div', { class: 'txt' }, v), h('div', { class: 'time' }, icon('clock', 11), 'Sending…'));
         showPending(temp); text.value = ''; resize(); toggle();
-        try { await Api.call('postMessage', { taskId: id, text: v }); }
+        let sent;
+        try { sent = await Api.call('postMessage', { taskId: id, text: v }); }
         catch (e) { dropPending(temp); if (!text.value) { text.value = v; resize(); toggle(); } if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); return; }
-        await refresh(true).catch(function () { /* the next poll will show it */ });
+        // The answer is the stored message: put it in the conversation now (no second round trip of about 2 s), then catch up with what others wrote.
+        if (sent && sent.message && !messages.some(function (m) { return m.id === sent.message.id; })) {
+          messages = messages.concat([sent.message]); if (S.taskMem[id]) S.taskMem[id].messages = messages;
+          renderChat(chatBox, messages, { taskId: id }); pendingEls.forEach(function (el) { if (el !== temp) chatBox.appendChild(el); }); window.scrollTo(0, document.body.scrollHeight);
+        }
         dropPending(temp);
+        refresh(true).catch(function () { /* the next poll will show it */ });
       }
       const attach = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Share a photo or document', title: 'Share a photo or document', onclick: attachFlow }, icon('paperclip', 22));
       compBox.appendChild(h('div', { class: 'composer-in' }, attach, text, mic, send));

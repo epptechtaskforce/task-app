@@ -111,6 +111,7 @@ First-time catch-up for a phone that still runs a copy from before update.js exi
 
 - Every request costs about 2-3 s even for trivial calls; roughly 1 in 10 requests is lost entirely. So `api.js` re-sends reads and sign-in after 4.5 s / 9.5 s
   (first answer wins) but **never re-sends writes**. Background polling (`poll()` in `app.js`) runs one request at a time. Do not add chatty polling.
+- **Measured on the live app (Nov 2026):** even `info` (no work at all) takes about 2 s from the browser (1.5-2.3 s), and an empty `doGet` runs 0.5-1.2 s inside Google; three calls started together finish in the time of one, and GET is no faster than POST. So the floor is Google's, per round trip; only FEWER SEQUENTIAL calls and showing what the screen already knows make the app feel faster. **Never `await` a second call after a write just to redraw: every write already answers with what changed** (`postMessage` -> `{message}`, `setProgress`/`createTask` -> `{task}`); draw that at once and refresh in the background. Do not prefetch `getTask` (it marks the task read).
 - Tables are cached in CacheService and invalidated on writes; writes take a script lock. Keep prompts small; AI calls should come after the screen has loaded.
 - UrlFetchApp has no timeout setting; the AI code enforces its own total time limits.
 
