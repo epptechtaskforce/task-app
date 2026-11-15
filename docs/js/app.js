@@ -26,9 +26,12 @@
   // A change is shown on screen first and saved in the background (the server needs about 2 s per call, so waiting for it made every tap feel slow).
   // save(send, undo): runs send() (a call to the server); if the server says no, undo(error) puts the screen back and the person is told why.
   // While a save is in flight the background refreshes wait (S.writes), so an older answer never paints over a change that is still being saved.
-  function save(send, undo) {
+  // keep = true for a change that is safe to ask for again (it sets a value, it does not add something): when the CONNECTION failed (no signal, a timeout) the
+  // request may still have reached the server, so nothing is put back; the person is told, and the screen is checked against the server when it answers again.
+  function save(send, undo, keep) {
     S.writes++;
     return Promise.resolve().then(send).catch(function (e) {
+      if (keep && e && e.network) { if (typeof keep === 'function') keep(e); else UI.toast('No signal. Your change is kept and will be checked again when the connection is back.', 'bad'); throw e; }   // (keep may be a function that does its own tidying and wording)
       try { if (undo) undo(e); } catch (x) { /* putting things back must never throw */ }
       if (e && e.code !== 'AUTH') UI.toast((e && e.message) || 'Could not save that. Please try again.', 'bad');
       throw e;
@@ -668,7 +671,8 @@
       UI.confetti(); UI.toast('Task assigned');
       go('#/tasks');
       save(function () { return Api.call('createTask', sent).then(function (r) { drop(); return r; }); },
-        function () { drop(); S.pendingFill = { title: sent.title, description: sent.description, dueDate: sent.dueDate, assigneeIds: ids }; if (location.hash === '#/tasks') go('#/new'); }).catch(function () { /* already told */ });
+        function () { drop(); S.pendingFill = { title: sent.title, description: sent.description, dueDate: sent.dueDate, assigneeIds: ids }; if (location.hash === '#/tasks') go('#/new'); },
+        function () { drop(); UI.toast('No signal. The task may still arrive: look at your list in a minute before creating it again.', 'bad'); }).catch(function () { /* already told */ });   // (a lost connection is not a refusal: the request may have reached the server, so no second copy is offered)
     });
 
     const draft = h('div', { class: 'card draft' }, h('div', { class: 'detail-banner' }), h('div', { class: 'draft-in' },
@@ -823,6 +827,24 @@
     window.addEventListener('taskapp:changed', onChanged); onLeave(function () { window.removeEventListener('taskapp:changed', onChanged); });
     const isAssignee = function () { return task.role === 'assignee'; };
 
+    // Quick taps on different numbers: ONE save at a time, and only the newest number is ever sent (the ones in between are skipped). Each answer from the
+    // server used to repaint an older number, so the screen replayed the taps one by one.
+    let sending = false, next = null, confirmed = null, latest = null;
+    function sendProgress(v, tries) {
+      if (sending) { next = v; return; }
+      sending = true;
+      save(function () {
+        return Api.call('setProgress', { taskId: id, progress: v }).then(function (r) {
+          confirmed = r.task;
+          if (next === null && latest === v) { task = r.task; drawHead(); refresh(true).catch(function () { /* the next poll will show it */ }); }   // (no repaint while a newer number is waiting)
+        });
+      }, function () {
+        if (next === null && latest === v && confirmed) { task = confirmed; patchList(id, { progress: confirmed.progress, status: confirmed.status, progressBy: confirmed.progressBy, updatedAt: confirmed.updatedAt }); drawHead(); }
+      }, true).then(function () {}, function (e) {
+        if (e && e.network && next === null && latest === v && tries < 3) setTimeout(function () { if (latest === v) sendProgress(v, tries + 1); }, 8000);   // it sets a value, so asking again is safe
+      }).then(function () { sending = false; if (next !== null) { const n = next; next = null; sendProgress(n, 0); } });
+    }
+
     function drawHead() {
       bar.title.textContent = task.title;
       const due = UI.dueInfo(task.dueDate, task.status);
@@ -847,12 +869,12 @@
           if (v === 100 && !(await UI.confirm('Mark as 100% done?', 'Your manager will be asked to confirm that the work is complete.', 'Yes, it is done'))) { slider.value = task.progress; show(task.progress); return; }
           // The answer already holds the updated task: show it and say "done" now. The conversation (it gets a "set progress" line) is fetched in the
           // background instead of making the person wait for a second round trip of about 2 s.
-          // On screen at once, saved in the background; if the server says no, the old progress comes back with the reason.
-          const before = task, patch = { progress: v, status: v === 100 ? 'pending' : 'open', progressBy: S.user.name, updatedAt: Date.now() };
+          // On screen at once, saved in the background; if the server says no, the last confirmed progress comes back with the reason.
+          if (!confirmed) confirmed = task;
+          const patch = { progress: v, status: v === 100 ? 'pending' : 'open', progressBy: S.user.name, updatedAt: Date.now() };
           task = Object.assign({}, task, patch); patchList(id, patch); drawHead();
           if (v === 100) UI.confetti(); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated');
-          save(function () { return Api.call('setProgress', { taskId: id, progress: v }).then(function (r) { task = r.task; drawHead(); refresh(true).catch(function () { /* the next poll will show it */ }); }); },
-            function () { task = before; patchList(id, { progress: before.progress, status: before.status, progressBy: before.progressBy, updatedAt: before.updatedAt }); drawHead(); refresh(true).catch(function () {}); }).catch(function () { /* already told */ });
+          latest = v; sendProgress(v, 0);
         }
         slider.addEventListener('input', function () { dragging = true; show(slider.value); });
         slider.addEventListener('change', function () { commit(Number(slider.value)); });
@@ -989,7 +1011,7 @@
         showPending(temp); text.value = ''; resize(); toggle();
         let sent;
         try { sent = await Api.call('postMessage', { taskId: id, text: v }); }
-        catch (e) { dropPending(temp); if (!text.value) { text.value = v; resize(); toggle(); } if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); return; }
+        catch (e) { dropPending(temp); if (!text.value) { text.value = v; resize(); toggle(); } if (e.code !== 'AUTH') UI.toast(e.network ? 'No signal. Your message may still be sent: check the chat before sending it again.' : e.message, 'bad'); return; }
         addLocal(sent && sent.message, temp);
         refresh(true).catch(function () { /* the next poll will show it */ });
       }
