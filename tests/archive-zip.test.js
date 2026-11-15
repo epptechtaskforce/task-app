@@ -50,7 +50,7 @@ const job = () => ({ person: 'Boss', zipName: 'EPP-0001 - x.zip', files, moves, 
 test('saveZip: when every file in the zip matches, the zip is kept and the loose originals are trashed', () => {
   const t = setup({ originals });
   const r = t.arch.saveZip(job());
-  assert.equal(r.storage, 'zip'); assert.equal(r.path, 'EPP/Boss/EPP-0001 - x.zip'); assert.equal(r.parts, 1);
+  assert.equal(r.storage, 'zip'); assert.equal(r.path, 'EPP_Task_Manager/Boss/EPP-0001 - x.zip'); assert.equal(r.parts, 1);
   assert.equal(t.created.length, 1); assert.equal(t.created[0].trashed, false); assert.deepEqual(t.trashedIds, ['F1', 'F2']);
 });
 
@@ -87,7 +87,7 @@ const big = () => { const o = {}, m = []; for (let i = 1; i <= 5; i++) { o['B' +
 test('saveZip: a very big task is split into parts; every document is in exactly one part; Summary.txt says where; originals go only at the end', () => {
   const { o, m } = big(), t = setup({ originals: o });
   const r = t.arch.saveZip({ person: 'Boss', zipName: 'EPP-0007 - big.zip', files, moves: m, trashIds: m.map((x) => x.id) });
-  assert.equal(r.parts, 2); assert.equal(r.path, 'EPP/Boss/EPP-0007 - big.zip');                                 // the History row points at part 1
+  assert.equal(r.parts, 2); assert.equal(r.path, 'EPP_Task_Manager/Boss/EPP-0007 - big.zip');                                 // the History row points at part 1
   assert.deepEqual(t.created.map((f) => f.name), ['EPP-0007 - big.zip', 'EPP-0007 - big (part 2 of 2).zip']);
   const inside = t.created.map((f) => Array.from(f.blob.entries, (b) => b.name));
   assert.deepEqual(inside[0], ['Summary.txt', 'Conversation.txt', 'Files/big1.pdf', 'Files/big2.pdf', 'Files/big3.pdf', 'Files/big4.pdf']);

@@ -158,7 +158,7 @@ test('simulation plan runs through the real rules without one rejected step, and
   const archived = env.store.all('ArchiveIndex'), open = env.store.all('Tasks');
   assert.equal(archived.length + open.length, specs.length);
   assert.ok(archived.length >= 70 && open.length >= 8, 'archived ' + archived.length + ', open ' + open.length);
-  assert.ok(archived.every((x) => x.storage === 'zip' && x.archiveNo > 0 && x.path.startsWith('EPP/')));
+  assert.ok(archived.every((x) => x.storage === 'zip' && x.archiveNo > 0 && x.path.startsWith('EPP_Task_Manager/')));
   assert.equal(new Set(archived.map((x) => x.archiveNo)).size, archived.length);                      // every archive number is different
   const folders = {}; archived.forEach((x) => { const p = x.path.split('/')[1]; folders[p] = (folders[p] || 0) + 1; });
   assert.deepEqual(Object.keys(folders).sort(), ['CEO', 'COO', 'SGM'], 'one folder per person who assigned, made when needed: ' + JSON.stringify(folders));

@@ -23,6 +23,7 @@ function prop_(name) { return PropertiesService.getScriptProperties().getPropert
 function makeEnv_(cfg) {
   const ssId = cfg.ssId || prop_('SPREADSHEET_ID');
   const voiceId = cfg.voiceFolderId || prop_('VOICE_FOLDER_ID');
+  const healVoice = !cfg.voiceFolderId;                                   // the real app finds or makes its Voice folder again if somebody deleted it; tests bring their own
   const archiveId = cfg.archiveFolderId || prop_('ARCHIVE_FOLDER_ID');
   const tz = Session.getScriptTimeZone();
   const archive = new DriveArchive_(archiveId, cfg.eppFolderId);
@@ -37,7 +38,7 @@ function makeEnv_(cfg) {
     log: function (m) { console.error(String(m)); },
     formatDate: function (ms) { return Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd HH:mm'); },
     store: store,
-    files: new DriveFiles_(voiceId),
+    files: new DriveFiles_(voiceId, healVoice),
     archive: archive,
     archiveAtNight: cfg.archiveAtNight !== false,     // approving only closes a task; a background job (every hour) files it in Drive. Setup tests pass false (file at once)
     history: new HistorySheet_(archive),
@@ -333,11 +334,34 @@ SheetsStore_.prototype.removeWhere = function (name, pred) {
 
 const AUDIO_EXT_ = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/aac': 'aac' };
 
-function DriveFiles_(folderId) { this.folderId = folderId; }
-DriveFiles_.prototype.saveAudio = function (o) {
+// A folder that is still there (a deleted or trashed one must never be written into: Drive happily accepts files in a trashed folder).
+function folderAlive_(f) { try { return !!f && !(typeof f.isTrashed === 'function' && f.isTrashed()); } catch (e) { return false; } }
+function folderById_(id) { if (!id) return null; try { const f = DriveApp.getFolderById(id); return folderAlive_(f) ? f : null; } catch (e) { return null; } }
+// Finds (by name, not trashed) or makes a folder inside `parent` (or in My Drive when parent is null).
+function folderNamed_(parent, name) {
+  const it = (parent || DriveApp.getRootFolder()).getFoldersByName(name);
+  return it.hasNext() ? it.next() : (parent ? parent.createFolder(name) : DriveApp.createFolder(name));
+}
+// The folder of the app's own files: TaskApp / {Voice, Archive, Backups}. If a folder was deleted, it is made again (and its id saved), so uploads never fail for that reason.
+function taskAppFolder_(key, name) {
+  const props = PropertiesService.getScriptProperties(), have = folderById_(props.getProperty(key));
+  if (have) return have;
+  let root = folderById_(props.getProperty('ROOT_FOLDER_ID'));
+  if (!root) { root = folderNamed_(null, 'TaskApp'); props.setProperty('ROOT_FOLDER_ID', root.getId()); }
+  const f = folderNamed_(root, name);
+  props.setProperty(key, f.getId());
+  return f;
+}
+
+function DriveFiles_(folderId, heal) { this.folderId = folderId; this.heal = !!heal; }
+DriveFiles_.prototype.dir = function () {
+  if (this.heal) { const f = taskAppFolder_('VOICE_FOLDER_ID', 'Voice'); this.folderId = f.getId(); return f; }
   if (!this.folderId) throw new Error('VOICE_FOLDER_ID is not set. Run setup() first.');
+  return DriveApp.getFolderById(this.folderId);
+};
+DriveFiles_.prototype.saveAudio = function (o) {
   const blob = Utilities.newBlob(Utilities.base64Decode(o.b64), o.mime, o.taskId + '_' + o.messageId + '.' + (AUDIO_EXT_[o.mime] || 'bin'));
-  return DriveApp.getFolderById(this.folderId).createFile(blob).getId();
+  return this.dir().createFile(blob).getId();
 };
 DriveFiles_.prototype.readAudio = function (fileId) {
   const blob = DriveApp.getFileById(fileId).getBlob();
@@ -346,9 +370,8 @@ DriveFiles_.prototype.readAudio = function (fileId) {
 // Photos and documents shared in a task live in the same private Drive folder. They are never shared by link:
 // the app reads them for signed-in people of the task only (Core.gs checks that).
 DriveFiles_.prototype.saveFile = function (o) {
-  if (!this.folderId) throw new Error('VOICE_FOLDER_ID is not set. Run setup() first.');
   const blob = Utilities.newBlob(Utilities.base64Decode(o.b64), o.mime, o.taskId + '_' + o.messageId + '_' + o.name);
-  return DriveApp.getFolderById(this.folderId).createFile(blob).getId();
+  return this.dir().createFile(blob).getId();
 };
 DriveFiles_.prototype.readFile = DriveFiles_.prototype.readAudio;
 DriveFiles_.prototype.exists = function (fileId) { try { return DriveApp.getFileById(fileId).getSize() >= 0; } catch (e) { return false; } };      // is the stored file still there (and readable)?
@@ -372,21 +395,21 @@ DriveArchive_.prototype.folderFor = function (path, create) {
   }
   return f;
 };
-// The EPP folder in the Drive of the account that owns the app. Its id is remembered in the script property EPP_FOLDER_ID; if the folder
-// is missing it is looked up by name ("EPP" in My Drive) or created.
+// The company folder in the Drive of the account that owns the app: EPP_FOLDER_NAME_ in My Drive. Its id is remembered in the script property EPP_FOLDER_ID.
+// If the folder was deleted or thrown in the trash it is found by name or made again, so archiving never fails for want of it. A folder that still has the
+// older name "EPP" is renamed in place (everything inside stays).
+const EPP_FOLDER_NAME_ = 'EPP_Task_Manager';
 DriveArchive_.prototype.eppFolder = function () {
   if (this.eppId) return DriveApp.getFolderById(this.eppId);
-  const props = PropertiesService.getScriptProperties(), saved = props.getProperty('EPP_FOLDER_ID');
-  if (saved) { try { return DriveApp.getFolderById(saved); } catch (e) { /* it was deleted: find or make it again */ } }
-  const it = DriveApp.getRootFolder().getFoldersByName('EPP');
-  const f = it.hasNext() ? it.next() : DriveApp.createFolder('EPP');
+  const props = PropertiesService.getScriptProperties(), saved = folderById_(props.getProperty('EPP_FOLDER_ID'));
+  if (saved) { if (saved.getName() === 'EPP') saved.setName(EPP_FOLDER_NAME_); return saved; }
+  const f = folderNamed_(null, EPP_FOLDER_NAME_);
   props.setProperty('EPP_FOLDER_ID', f.getId());
   return f;
 };
-// One folder per person who assigns tasks, named with the person's name.
+// One folder per person who assigns tasks, named with the person's name. Made on the spot when it is missing (new person, or the folder was deleted).
 DriveArchive_.prototype.personFolder = function (name) {
-  const epp = this.eppFolder(), it = epp.getFoldersByName(name);
-  return it.hasNext() ? it.next() : epp.createFolder(name);
+  return folderNamed_(this.eppFolder(), name);
 };
 // Makes the zip from the text files and the stored files, puts it in the person's folder and checks it: the zip is opened again and EVERY entry must be
 // there under its name with exactly the same size and content (a fingerprint of the bytes) as what went in. Only then are the loose originals thrown
@@ -445,7 +468,7 @@ DriveArchive_.prototype.saveZip = function (o) {
   }
   try { Logger.log('saveZip: ' + parts.length + ' zip file(s), ' + moves.length + ' documents, ' + Math.round((Date.now() - t0) / 1000) + ' s'); } catch (e) { /* logging never matters */ }
   (o.trashIds || []).forEach(function (id) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ } });
-  return { storage: 'zip', path: 'EPP/' + person.getName() + '/' + made[0].getName(), fileId: made[0].getId(), folderId: person.getId(), parts: parts.length, partIds: made.map(function (f) { return f.getId(); }) };
+  return { storage: 'zip', path: EPP_FOLDER_NAME_ + '/' + person.getName() + '/' + made[0].getName(), fileId: made[0].getId(), folderId: person.getId(), parts: parts.length, partIds: made.map(function (f) { return f.getId(); }) };
 };
 // Removes the zip(s) saveZip just made (the task changed while they were being made, so it is filed again later). The documents themselves are in the Drive trash.
 DriveArchive_.prototype.discard = function (saved) {
