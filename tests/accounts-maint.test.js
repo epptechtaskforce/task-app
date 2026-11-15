@@ -72,6 +72,20 @@ test('removeAllAccountsExcept: only the administrator is left, with job titles a
   assert.ok(env.store.all('AuditLog').some((a) => a.action === 'users.cleanStart'));
 });
 
+test('an administrator can create more administrators from the Users page (no job title needed); an ordinary person cannot', () => {
+  const { call, mk, A } = boot();
+  const made = call('adminSaveUser', A, { name: 'Dilshan', username: 'dilshan', jobTitleId: '', isAdmin: true });
+  assert.equal(made.ok, true); assert.equal(made.data.user.isAdmin, true); assert.equal(made.data.tempPassword, '1111');
+  const l = call('login', null, { username: 'dilshan', password: '1111' });
+  assert.equal(l.ok, true); assert.equal(l.data.user.mustChange, true);
+  assert.equal(call('changePassword', l.data.token, { oldPassword: '1111', newPassword: 'Dilshan-own-1' }).ok, true);
+  const D = call('login', null, { username: 'dilshan', password: 'Dilshan-own-1' }).data.token;
+  assert.equal(call('adminSaveUser', D, { name: 'Third', username: 'third', jobTitleId: '', isAdmin: true }).ok, true, 'the new admin can add one too');
+  mk('sam');
+  const S = call('login', null, { username: 'sam', password: '1111' }).data.token;
+  assert.equal(call('adminSaveUser', S, { name: 'X', username: 'xxx', jobTitleId: '', isAdmin: true }).ok, false, 'an ordinary person cannot');
+});
+
 test('addAdminAccount: a pure administrator with its own temporary password; no duplicate names', () => {
   const { core, call, A } = boot();
   const r = core.addAdminAccount('Dilshan', 'Dilshan', 'Temp-pass-9');
