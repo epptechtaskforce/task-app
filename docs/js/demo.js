@@ -113,9 +113,10 @@
     reset: function () { try { localStorage.removeItem(KEY); localStorage.removeItem('taskapp.demo.token'); } catch (e) { /* ignore */ } if (window.Api) window.Api.cacheClear(); location.reload(); },
     accounts: [
       ['admin', 'Administrator (users, job titles, org chart)'],
-      ['nimal.perera', 'Chairman (top layer)'], ['kamala.silva', 'General Manager, Operations'], ['dinesh.rathnayake', 'General Manager, Logistics'],
-      ['sunil.fernando', 'Supervisor'], ['nadeesha.wickrama', 'Supervisor, Quality'],
-      ['ruwan.jayasinghe', 'Field Officer'], ['ishara.dias', 'Field Officer'], ['kasun.bandara', 'Field Officer'], ['thilini.herath', 'Field Officer'], ['mahesh.kumara', 'Field Officer']
+      ['nimal.perera', 'CEO (top layer)'], ['anura.jayawardena', 'COO'], ['kamala.silva', 'Senior General Manager, Operations'], ['dinesh.rathnayake', 'Senior General Manager, Packing and Logistics'],
+      ['chamari.gunasekara', 'General Manager, Estates'], ['rohan.wijesinghe', 'General Manager, Quality'], ['sanduni.abeywickrama', 'General Manager, Finance'],
+      ['sunil.fernando', 'Manager, field teams'], ['nadeesha.wickrama', 'Manager, Quality'], ['lakmini.ranasinghe', 'Manager, Packing house'], ['pradeep.liyanage', 'Manager, Dispatch'], ['tharindu.senanayake', 'Manager, Procurement'],
+      ['ruwan.jayasinghe', 'Assistant Manager'], ['ishara.dias', 'Assistant Manager'], ['kasun.bandara', 'Assistant Manager'], ['thilini.herath', 'Assistant Manager'], ['mahesh.kumara', 'Assistant Manager'], ['amaya.dissanayake', 'Assistant Manager']
     ],
     password: PASSWORD
   };
