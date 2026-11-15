@@ -1876,7 +1876,45 @@ function createCore(env) {
     });
   }
 
-  return { handle: handle, setup: setup, maintenance: maintenance, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
+  // Two maintenance tools for the person who runs the Setup.gs functions by hand (like setup / maintenance they are not reachable from the web).
+  // issueTempPasswords: gives each named person their OWN one-time temporary password instead of the shared default (1111), which anyone who knows a
+  // username could use to take over an account nobody has signed in to yet. They must still choose a new password at first sign-in; open sessions and
+  // phones of that person are removed. makePassword() makes one password per call. Returns [{username, name, tempPassword}] to hand over.
+  function issueTempPasswords(usernames, makePassword) {
+    const ctx = makeCtx();
+    return ctx.write(function () {
+      const out = [];
+      (usernames || []).forEach(function (name) {
+        const u = ctx.rows('Users').filter(function (x) { return x.username === String(name).toLowerCase() && x.active; })[0];
+        if (!u) throw new Error('No active person with the username ' + name);
+        const pw = String(makePassword());
+        checkPasswordPolicy(pw, u.username);
+        setPassword(ctx, u.id, pw, true);
+        removeWhere(ctx, 'Sessions', function (x) { return x.userId === u.id; });
+        removeWhere(ctx, 'PushSubs', function (x) { return x.userId === u.id; });
+        audit(ctx, null, 'user.resetPassword', u.username);
+        out.push({ username: u.username, name: u.name, tempPassword: pw });
+      });
+      return out;
+    });
+  }
+  // addAdminAccount: one more administrator (a "pure admin": no job title, no tasks, no AI), with its own temporary password.
+  function addAdminAccount(name, username, tempPassword) {
+    const ctx = makeCtx();
+    name = str(name, 'Name', LIMITS.name); username = str(username, 'Username', 30).toLowerCase();
+    if (!/^[a-z0-9._-]{3,30}$/.test(username)) throw new Error('Username may use letters, numbers, dot, dash and underscore (3-30 characters)');
+    checkPasswordPolicy(tempPassword, username);
+    return ctx.write(function () {
+      if (ctx.rows('Users').some(function (u) { return u.username === username; })) throw new Error('That username is already taken');
+      const id = newId('U');
+      insert(ctx, 'Users', { id: id, name: name, username: username, jobTitleId: '', isAdmin: true, active: true, passSalt: '', passHash: '', mustChange: true, failCount: 0, lockedUntil: 0, createdAt: env.now(), lastLogin: 0 });
+      setPassword(ctx, id, String(tempPassword), true);
+      audit(ctx, null, 'user.create', username + ' (administrator, added from the editor)');
+      return { username: username, name: name };
+    });
+  }
+
+  return { handle: handle, setup: setup, maintenance: maintenance, issueTempPasswords: issueTempPasswords, addAdminAccount: addAdminAccount, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS, HISTORY_COLUMNS: HISTORY_COLUMNS };
