@@ -39,12 +39,16 @@
       return P.busy;
     },
     // patch: { bio?, photo? }  (photo = JPEG data URL, '' removes it)
-    saveMine: async function (patch) {
-      const r = await w.Api.call('saveProfile', patch);
-      const p = r.profile;
-      P.map[p.userId] = { bio: p.bio || '', ver: p.ver || 0, photo: p.photo || '' };
-      P.store(); P.emit();
-      return p;
+    // myId: the change is shown at once (picture, bio) and the server is told after; if it refuses, the old values come back and the error goes on.
+    saveMine: function (patch, myId) {
+      const cur = (myId && P.map[myId]) || { bio: '', ver: 0, photo: '' }, before = { bio: cur.bio, ver: cur.ver, photo: cur.photo };
+      if (myId) { P.map[myId] = { bio: patch.bio !== undefined ? patch.bio : cur.bio, ver: cur.ver, photo: patch.photo !== undefined ? patch.photo : cur.photo }; P.store(); P.emit(); }
+      return w.Api.call('saveProfile', patch).then(function (r) {
+        const p = r.profile;
+        P.map[p.userId] = { bio: p.bio || '', ver: p.ver || 0, photo: p.photo || '' };
+        P.store(); P.emit();
+        return p;
+      }, function (e) { if (myId) { P.map[myId] = before; P.store(); P.emit(); } throw e; });
     }
   };
   w.Profiles = P;

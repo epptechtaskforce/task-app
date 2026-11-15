@@ -124,3 +124,28 @@ test('reads and failed writes ask for no delivery; two actions close together sh
   await tick(150);
   assert.equal(d.calls.filter((a) => a === 'flushAlerts').length, 2, 'one while the first is running, one more after it so nothing waits for the timer');
 });
+
+test('opts.token sends as that session even after the browser let go of its own (signing out in the background); an AUTH answer to it does not sign anyone out', async () => {
+  const bodies = [];
+  const win = { APP_CONFIG: { backendUrl: 'https://example.test/exec' }, location: { search: '' } };
+  const c = {
+    window: win, location: win.location, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, console,
+    AbortController, setTimeout, clearTimeout, JSON, Promise, Object,
+    fetch: (url, o) => { const b = JSON.parse(o.body); bodies.push(b); return Promise.resolve({ json: async () => (b.action === 'logout' ? { ok: false, code: 'AUTH', error: 'gone' } : { ok: true, data: {} }) }); }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'api.js'), 'utf8'), c);
+  const api = win.Api; let lost = 0; api.onAuthLost = () => { lost++; };
+  api.setToken('OLD-SESSION'); const old = api.token; api.setToken('NEW-SESSION');
+  await api.call('logout', {}, { token: old }).catch(() => {});
+  assert.equal(bodies[0].token, 'OLD-SESSION', 'the old session is the one that is ended');
+  assert.equal(lost, 0, 'its refusal does not sign out the person who signed in since');
+  assert.equal(api.token, 'NEW-SESSION');
+  await api.call('listTasks'); assert.equal(bodies[1].token, 'NEW-SESSION', 'normal calls still use the current session');
+});
+
+test('the demo can be slowed to the real server speed with ?lag=', async () => {
+  const win = { APP_CONFIG: { demo: true }, location: { search: '?demo=1&lag=60' }, DemoBackend: { handle: async () => ({ ok: true, data: { n: 1 } }) } };
+  const c = { window: win, location: win.location, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, console, AbortController, setTimeout, clearTimeout, JSON, Promise, Object };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'api.js'), 'utf8'), c);
+  const t0 = Date.now(); await win.Api.call('listTasks'); assert.ok(Date.now() - t0 >= 55, 'waited about 60 ms');
+});

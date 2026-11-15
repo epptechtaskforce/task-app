@@ -81,11 +81,11 @@
       } catch (e) { /* silent: it is tried again at the next start */ }
     },
     // Signing out: this device must stop getting this person's alerts at once.
-    async forget() {
+    async forget(token) {                                              // token: the session being ended (signing out lets go of it at once, this finishes in the background)
       try {
         if (!capable() || (w.Api && w.Api.demo)) return;
         const sub = await (await registration()).pushManager.getSubscription();
-        if (sub) await w.Api.call('pushUnsubscribe', { endpoint: sub.endpoint });
+        if (sub) await w.Api.call('pushUnsubscribe', { endpoint: sub.endpoint }, token !== undefined ? { token: token } : undefined);
       } catch (e) { /* signing out must never get stuck on this */ }
       save(null);
     },
