@@ -4,7 +4,7 @@
   const root = document.getElementById('app');
   // S.kind / S.peek: which screen is open and a live look at it (what is filled in, what is listed). The AI bubble asks for it on every
   // question so that it and the person look at the same screen. S.fill lets it fill in the New task form; S.pendingFill waits for that form.
-  const S = { kind: '', peek: null, fill: null, pendingFill: null, user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {}, writes: 0, pending: [], reload: null };
+  const S = { kind: '', peek: null, fill: null, pendingFill: null, user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {}, writes: 0, pending: [], reload: null, repaint: null, editNext: null };
 
   /* ============================== helpers ============================== */
 
@@ -52,6 +52,37 @@
       throw e;
     });
   }
+  // Ask again after a lost connection (no signal, a timeout). Only for changes that are safe to repeat: "set this value", "delete this". If an earlier try
+  // had actually got through, the answer "not found" means it is done.
+  function again(send, tries) {
+    return send().catch(function (e) {
+      if (e && e.network && tries > 0) return new Promise(function (r) { setTimeout(r, 8000); }).then(function () { return again(send, tries - 1); });
+      throw e;
+    });
+  }
+
+  // ---- your own tasks: hold a finger on one (or right-click) for Edit / Delete ----
+  function holdMenu(node, t) {
+    if (t.role === 'creator' && !t.creating && t.status !== 'closed') { node.classList.add('lp'); UI.longPress(node, function () { taskMenu(t); }); }
+    return node;
+  }
+  function taskMenu(t, onPage) {
+    UI.actionSheet(t.title, [
+      { label: 'Edit', icon: 'edit', onClick: function () { if (onPage) onPage.edit(); else { S.editNext = t.id; go('#/task/' + t.id); } } },
+      { label: 'Delete', icon: 'trash', kind: 'danger', onClick: function () { deleteTaskFlow(t, !!onPage); } }]);
+  }
+  // Deleting erases the task for everybody, as if it had never existed (conversation, files, voice, summary). It leaves the screen at once; the server does it
+  // in the background, and a refusal brings it back with the reason.
+  async function deleteTaskFlow(t, fromPage) {
+    if (!(await UI.confirm('Delete this task?', '"' + t.title + '" will be erased for everyone, with its conversation, files and voice messages, as if it had never existed. This cannot be undone.', 'Delete', 'danger'))) return;
+    patchList(t.id, null); forgetTask(t.id);
+    if (fromPage) go('#/tasks'); else if (S.repaint) S.repaint();
+    UI.toast('Task deleted');
+    save(function () { return again(function () { return Api.call('deleteTask', { taskId: t.id }).catch(function (e) { if (e && e.code === 'NOT_FOUND') return { deleted: true }; throw e; }); }, 3); },
+      function () { /* the list refreshes itself when the save ends, and shows the task again */ },
+      function () { UI.toast('No signal. The task will be deleted when the connection is back.', 'bad'); }).catch(function () { /* already told */ });
+  }
+
   // ---- tasks kept in this browser (so a task opens at once, even the first time on this phone) ----
   const TASK_KEEP = 14;                                                  // how many task pages are kept per person (oldest leave first)
   const taskKey = function (id) { return 'task:' + (S.user ? S.user.id : '') + ':' + id; };
@@ -361,13 +392,13 @@
     const due = t.creating ? { cls: 'warn', ic: 'clock', text: 'Sending…', tip: 'Being sent to ' + names(t.assignees).join(', ') } : dueBadge(t, f), used = timeUsed(t);
     const attrs = { class: 'card task' + (state ? ' st-' + state : '') + (b === 'late' ? ' is-late' : '') + (t.creating ? ' creating' : '') + (S.spot === t.id ? ' ai-spot' : ''), href: t.creating ? '#/tasks' : '#/task/' + t.id, 'data-id': t.id, style: '--i:' + Math.min(i || 0, 10) };
     if (t.creating) attrs.onclick = function (e) { e.preventDefault(); UI.toast('Still sending this task…'); };   // there is no page for it until the server has made it (about 2 s)
-    return h('a', attrs,
+    return holdMenu(h('a', attrs,
       h('div', { class: 't-row' },
         h('div', { class: 't-dn' }, UI.ring(t.progress, '', 58)),
         h('div', { class: 't-main' },
           h('div', { class: 'top' }, h('div', { class: 'title' }, t.title), t.unread ? h('span', { class: 'newdot', title: 'New activity', 'aria-label': 'New activity' }) : null),
           h('div', { class: 'sub-row' }, flow, due ? h('span', { class: 'dbadge ' + due.cls, title: due.tip }, icon(due.ic, 13), due.text) : null))),
-      used === null ? null : h('div', { class: 'timebar', title: 'Time used', 'aria-hidden': 'true' }, h('i', { style: '--u:' + Math.round(used * 100) + '%' })));
+      used === null ? null : h('div', { class: 'timebar', title: 'Time used', 'aria-hidden': 'true' }, h('i', { style: '--u:' + Math.round(used * 100) + '%' }))), t);
   }
 
   /* ---------- "Today at a glance": a picture, not a paragraph (built from the task list itself, no AI call) ----------
@@ -451,7 +482,8 @@
     const cacheKey = 'tasks:' + S.user.id;
     const withPending = function (list) { return S.pending.length ? S.pending.concat(list) : list; };   // tasks that are still being created show at the top at once
     S.reload = function () { load().catch(function () { /* the error is already shown */ }); };         // asked when a save has finished
-    onLeave(function () { S.reload = null; });
+    S.repaint = function () { const c = Api.cacheGet(cacheKey); tasks = withPending(c && c.tasks ? c.tasks : []); lastSig = listSig(tasks); setUnread(tasks); redraw(); };   // after a change made on this screen (a task deleted)
+    onLeave(function () { S.reload = null; S.repaint = null; });
     q.addEventListener('input', function () { S.q = q.value; drawList(); });
     sort.addEventListener('change', function () { S.sort = sort.value; drawList(); });
 
@@ -778,13 +810,15 @@
       body = h('div', { class: 'voice' + (S.playing && S.playing.id === m.id ? ' playing' : '') }, play, waveform(m.id), h('span', { class: 'dur' }, UI.duration(m.audioSecs)));   // audio only; the AI keeps what was said in its own memory of the task
     } else if (m.type === 'file' && m.file) body = h('div', null, fileBubble(m, o), m.text ? h('div', { class: 'txt' }, m.text) : null);
     else body = h('div', { class: 'txt' }, m.text);
-    const bubble = h('div', { class: 'msg' + (mine ? ' me' : '') }, mine || o.cont ? null : h('div', { class: 'who' }, m.senderName, m.senderTitle ? h('span', null, ' · ' + m.senderTitle) : null), body, h('div', { class: 'time' }, UI.time(m.createdAt)));
+    const bubble = h('div', { class: 'msg' + (mine ? ' me' : '') }, mine || o.cont ? null : h('div', { class: 'who' }, m.senderName, m.senderTitle ? h('span', null, ' · ' + m.senderTitle) : null), body, h('div', { class: 'time' }, UI.time(m.createdAt) + (m.editedAt ? ' · edited' : '')));
     let lead = null;
     if (!mine) {
       if (o.cont) lead = h('span', { class: 'avatar-spacer' });
       else { lead = UI.avatar(m.senderName, 'sm', m.senderId); lead.setAttribute('role', 'button'); lead.setAttribute('tabindex', '0'); lead.setAttribute('aria-label', 'About ' + m.senderName); lead.addEventListener('click', function () { showPerson({ id: m.senderId, name: m.senderName, jobTitle: m.senderTitle }); }); }
     }
-    return h('div', { class: 'msg-row' + (mine ? ' me' : '') + (o.cont ? ' cont' : '') }, lead, bubble);
+    const row = h('div', { class: 'msg-row' + (mine ? ' me' : '') + (o.cont ? ' cont' : '') }, lead, bubble);
+    if (mine && o.onMenu && !o.archived) { row.classList.add('lp'); UI.longPress(row, function () { o.onMenu(m); }); }   // hold your own message, voice message, photo or document
+    return row;
   }
 
   function renderChat(box, messages, o) {
@@ -820,6 +854,8 @@
 
     let task = data ? data.task : preview, messages = data ? data.messages : [], sig = '', dragging = false, summaryBusy = false, summaryError = '', autoTried = !S.canUseAi || !!(Api.demo && window.DemoBackend && window.DemoBackend.realAi), recording = null;   // the demo's AI is capped, so it only summarises when asked
     const pendingEls = [];   // messages being sent: shown at once, replaced by the real ones when the server answers
+    let pendingEdit = S.editNext === id; S.editNext = null;   // "Edit" chosen on the list: the edit box opens here once the details are known
+    const chatOpts = { taskId: id, onMenu: function (m) { messageMenu(m); } };
     const headBox = h('div'), sumBox = h('div'), filesBox = h('div'), chatBox = h('div', { class: 'chat', 'aria-live': 'polite' }), compBox = h('div', { class: 'composer' });
     const bar = shell(h('div', null, h('a', { class: 'back-link desk', href: '#/tasks' }, icon('back', 18), 'All tasks'), headBox, sumBox, filesBox, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chatBox, compBox), 'tasks', barOpts);
     S.peek = function () { const sl = document.querySelector('.slider-box input[type=range]'), ta = document.querySelector('.composer textarea'); return { slider: sl ? Number(sl.value) : undefined, draft: ta ? ta.value : '' }; };   // what the AI bubble is told about this screen
@@ -890,10 +926,15 @@
           h('div', { class: 'row', style: 'margin-top:.7rem' },
             h('button', { class: 'btn ok', type: 'button', onclick: approve }, icon('check', 18), 'Agree & close task'), h('button', { class: 'btn', type: 'button', onclick: sendBack }, 'Send back for more work'))));
       }
-      UI.clear(headBox); headBox.appendChild(h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, parts)));
+      UI.clear(headBox);
+      const headCard = h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, parts));
+      if (task.role === 'creator' && task.status !== 'closed') { headCard.classList.add('lp'); UI.longPress(headCard, function () { taskMenu(task, { edit: editTask }); }); }
+      headBox.appendChild(headCard);
     }
 
+    function maybeEdit() { if (pendingEdit && task && task.description !== undefined && task.role === 'creator' && task.status !== 'closed') { pendingEdit = false; editTask(); } }
     function editTask() {
+      if (task.description === undefined) { UI.toast('One moment, the details are still loading.'); return; }   // (saving now would wipe the details it has not shown yet)
       const title = h('input', { type: 'text', maxlength: 120, value: task.title, 'aria-label': 'Task title' });
       const desc = h('textarea', { maxlength: 2000, 'aria-label': 'Details' }); desc.value = task.description || '';
       const due = h('input', { type: 'date', value: task.dueDate || '', 'aria-label': 'Due date' });
@@ -955,16 +996,22 @@
       })));
     }
 
-    async function refresh(force) { apply(await Api.call('getTask', { taskId: id }), force); }
+    async function refresh(force) {
+      let d;
+      try { d = await Api.call('getTask', { taskId: id }); }
+      catch (e) { if (e && e.code === 'NOT_FOUND') { forgetTask(id); patchList(id, null); UI.toast('This task was deleted.'); go('#/tasks'); } throw e; }   // its creator erased it
+      apply(d, force);
+    }
     function apply(d, force) {
       rememberTask(id, d); settle();
+      setTimeout(maybeEdit, 0);
       const newSig = d.messages.map(function (m) { return m.id + m.status; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
       sig = newSig; task = d.task; messages = d.messages;
       if (!dragging) drawHead();
       drawSummary(); drawFiles();
-      renderChat(chatBox, messages, { taskId: id });
+      renderChat(chatBox, messages, chatOpts);
       pendingEls.forEach(function (el) { chatBox.appendChild(el); });
       d.messages.forEach(function (m) {   // a voice message of mine whose first request for the transcript was lost: ask once more
         if (m.type === 'voice' && m.status === 'transcribing' && m.senderId === S.user.id && Date.now() - m.createdAt > 45000 && !asked[m.id]) { asked[m.id] = 1; Api.call('transcribeVoice', { messageId: m.id }, { timeout: 120000 }).catch(function () {}); }
@@ -976,6 +1023,43 @@
       if (l && l.tasks && l.tasks.some(function (t) { return t.id === id && t.unread; })) { l.tasks.forEach(function (t) { if (t.id === id) t.unread = false; }); Api.cacheSet(listKey, l); }
     }
 
+    /* ---- your own messages: hold one for Edit / Delete ---- */
+    function repaintChat() {
+      if (S.taskMem[id]) S.taskMem[id].messages = messages;
+      renderChat(chatBox, messages, chatOpts); pendingEls.forEach(function (el) { chatBox.appendChild(el); }); drawFiles();
+      rememberTask(id, { task: task, messages: messages, serverTime: Date.now() });
+    }
+    function messageMenu(m) {
+      if (task.status === 'closed') return;
+      const items = [];
+      if (m.type === 'text' || (m.type === 'file' && m.file)) items.push({ label: 'Edit', icon: 'edit', onClick: function () { editMessage(m); } });
+      items.push({ label: 'Delete', icon: 'trash', kind: 'danger', onClick: function () { deleteMessage(m); } });
+      UI.actionSheet(m.type === 'voice' ? 'Voice message' : m.type === 'file' ? (m.file.isImage ? 'Photo' : 'Document') : 'Message', items);
+    }
+    async function deleteMessage(m) {
+      if (!(await UI.confirm('Delete this ' + (m.type === 'voice' ? 'voice message' : m.type === 'file' ? (m.file.isImage ? 'photo' : 'document') : 'message') + '?', 'It will be erased for everyone, as if it had never been sent. This cannot be undone.', 'Delete', 'danger'))) return;
+      const before = messages;
+      messages = messages.filter(function (x) { return x.id !== m.id; }); task = Object.assign({}, task, { messageCount: Math.max(0, (task.messageCount || 1) - 1) }); repaintChat();   // gone at once
+      save(function () { return again(function () { return Api.call('deleteMessage', { messageId: m.id }).catch(function (e) { if (e && e.code === 'NOT_FOUND') return { deleted: true }; throw e; }); }, 3).then(function () { refresh(true).catch(function () {}); }); },
+        function () { messages = before; repaintChat(); },
+        function () { UI.toast('No signal. It will be deleted when the connection is back.', 'bad'); }).catch(function () { /* already told */ });
+    }
+    function editMessage(m) {
+      const isFile = m.type === 'file';
+      const box = h('textarea', { maxlength: 4000, rows: 4, 'aria-label': isFile ? 'Caption' : 'Message' }); box.value = m.text || '';
+      UI.modal({ title: isFile ? 'Edit the caption' : 'Edit message', body: h('div', null, box, h('p', { class: 'hint' }, 'Everyone will see that it was edited.')),
+        actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: function () {
+          const text = box.value.trim();
+          if (!isFile && !text) { UI.toast('A message cannot be empty. Delete it instead.', 'bad'); return false; }
+          if (text === (m.text || '')) return;
+          const before = messages;
+          messages = messages.map(function (x) { return x.id === m.id ? Object.assign({}, x, { text: text, editedAt: Date.now() }) : x; }); repaintChat();   // changed at once
+          save(function () { return again(function () { return Api.call('editMessage', { messageId: m.id, text: text }); }, 3).then(function (r) { messages = messages.map(function (x) { return x.id === m.id ? r.message : x; }); repaintChat(); }); },
+            function () { messages = before; repaintChat(); },
+            function () { UI.toast('No signal. The change will be saved when the connection is back.', 'bad'); }).catch(function () { /* already told */ });
+        } }] });
+    }
+
     /* ---- composer ---- */
     function showPending(node) { pendingEls.push(node); chatBox.appendChild(node); window.scrollTo(0, document.body.scrollHeight); }
     function dropPending(node) { const i = pendingEls.indexOf(node); if (i >= 0) pendingEls.splice(i, 1); if (node.parentNode) node.parentNode.removeChild(node); }
@@ -984,7 +1068,7 @@
     function addLocal(m, temp) {
       if (m && !messages.some(function (x) { return x.id === m.id; })) {
         messages = messages.concat([m]); if (S.taskMem[id]) S.taskMem[id].messages = messages;
-        renderChat(chatBox, messages, { taskId: id }); pendingEls.forEach(function (el) { if (el !== temp) chatBox.appendChild(el); }); window.scrollTo(0, document.body.scrollHeight);
+        renderChat(chatBox, messages, chatOpts); pendingEls.forEach(function (el) { if (el !== temp) chatBox.appendChild(el); }); window.scrollTo(0, document.body.scrollHeight);
       }
       dropPending(temp);
     }
@@ -1001,7 +1085,7 @@
       text.addEventListener('paste', function (e) { const fs = e.clipboardData && e.clipboardData.files; if (fs && fs.length) { e.preventDefault(); uploadFiles(Array.prototype.slice.call(fs)); } });
       // Ctrl/Cmd+Enter always sends; on a computer plain Enter sends too (Shift+Enter = new line). Phones keep Enter = new line.
       text.addEventListener('keydown', function (e) {
-        if (e.key !== 'Enter' || e.isComposing) return;
+        if (e.key !== 'Enter' || e.isComposing || e.repeat) return;   // (a key held down must not send again and again)
         if (e.ctrlKey || e.metaKey || (!e.shiftKey && window.matchMedia && window.matchMedia('(pointer: fine)').matches)) { e.preventDefault(); sendText(); }
       });
       async function sendText() {
@@ -1083,9 +1167,10 @@
     else {
       drawHead();                                           // from this session / the task list; the server answer follows
       if (!data) chatBox.appendChild(UI.skeleton('line', 3));
-      else { drawSummary(); drawFiles(); renderChat(chatBox, messages, { taskId: id }); sig = ''; }
+      else { drawSummary(); drawFiles(); renderChat(chatBox, messages, chatOpts); sig = ''; }
       refresh(true).catch(function (e) { if (e.code !== 'AUTH' && !data) { UI.clear(chatBox); chatBox.appendChild(errBox(e)); } });
     }
+    maybeEdit();
     poll(function () { if (!dragging && !recording) return refresh(false); }, 15000);
   }
 

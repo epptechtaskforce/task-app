@@ -159,14 +159,30 @@
 
   /* ---------- modal (bottom sheet on phones, centred dialog on larger screens) ---------- */
   // actions: [{label, kind:'primary'|'danger'|'', onClick: fn(close) -> may return a Promise; keep open if it returns false}]
-  let modalSeq = 0;
+  let modalSeq = 0, lastModalClose = 0;
+  // GHOST-TAP GUARD. On a phone a tap can arrive twice: the touch itself, and a "click" the browser sends afterwards at the same spot. If the first one closed a
+  // popup, the second used to land on whatever lay underneath (a task card, a button) and do something nobody asked for. For a moment after any popup has
+  // closed, a click that is not inside a popup is thrown away.
+  document.addEventListener('click', function (e) {
+    if (Date.now() - lastModalClose < 380 && !(e.target && e.target.closest && e.target.closest('.overlay'))) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+  // A second click on the SAME button or link within 0.3 s is a ghost (a phone sending a tap twice, a nervous double tap): it is thrown away, so nothing is ever
+  // done twice by one tap. (Checkboxes and labels are left alone: a label click legitimately makes a second click on its input.)
+  let lastTap = { el: null, at: 0 };
+  document.addEventListener('click', function (e) {
+    const el = e.target && e.target.closest ? e.target.closest('button, a, [role="button"]') : null;
+    if (!el) return;
+    const now = Date.now();
+    if (lastTap.el === el && now - lastTap.at < 300) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+    lastTap = { el: el, at: now };
+  }, true);
   function modal(opts) {
     const overlay = h('div', { class: 'overlay' });
     const previous = document.activeElement;
     const titleId = 'modal-title-' + (++modalSeq);
     let closed = false;
     const close = function () {
-      if (closed) return; closed = true;
+      if (closed) return; closed = true; lastModalClose = Date.now();
       document.removeEventListener('keydown', onKey);
       document.body.classList.remove('modal-open');
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
@@ -197,13 +213,42 @@
         opts.sticky ? null : h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close', onclick: close }, icon('x', 18))) : h('span', { id: titleId, class: 'sr-only' }, opts.label || 'Dialog'),
       h('div', { class: 'modal-body' }, opts.body), buttons.length ? h('div', { class: 'modal-actions' }, buttons) : null);
     overlay.appendChild(box);
-    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay && !opts.sticky) close(); });
+    overlay.addEventListener('click', function (e) { if (e.target === overlay && !opts.sticky) close(); });   // (click, not mousedown: a phone's emulated mousedown closed the popup and the click that followed hit what was underneath)
     document.addEventListener('keydown', onKey);
     document.body.classList.add('modal-open');
     document.body.appendChild(overlay);
     const first = box.querySelector('input,textarea,select');
     if (first && !opts.noFocus) setTimeout(function () { first.focus(); }, 30);
     return { close: close, box: box };
+  }
+  // A menu of choices in the same popup style (a bottom sheet on a phone). items: [{ label, icon, kind: 'danger', onClick }]. Each choice works ONCE: a second tap
+  // (a nervous double tap, a ghost tap) does nothing.
+  function actionSheet(title, items) {
+    let used = false;
+    const m = modal({ title: title, noFocus: true, body: h('div', { class: 'sheet-list' }, items.map(function (it) {
+      return h('button', { type: 'button', class: 'btn block ' + (it.kind || ''), onclick: function () { if (used) return; used = true; m.close(); setTimeout(it.onClick, 0); } }, it.icon ? icon(it.icon, 18) : null, it.label);
+    })), actions: [{ label: 'Cancel' }] });
+    return m;
+  }
+  // Hold a finger on something (or right-click it) and onHold runs ONCE. A touch that moves (a scroll) never counts. The tap that ends a hold is swallowed, so
+  // holding a card never also opens it. Not for things being typed into.
+  function longPress(el, onHold, o) {
+    o = o || {};
+    const MS = o.ms || 480, SLOP = 10;
+    let timer = 0, look = 0, sx = 0, sy = 0, fired = false, swallow = 0;
+    const clear = function () { clearTimeout(timer); clearTimeout(look); timer = 0; look = 0; el.classList.remove('pressing'); };
+    const fire = function (e) { fired = true; swallow = Date.now() + 800; clear(); try { if (navigator.vibrate) navigator.vibrate(14); } catch (x) { /* not supported */ } onHold(e); };
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (e.target.closest && e.target.closest('input, textarea, select, [data-nolp]')) return;
+      clear(); fired = false; sx = e.clientX; sy = e.clientY;
+      timer = setTimeout(function () { fire(e); }, MS);
+      look = setTimeout(function () { el.classList.add('pressing'); }, 150);
+    });
+    el.addEventListener('pointermove', function (e) { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > SLOP) clear(); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (ev) { el.addEventListener(ev, clear); });
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); if (!fired || Date.now() > swallow) fire(e); });   // right-click on a computer; the phone's own long-press menu is replaced by ours
+    el.addEventListener('click', function (e) { if (Date.now() < swallow) { e.stopImmediatePropagation(); e.preventDefault(); swallow = 0; } }, true);
   }
   function confirmBox(title, message, okLabel, kind) {
     return new Promise(function (resolve) {
@@ -647,7 +692,7 @@
 
   w.h = h;
   w.UI = { h: h, svg: svg, clear: clear, icon: icon, setIcon: setIcon, date: date, time: time, dateTime: dateTime, dayLabel: dayLabel, ago: ago, duration: duration, dueInfo: dueInfo, greeting: greeting, ymd: ymd,
-    logoMark: logoMark, toast: toast, modal: modal, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
+    logoMark: logoMark, toast: toast, modal: modal, actionSheet: actionSheet, longPress: longPress, confirm: confirmBox, progressBar: progressBar, ring: ring, donut: donut, countUp: countUp, confetti: confetti, draggable: draggable, illustration: illustration,
     chip: chip, initials: initials, avatar: avatar, avatarStack: avatarStack, hydrateAvatars: hydrateAvatars, pickPhoto: pickPhoto, reduced: reduced,
     skeleton: skeleton, emptyState: emptyState, copyText: copyText, passwordField: passwordField, theme: { get: themeGet, set: themeSet, apply: themeApply }, accent: { get: accentGet, set: accentSet, apply: accentApply, list: ACCENTS },
     fileIcon: fileIcon, fileKind: fileKind, fmtSize: fmtSize, prepareFile: prepareFile, attachMenu: attachMenu, b64Url: b64Url, saveUrl: saveUrl, lightbox: lightbox, MAX_FILE_BYTES: MAX_FILE_BYTES };

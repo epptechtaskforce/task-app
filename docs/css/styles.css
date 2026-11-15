@@ -1016,3 +1016,9 @@ h1 { letter-spacing: -.025em; }
 .card.task.creating .dbadge { animation: creating-pulse 1.1s ease-in-out infinite; }
 @keyframes creating-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .card.task.creating .dbadge { animation: none; } }
+
+/* things you can hold a finger on (your own tasks and messages): no phone text-selection or callout menu, and a small "pressed" look while holding */
+.lp { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+.lp.pressing { transform: scale(.985); transition: transform .15s ease; }
+.sheet-list { display: grid; gap: .55rem; }
+.sheet-list .btn { justify-content: center; gap: .5rem; }

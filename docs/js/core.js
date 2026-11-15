@@ -86,7 +86,7 @@ const TABLES = {
   LinkVersions: { key: 'id', cols: { id: 's', version: 'n', createdBy: 's', createdAt: 'n', note: 's', links: 'j' } },
   Sessions:     { key: 'tokenHash', cols: { tokenHash: 's', userId: 's', expires: 'n', createdAt: 'n', lastSeen: 'n' } },
   Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n', archiveNo: 'n', archiveStartedAt: 'n', archiveFails: 'n', archiveError: 's', archiveFailedAt: 'n' } },
-  Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n' } },
+  Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n', editedAt: 'n' } },
   Reads:        { key: 'id', cols: { id: 's', taskId: 's', userId: 's', lastReadAt: 'n' } },
   DriveAccess:  { key: 'userId', cols: { userId: 's', email: 's', status: 's', requestedAt: 'n', grantedAt: 'n', grantedBy: 's', folderId: 's' } },   // who may read their own archive folder in Google Drive
   Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
@@ -215,7 +215,8 @@ function createCore(env) {
   }
   function msgView(ctx, m) {
     const s = brief(ctx, m.senderId);
-    const v = { id: m.id, taskId: m.taskId, senderId: m.senderId, senderName: m.senderId ? s.name : 'System', senderTitle: s.jobTitle, type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt };   // a voice message is shown as audio only; what the AI understood from it stays on the server
+    const v = { id: m.id, taskId: m.taskId, senderId: m.senderId, senderName: m.senderId ? s.name : 'System', senderTitle: s.jobTitle, type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioSecs: m.audioSecs, createdAt: m.createdAt };
+    if (m.editedAt) v.editedAt = m.editedAt;   // a voice message is shown as audio only; what the AI understood from it stays on the server
     if (m.type === 'file') v.file = fileView(attachmentOf(ctx, m.id));
     return v;
   }
@@ -605,6 +606,78 @@ function createCore(env) {
     notifyChat(ctx, user, t.id, clip(text, 140));
     return out;
   } };
+
+  /* ---------------- taking things back: delete a task, delete or edit a message ---------------- */
+  // "Delete" means gone from the whole app as if it had never existed: the rows, the stored voice and files (to the Drive trash), what the AI summarised from them
+  // (the task's summary and every person's saved overview are dropped and made again when needed). Only the audit log keeps a bare id, with no content.
+  // Alerts already shown on phones cannot be taken back.
+  function dropSummary(ctx, taskId) { update(ctx, 'Tasks', taskId, { summary: null, summaryMsgCount: 0, summaryAt: 0 }); }
+  function forgetBriefings(ctx, t) { const ids = [t.creatorId].concat(t.assigneeIds); removeWhere(ctx, 'Briefings', function (b) { return ids.indexOf(b.userId) >= 0; }); }
+  function trashFiles(ids) {
+    ids.forEach(function (id) { if (!id) return; try { if (env.files.remove) env.files.remove(id); } catch (e) { env.log('could not remove a stored file: ' + e); } });
+  }
+
+  A.deleteTask = { run: function (ctx, user, req) {
+    const files = [];
+    const out = ctx.write(function () {
+      const t = loadTask(ctx, user, req.taskId);
+      if (t.creatorId !== user.id) throw fail('FORBIDDEN', 'Only the person who assigned a task can delete it');
+      if (t.status === 'closed') throw fail('VALIDATION', 'A finished task cannot be deleted');
+      messagesOf(ctx, t.id).forEach(function (m) { files.push(m.audioFileId); });
+      ctx.rows('Attachments').filter(function (a) { return a.taskId === t.id; }).forEach(function (a) { files.push(a.fileId); });
+      removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
+      removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
+      removeWhere(ctx, 'Reads', function (r) { return r.taskId === t.id; });
+      forgetBriefings(ctx, t);
+      removeWhere(ctx, 'Tasks', function (x) { return x.id === t.id; });
+      audit(ctx, user, 'task.delete', t.id);
+      return { deleted: true, id: t.id };
+    });
+    trashFiles(files);
+    return out;
+  } };
+
+  // a message of mine, in a task that is still open (a system line such as "X set progress" is nobody's to change)
+  function ownMessage(ctx, user, messageId) {
+    const m = ctx.rows('Messages').filter(function (x) { return x.id === String(messageId || ''); })[0];
+    if (!m || m.type === 'system') throw fail('NOT_FOUND', 'Message not found');
+    const t = loadTask(ctx, user, m.taskId, { open: true });
+    if (m.senderId !== user.id) throw fail('FORBIDDEN', 'You can only change your own messages');
+    return { m: m, t: t };
+  }
+
+  A.deleteMessage = { run: function (ctx, user, req) {
+    const files = [];
+    const out = ctx.write(function () {
+      const o = ownMessage(ctx, user, req.messageId);
+      files.push(o.m.audioFileId);
+      const att = ctx.rows('Attachments').filter(function (a) { return a.id === o.m.id; })[0];
+      if (att) files.push(att.fileId);
+      removeWhere(ctx, 'Messages', function (x) { return x.id === o.m.id; });
+      if (att) removeWhere(ctx, 'Attachments', function (a) { return a.id === o.m.id; });
+      dropSummary(ctx, o.t.id); forgetBriefings(ctx, o.t);
+      audit(ctx, user, 'message.delete', o.m.id);
+      return { deleted: true, id: o.m.id, taskId: o.t.id };
+    });
+    trashFiles(files);
+    return out;
+  } };
+
+  // Text can be edited, and the caption of a photo or document; a voice message can only be deleted.
+  A.editMessage = { run: function (ctx, user, req) {
+    return ctx.write(function () {
+      const o = ownMessage(ctx, user, req.messageId);
+      if (o.m.type === 'voice') throw fail('VALIDATION', 'A voice message cannot be edited. You can delete it and record it again.');
+      const text = o.m.type === 'file' ? str(req.text, 'Caption', LIMITS.text, { min: 0 }) : str(req.text, 'Message', LIMITS.text);
+      if (text === o.m.text) return { message: msgView(ctx, o.m) };
+      if (env.store.ensureColumns) { try { env.store.ensureColumns('Messages'); } catch (e) { env.log('ensureColumns failed: ' + e); } }   // an older sheet gets the new "edited" column
+      const row = update(ctx, 'Messages', o.m.id, { text: text, editedAt: env.now() });
+      dropSummary(ctx, o.t.id); forgetBriefings(ctx, o.t);
+      audit(ctx, user, 'message.edit', o.m.id);
+      return { message: msgView(ctx, row) };
+    });
+  } };
+
 
   A.postVoice = { run: function (ctx, user, req) {
     const t = loadTask(ctx, user, req.taskId, { open: true });
