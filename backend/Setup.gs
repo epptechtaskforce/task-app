@@ -440,19 +440,6 @@ function launchCheck() {
   Logger.log('launchCheck done.');
 }
 
-// launchTestFinish()  Part of the launch test: the person a task titled "LAUNCH TEST ..." is assigned to reports it 100% finished, so the person who assigned it
-//                     can approve it on their phone. Borrows that account in memory only (nothing is written to Users or Sessions, no password is needed).
-function launchTestFinish() {
-  const env = makeEnv_({ ai: { transcribe: function () { throw new Error('no AI here'); }, summarize: function () { throw new Error('no AI here'); } } }), core = createCore(env), realAll = env.store.all.bind(env.store);
-  const t = realAll('Tasks').filter(function (x) { return /^LAUNCH TEST/.test(x.title) && x.status === 'open'; })[0];
-  if (!t) { Logger.log('No open task titled LAUNCH TEST was found.'); return; }
-  const who = realAll('Users').filter(function (u) { return u.id === t.assigneeIds[0]; })[0], tok = 'launch-' + Utilities.getUuid();
-  const virtual = [{ tokenHash: env.sha256Hex('token:' + tok), userId: who.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 }];
-  env.store.all = function (name) { const rows = realAll(name); if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); }); if (name === 'Sessions') return rows.concat(virtual); return rows; };
-  const r = core.handle({ action: 'setProgress', token: tok, taskId: t.id, progress: 100 });
-  Logger.log('Reported 100% as ' + who.name + ' for "' + t.title + '": ' + (r.ok ? 'ok' : JSON.stringify(r)));
-}
-
 // ------------------------------ simulation: about three months of company life ------------------------------
 // simulateCompany(mockBaseUrl)  Makes roughly 100 tasks over the last 13 weeks for the REAL accounts, through the app's own rules (the same actions the
 //   screens use, with a clock set back in time): tasks go from the people who can assign to the people their arrows point to, with updates, progress,
