@@ -349,6 +349,7 @@ DriveFiles_.prototype.saveFile = function (o) {
   return DriveApp.getFolderById(this.folderId).createFile(blob).getId();
 };
 DriveFiles_.prototype.readFile = DriveFiles_.prototype.readAudio;
+DriveFiles_.prototype.exists = function (fileId) { try { return DriveApp.getFileById(fileId).getSize() >= 0; } catch (e) { return false; } };      // is the stored file still there (and readable)?
 DriveFiles_.prototype.remove = function (fileId) { DriveApp.getFileById(fileId).setTrashed(true); };      // a file that was stored but not used (the task closed meanwhile)
 
 /* ============================== Drive: archive ============================== */

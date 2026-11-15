@@ -239,7 +239,8 @@
         readAudio: function (id) { if (!files[id]) throw new Error('Audio is not available in demo mode after a page reload'); return files[id]; },
         saveFile: function (o) { return keep(o); },
         readFile: function (id) { if (!files[id]) throw new Error('This file is not available in demo mode after a page reload'); return files[id]; },
-        remove: function (id) { delete files[id]; }
+        remove: function (id) { delete files[id]; },
+        exists: function (id) { return !!files[id]; }
       },
       archive: {
         // like Drive: one zip per task in the folder of the person who assigned it; the loose files are thrown away afterwards

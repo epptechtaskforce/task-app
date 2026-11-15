@@ -116,7 +116,7 @@ test('a message that arrives while the zip is made is never lost: the zip is thr
   assert.equal(doc.archive.code, 'EPP-0001');
 });
 
-test('a failure changes nothing: the task stays visible and waiting, the reason is logged, the next run (after the claim expires) files it with the SAME number', () => {
+test('a failure changes nothing: the task stays visible and waiting, the reason is logged, the next run files it with the SAME number', () => {
   const app = makeApp(), s = seed(app), t = pending(app, s), t2 = pending(app, s, 'Gate');
   app.tick(60000); app.ok('approveTask', s.tok.mgr, { taskId: t.id });
   const real = app.env.archive.saveZip; let fail = true;
@@ -125,9 +125,8 @@ test('a failure changes nothing: the task stays visible and waiting, the reason 
   assert.equal(app.ok('listHistory', s.tok.mgr, {}).items[0].waiting, true);
   assert.ok(app.env.store.all('AuditLog').some((a) => a.action === 'task.archive.failed' && /Drive is down/.test(a.detail)));
   fail = false;
-  assert.equal(app.core.archiveWaiting().skipped, 1);                                          // claimed a moment ago: left alone for now
-  app.tick(16 * 60000);
-  assert.equal(app.core.archiveWaiting().archived, 1);
+  assert.equal(taskRows(app).filter((x) => x.id === t.id)[0].archiveFails, 1);                  // the failure is written on the task itself
+  assert.equal(app.core.archiveWaiting().archived, 1);                                          // a failed attempt lets go of the claim: the very next run tries again
   assert.equal(app.ok('getArchived', s.tok.mgr, { taskId: t.id }).archive.code, 'EPP-0001');
   app.ok('approveTask', s.tok.mgr, { taskId: t2.id }); app.core.archiveWaiting();
   assert.equal(app.ok('getArchived', s.tok.mgr, { taskId: t2.id }).archive.code, 'EPP-0002');   // no gap in the numbers
