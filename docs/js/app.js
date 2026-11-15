@@ -1328,6 +1328,7 @@
       if (st === 'unsupported') return say('This browser cannot show notifications. Chrome on Android works, and so does the installed app on iPhone.');
       if (st === 'install') return say('On iPhone, notifications work for the installed app. Tap Share, then "Add to Home Screen", open the app from your home screen and come back to this page.');
       if (st === 'blocked') return say('Notifications are blocked for this app. Allow them in your phone settings (Settings, Apps, this app, Notifications; or in Chrome: Site settings, Notifications), then come back here.');
+      if (!S.pushKey) { try { const k = await Api.call('pushStatus'); S.pushKey = k.key || ''; rememberMe(); } catch (e) { /* offline: the message below */ } }   // right after an update the saved profile does not have the key yet
       if (!S.pushKey) return say('Notifications are not switched on at the server yet. Ask the administrator.');
       if (st === 'off') {
         say('Get an alert on this phone when someone gives you a task, writes in a task, finishes work for your approval, or approves yours. Tap an alert to open that task.');
