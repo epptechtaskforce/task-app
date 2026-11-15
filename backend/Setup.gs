@@ -9,6 +9,7 @@
  *   listModels()      Lists the Gemini models your key can use (useful if a model is retired).
  *   nightlyJob()      What the 02:00 trigger runs (backup + remove expired sessions). Safe to run by hand.
  *   archiveJob()      What the hourly trigger runs: files approved tasks in Drive. Safe to run by hand.
+ *   setupPush()       ONE TIME: makes the keys for notifications to phones. Then installTriggers() adds the 07:00 morning summary (morningJob).
  *
  * Before setup(), add these Script properties (Project Settings > Script properties):
  *   GEMINI_API_KEY, SETUP_COMPANY_NAME, SETUP_ADMIN_USERNAME, (optional) SETUP_ADMIN_NAME,
@@ -66,10 +67,11 @@ function generatePassword_() {
 }
 
 function installTriggers() {
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (['nightlyJob', 'archiveJob', 'archiveJobMore'].indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t); });
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (['nightlyJob', 'archiveJob', 'archiveJobMore', 'morningJob'].indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('nightlyJob').timeBased().everyDays(1).atHour(2).create();
   ScriptApp.newTrigger('archiveJob').timeBased().everyHours(1).create();
-  Logger.log('Scheduled: backups and clean-up about 02:00, and the filing of approved tasks in Drive every hour (script time zone: ' + Session.getScriptTimeZone() + ').');
+  ScriptApp.newTrigger('morningJob').timeBased().everyDays(1).atHour(7).create();
+  Logger.log('Scheduled: backups and clean-up about 02:00, the morning summary notification about 07:00, and the filing of approved tasks in Drive every hour (script time zone: ' + Session.getScriptTimeZone() + ').');
 }
 
 // Every hour, in the background on Google's servers (no phone has to be on, nobody is waiting): files the tasks the managers approved since the last run,
@@ -84,6 +86,20 @@ function archiveJob() {
     ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'archiveJobMore') ScriptApp.deleteTrigger(t); });
     ScriptApp.newTrigger('archiveJobMore').timeBased().after(60 * 1000).create();
   }
+}
+// Every morning about 07:00: one notification per person with what is late, due today and waiting for approval (nothing for a person with nothing to say).
+function morningJob() {
+  const out = getCore_().dailyDigest();
+  if (out.told) Logger.log('Morning summary sent to ' + out.told + ' people.');
+}
+// ONE TIME (safe to run again: it never replaces keys that exist): makes the keys that identify this server to the phones' push services (Web Push, VAPID).
+// The private key stays in the script properties; the public key is handed to the app at sign-in. Then run installTriggers() once for the 07:00 summary.
+function setupPush() {
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty('VAPID_PRIVATE_KEY') && props.getProperty('VAPID_PUBLIC_KEY')) { Logger.log('Notifications are already set up. Public key: ' + props.getProperty('VAPID_PUBLIC_KEY')); return; }
+  const k = webPush_().newKeys();
+  props.setProperty('VAPID_PRIVATE_KEY', k.privateKey); props.setProperty('VAPID_PUBLIC_KEY', k.publicKey);
+  Logger.log('Notification keys made. Public key: ' + k.publicKey + '. People can now turn on notifications in the app (Account page).');
 }
 function archiveJobMore() {                                         // the one-off continuation: removes itself first, then does the same work
   ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'archiveJobMore') ScriptApp.deleteTrigger(t); });
@@ -286,6 +302,11 @@ function smokeTest() {
     check(must('getFile', boss1, { messageId: bm.id }).b64 === bigB64, 'the 10 MB document is read back from Drive unchanged');
     check(call('postFile', staff1, { taskId: tBig.id, name: 'Too big.pdf', b64: 'JVBERi0x' + new Array(3500002).join('QUJD') }).code === 'VALIDATION', 'a document over 10 MB is refused');
     must('setProgress', staff1, { taskId: tBig.id, progress: 100 });
+    // notifications: the plain-JavaScript encryption must run fast enough inside Apps Script (it is used on every message)
+    const wpk = webPush_(), subKeys = wpk.newKeys(), tPush = Date.now();
+    const sealed = wpk.encrypt(wpk.utf8(JSON.stringify({ t: 'WK1 \u00B7 Roof', b: 'The tiles arrived', u: '#/task/T1' })), wpk.unb64u(subKeys.publicKey), fromSigned_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, 'x')).slice(0, 16));
+    const vh = wpk.vapidHeader('https://fcm.googleapis.com/fcm/send/x', 'https://example.org/', wpk.unb64u(subKeys.privateKey), wpk.unb64u(subKeys.publicKey), Math.floor(Date.now() / 1000));
+    check(sealed.length > 100 && sealed[20] === 65 && /^vapid t=[\w-]+\.[\w-]+\.[\w-]+, k=[\w-]+$/.test(vh) && Date.now() - tPush < 4000, 'push encryption and signing run inside Apps Script in ' + (Date.now() - tPush) + ' ms');
     // approving only closes the task (instant); the background job then files it, one lock-free zip
     const envN = makeEnv_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi, archiveAtNight: true }), coreN = createCore(envN);
     const tAp = Date.now(), ap = coreN.handle({ action: 'approveTask', token: boss1, taskId: tBig.id });
@@ -393,8 +414,9 @@ function launchCheck() {
   say(admins.length >= 2, 'active administrators: ' + admins.length + (admins.length < 2 ? ' (make a second admin, so one lost password cannot lock everybody out)' : ''));
   const never = active.filter(function (u) { return !u.lastLogin; }), temp = active.filter(function (u) { return u.mustChange; });
   say(true, active.length + ' active people; never signed in: ' + (never.map(function (u) { return u.username; }).join(', ') || 'nobody') + '; still on a temporary password: ' + (temp.map(function (u) { return u.username; }).join(', ') || 'nobody'));
+  say(!!props.getProperty('VAPID_PRIVATE_KEY') && !!props.getProperty('VAPID_PUBLIC_KEY'), 'notification keys (setupPush): ' + (props.getProperty('VAPID_PRIVATE_KEY') ? 'present' : 'MISSING, run setupPush()'));
   const trig = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction() + (t.getEventType() === ScriptApp.EventType.CLOCK ? ' (time)' : ' (' + t.getEventType() + ')'); });
-  say(trig.join(' ').indexOf('nightlyJob') >= 0 && trig.join(' ').indexOf('archiveJob ') >= 0, 'triggers: ' + trig.join(', '));
+  say(trig.join(' ').indexOf('nightlyJob') >= 0 && trig.join(' ').indexOf('archiveJob ') >= 0 && trig.join(' ').indexOf('morningJob') >= 0, 'triggers: ' + trig.join(', ') + (trig.join(' ').indexOf('morningJob') < 0 ? ' (no morningJob: run installTriggers())' : ''));
   const tasks = rows('Tasks'), by = {}; tasks.forEach(function (t) { by[t.status] = (by[t.status] || 0) + 1; });
   const closed = tasks.filter(function (t) { return t.status === 'closed'; });
   say(!closed.length, 'tasks by status: ' + JSON.stringify(by) + '; waiting to be filed: ' + closed.length + ', failing: ' + closed.filter(function (t) { return Number(t.archiveFails) > 0; }).length);
@@ -411,6 +433,8 @@ function launchCheck() {
   while (people.hasNext()) { nf++; const z = people.next().getFiles(); while (z.hasNext()) { z.next(); nz++; } }
   say(true, 'EPP folder: ' + nf + ' person folders, ' + nz + ' zip files');
   say(!props.getProperty('SIM_STATE') && !props.getProperty('MOCK_STATE'), 'leftover test data markers: SIM_STATE ' + (props.getProperty('SIM_STATE') ? 'present' : 'none') + ', MOCK_STATE ' + (props.getProperty('MOCK_STATE') ? 'present' : 'none') + ' (wipeWorkData clears the work itself)');
+  const devs = rows('PushSubs'), devPeople = {}; devs.forEach(function (d) { devPeople[d.userId] = 1; });
+  say(true, 'notifications: ' + devs.length + ' devices of ' + Object.keys(devPeople).length + ' people; devices with a problem: ' + devs.filter(function (d) { return d.lastError; }).length);
   const grants = rows('DriveAccess').filter(function (r) { return r.status === 'granted'; }).length;
   say(true, 'people allowed to open their own Drive folder: ' + grants);
   Logger.log('launchCheck done.');

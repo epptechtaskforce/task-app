@@ -26,6 +26,7 @@ function makeEnv_(cfg) {
   const archiveId = cfg.archiveFolderId || prop_('ARCHIVE_FOLDER_ID');
   const tz = Session.getScriptTimeZone();
   const archive = new DriveArchive_(archiveId, cfg.eppFolderId);
+  const store = new SheetsStore_(ssId);
   return {
     hashRounds: PASSWORD_ROUNDS,
     now: function () { return Date.now(); },
@@ -35,13 +36,14 @@ function makeEnv_(cfg) {
     lock: lock_,
     log: function (m) { console.error(String(m)); },
     formatDate: function (ms) { return Utilities.formatDate(new Date(ms), tz, 'yyyy-MM-dd HH:mm'); },
-    store: new SheetsStore_(ssId),
+    store: store,
     files: new DriveFiles_(voiceId),
     archive: archive,
     archiveAtNight: cfg.archiveAtNight !== false,     // approving only closes a task; a background job (every hour) files it in Drive. Setup tests pass false (file at once)
     history: new HistorySheet_(archive),
     ai: cfg.ai || makeAi_(),
     setting: function (name) { return prop_(name) || ''; },
+    notify: function (payload, recipients) { return pushNotify_(store, payload, recipients); },   // alerts to people's phones and computers (Web Push)
     // how many times this has been asked in the current window (fixed windows of `seconds`), counting this call
     counter: function (key, seconds) {
       return lock_(function () {
@@ -952,4 +954,225 @@ function makeAi_() {
   if (prop_('ANTHROPIC_API_KEY')) providers.push({ name: 'claude', ai: new ClaudeAi_(), canReadFiles: true });
   if (prop_('GROQ_API_KEY')) providers.push({ name: 'groq', ai: new GroqAi_(), canReadFiles: false });
   return providers.length ? new CompositeAi_(providers, new GeminiAi_()) : new GeminiAi_();
+}
+
+// ==== WEB PUSH BEGIN ====================================================================================================================================
+// Push notifications to phones and computers (the browser's standard Web Push: RFC 8030 delivery, RFC 8291 encryption, RFC 8292 "VAPID" identification).
+// Google Apps Script has no ECDSA, ECDH or AES-GCM, so they are written here in plain JavaScript (BigInt) and checked against Node's own crypto in
+// tests/push-crypto.test.js. Only SHA-256, HMAC-SHA-256 and a source of random bytes come from outside (`prims`), so the same code runs in the tests.
+//   prims = { sha256(u8) -> u8, hmac(keyU8, dataU8) -> u8, random(n) -> u8 of n random bytes }
+function makeWebPush_(prims) {
+  // (the Apps Script editor does not accept BigInt number literals written with a trailing n, so every number here is made with BigInt(...))
+  const _0 = BigInt(0), _1 = BigInt(1), _2 = BigInt(2), _3 = BigInt(3), _4 = BigInt(4), _8 = BigInt(8), _64 = BigInt(64), _120 = BigInt(120), _225 = BigInt(225), _255 = BigInt(255);
+  const P = BigInt('0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff');
+  const N = BigInt('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551');
+  const B = BigInt('0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b');
+  const G = [BigInt('0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296'), BigInt('0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5'), _1];
+
+  /* ---- small helpers ---- */
+  const md = function (a, m) { const r = a % m; return r < _0 ? r + m : r; };
+  function toBig(u8) { let n = _0; for (let i = 0; i < u8.length; i++) n = (n << _8) | BigInt(u8[i]); return n; }
+  function fromBig(n, len) { const out = new Uint8Array(len); for (let i = len - 1; i >= 0; i--) { out[i] = Number(n & _255); n >>= _8; } return out; }
+  function concat() { let len = 0, i; for (i = 0; i < arguments.length; i++) len += arguments[i].length; const out = new Uint8Array(len); let at = 0; for (i = 0; i < arguments.length; i++) { out.set(arguments[i], at); at += arguments[i].length; } return out; }
+  function utf8(s) { const bin = unescape(encodeURIComponent(String(s))), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+  const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  function b64u(u8) {
+    let s = '', i;
+    for (i = 0; i + 2 < u8.length; i += 3) { const n = (u8[i] << 16) | (u8[i + 1] << 8) | u8[i + 2]; s += ALPHA[n >> 18] + ALPHA[(n >> 12) & 63] + ALPHA[(n >> 6) & 63] + ALPHA[n & 63]; }
+    if (i + 1 === u8.length) { const n = u8[i] << 16; s += ALPHA[n >> 18] + ALPHA[(n >> 12) & 63]; }
+    else if (i + 2 === u8.length) { const n = (u8[i] << 16) | (u8[i + 1] << 8); s += ALPHA[n >> 18] + ALPHA[(n >> 12) & 63] + ALPHA[(n >> 6) & 63]; }
+    return s;
+  }
+  function unb64u(str) {
+    const s = String(str || '').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_'), out = [];
+    let bits = 0, acc = 0;
+    for (let i = 0; i < s.length; i++) { const v = ALPHA.indexOf(s[i]); if (v < 0) throw new Error('Not base64url'); acc = (acc << 6) | v; bits += 6; if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 255); acc &= (1 << bits) - 1; } }
+    return new Uint8Array(out);
+  }
+
+  /* ---- P-256 (Jacobian coordinates; not constant-time, which is fine for a server that only signs and encrypts for itself) ---- */
+  const INF = [_0, _1, _0];
+  function pow(a, e, m) { let r = _1; a = md(a, m); while (e > _0) { if (e & _1) r = r * a % m; a = a * a % m; e >>= _1; } return r; }
+  const inv = function (a, m) { return pow(a, m - _2, m); };
+  function dbl(p) {
+    if (p[2] === _0 || p[1] === _0) return INF;
+    const X = p[0], Y = p[1], Z = p[2];
+    const delta = Z * Z % P, gamma = Y * Y % P, beta = X * gamma % P;
+    const alpha = md(_3 * (X - delta) * (X + delta), P);
+    const X3 = md(alpha * alpha - _8 * beta, P);
+    const Z3 = md((Y + Z) * (Y + Z) - gamma - delta, P);
+    const Y3 = md(alpha * (_4 * beta - X3) - _8 * gamma * gamma, P);
+    return [X3, Y3, Z3];
+  }
+  function add(p, q) {
+    if (p[2] === _0) return q;
+    if (q[2] === _0) return p;
+    const Z1Z1 = p[2] * p[2] % P, Z2Z2 = q[2] * q[2] % P;
+    const U1 = p[0] * Z2Z2 % P, U2 = q[0] * Z1Z1 % P, S1 = p[1] * q[2] % P * Z2Z2 % P, S2 = q[1] * p[2] % P * Z1Z1 % P;
+    if (U1 === U2) return S1 === S2 ? dbl(p) : INF;
+    const H = md(U2 - U1, P), R = md(S2 - S1, P), HH = H * H % P, HHH = H * HH % P, V = U1 * HH % P;
+    const X3 = md(R * R - HHH - _2 * V, P), Y3 = md(R * (V - X3) - S1 * HHH, P), Z3 = H * p[2] % P * q[2] % P;
+    return [X3, Y3, Z3];
+  }
+  function mul(k, pt) {
+    let r = INF;
+    for (let i = k.toString(2).length - 1; i >= 0; i--) { r = dbl(r); if ((k >> BigInt(i)) & _1) r = add(r, pt); }
+    return r;
+  }
+  function affine(p) { if (p[2] === _0) throw new Error('Point at infinity'); const zi = inv(p[2], P), zi2 = zi * zi % P; return [p[0] * zi2 % P, p[1] * zi2 % P * zi % P]; }
+  function pubBytes(d) { const a = affine(mul(d, G)); return concat(new Uint8Array([4]), fromBig(a[0], 32), fromBig(a[1], 32)); }
+  function parsePub(u8) {
+    if (!u8 || u8.length !== 65 || u8[0] !== 4) throw new Error('Not an uncompressed P-256 public key');
+    const x = toBig(u8.subarray(1, 33)), y = toBig(u8.subarray(33, 65));
+    if (x >= P || y >= P || md(y * y - (x * x % P * x - _3 * x + B), P) !== _0) throw new Error('The public key is not on the curve');
+    return [x, y, _1];
+  }
+  function randScalar() { return toBig(prims.random(40)) % (N - _1) + _1; }
+  function ecdh(d, pub) { return fromBig(affine(mul(d, parsePub(pub)))[0], 32); }
+  function sign(hash, d) {                                              // ES256: r || s, 64 bytes
+    const z = toBig(hash);
+    for (;;) {
+      const k = randScalar(), r = affine(mul(k, G))[0] % N;
+      if (r === _0) continue;
+      const s = md(inv(k, N) * (z + r * d), N);
+      if (s !== _0) return concat(fromBig(r, 32), fromBig(s, 32));
+    }
+  }
+
+  /* ---- HKDF-SHA256 (every output here is at most 32 bytes: one block) ---- */
+  const hkdfExtract = function (salt, ikm) { return prims.hmac(salt, ikm); };
+  const hkdfExpand = function (prk, info, len) { return prims.hmac(prk, concat(info, new Uint8Array([1]))).subarray(0, len); };
+
+  /* ---- AES-128-GCM ---- */
+  const SBOX = (function () {
+    const s = new Array(256), rotl = function (x, n) { return ((x << n) | (x >> (8 - n))) & 255; };
+    let p = 1, q = 1;
+    do {
+      p = (p ^ ((p << 1) & 255) ^ (p & 128 ? 27 : 0)) & 255;
+      q ^= q << 1; q ^= q << 2; q ^= q << 4; q &= 255; if (q & 128) q ^= 9;
+      s[p] = (q ^ rotl(q, 1) ^ rotl(q, 2) ^ rotl(q, 3) ^ rotl(q, 4) ^ 99) & 255;
+    } while (p !== 1);
+    s[0] = 99; return s;
+  })();
+  const xt = function (x) { return ((x << 1) ^ (x & 128 ? 27 : 0)) & 255; };
+  function expandKey(key) {
+    const w = []; let i, t;
+    for (i = 0; i < 16; i++) w[i] = key[i];
+    for (i = 16, t = 1; i < 176; i += 4) {
+      let a = w[i - 4], b = w[i - 3], c = w[i - 2], d = w[i - 1];
+      if (i % 16 === 0) { const tmp = a; a = SBOX[b] ^ t; b = SBOX[c]; c = SBOX[d]; d = SBOX[tmp]; t = xt(t); }
+      w[i] = w[i - 16] ^ a; w[i + 1] = w[i - 15] ^ b; w[i + 2] = w[i - 14] ^ c; w[i + 3] = w[i - 13] ^ d;
+    }
+    return w;
+  }
+  function aesBlock(w, input) {
+    const s = new Array(16); let r, i;
+    for (i = 0; i < 16; i++) s[i] = input[i] ^ w[i];
+    for (r = 1; r <= 10; r++) {
+      for (i = 0; i < 16; i++) s[i] = SBOX[s[i]];
+      const t = [s[0], s[5], s[10], s[15], s[4], s[9], s[14], s[3], s[8], s[13], s[2], s[7], s[12], s[1], s[6], s[11]];   // ShiftRows
+      for (i = 0; i < 16; i++) s[i] = t[i];
+      if (r < 10) for (let c = 0; c < 16; c += 4) { const a0 = s[c], a1 = s[c + 1], a2 = s[c + 2], a3 = s[c + 3], all = a0 ^ a1 ^ a2 ^ a3; s[c] ^= all ^ xt(a0 ^ a1); s[c + 1] ^= all ^ xt(a1 ^ a2); s[c + 2] ^= all ^ xt(a2 ^ a3); s[c + 3] ^= all ^ xt(a3 ^ a0); }
+      for (i = 0; i < 16; i++) s[i] ^= w[r * 16 + i];
+    }
+    return s;
+  }
+  const GR = _225 << _120;
+  function gmul(x, y) { let z = _0, v = y; for (let i = 127; i >= 0; i--) { if ((x >> BigInt(i)) & _1) z ^= v; v = (v & _1) ? (v >> _1) ^ GR : v >> _1; } return z; }
+  function gcmEncrypt(key, iv, plain) {                                  // returns ciphertext || 16-byte tag; no additional data
+    const w = expandKey(key), H = toBig(Uint8Array.from(aesBlock(w, new Uint8Array(16))));
+    const j0 = concat(iv, new Uint8Array([0, 0, 0, 1])), out = new Uint8Array(plain.length + 16);
+    for (let off = 0, ctr = 2; off < plain.length; off += 16, ctr++) {
+      const cb = concat(iv, new Uint8Array([(ctr >>> 24) & 255, (ctr >>> 16) & 255, (ctr >>> 8) & 255, ctr & 255])), ks = aesBlock(w, cb);
+      for (let i = 0; i < 16 && off + i < plain.length; i++) out[off + i] = plain[off + i] ^ ks[i];
+    }
+    let g = _0;
+    for (let off = 0; off < plain.length; off += 16) { const blk = new Uint8Array(16); blk.set(out.subarray(off, Math.min(off + 16, plain.length))); g = gmul(g ^ toBig(blk), H); }
+    g = gmul(g ^ ((_0 << _64) | BigInt(plain.length * 8)), H);
+    const tag = toBig(Uint8Array.from(aesBlock(w, j0))) ^ g;
+    out.set(fromBig(tag, 16), plain.length);
+    return out;
+  }
+
+  /* ---- Web Push ---- */
+  // RFC 8291 + RFC 8188: one record, `payload` is a Uint8Array (at most ~3.9 KB). uaPublic = the browser's p256dh (65 bytes), auth = its 16-byte secret.
+  function encrypt(payload, uaPublic, auth) {
+    const asPrivate = randScalar(), asPublic = pubBytes(asPrivate), salt = prims.random(16);
+    const secret = ecdh(asPrivate, uaPublic);
+    const ikm = hkdfExpand(hkdfExtract(auth, secret), concat(utf8('WebPush: info'), new Uint8Array([0]), uaPublic, asPublic), 32);
+    const prk = hkdfExtract(salt, ikm);
+    const cek = hkdfExpand(prk, concat(utf8('Content-Encoding: aes128gcm'), new Uint8Array([0])), 16), nonce = hkdfExpand(prk, concat(utf8('Content-Encoding: nonce'), new Uint8Array([0])), 12);
+    const body = gcmEncrypt(cek, nonce, concat(payload, new Uint8Array([2])));
+    return concat(salt, new Uint8Array([0, 0, 16, 0, 65]), asPublic, body);   // rs = 4096
+  }
+  // RFC 8292: "Authorization: vapid t=<jwt>, k=<public key>" for the push service that owns `endpoint`.
+  function vapidHeader(endpoint, subject, privateKey, publicKey, nowSec) {
+    const aud = String(endpoint).match(/^(https:\/\/[^\/]+)/)[1];
+    const head = b64u(utf8('{"typ":"JWT","alg":"ES256"}')), claims = b64u(utf8(JSON.stringify({ aud: aud, exp: nowSec + 12 * 3600, sub: subject })));
+    const sig = sign(prims.sha256(utf8(head + '.' + claims)), toBig(privateKey));
+    return 'vapid t=' + head + '.' + claims + '.' + b64u(sig) + ', k=' + b64u(publicKey);
+  }
+  function newKeys() { const d = randScalar(); return { privateKey: b64u(fromBig(d, 32)), publicKey: b64u(pubBytes(d)) }; }
+  return { encrypt: encrypt, vapidHeader: vapidHeader, newKeys: newKeys, b64u: b64u, unb64u: unb64u, utf8: utf8, _p: { pubBytes: pubBytes, ecdh: ecdh, sign: sign, gcmEncrypt: gcmEncrypt, toBig: toBig, fromBig: fromBig } };
+}
+// ==== WEB PUSH END ======================================================================================================================================
+
+// ---- Web Push delivery (Apps Script side): bytes, randomness, and one parallel call to the push services ----
+const toSigned_ = function (u8) { const o = []; for (let i = 0; i < u8.length; i++) o.push(u8[i] > 127 ? u8[i] - 256 : u8[i]); return o; };
+const fromSigned_ = function (a) { const o = new Uint8Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] & 255; return o; };
+let WEB_PUSH_ = null;
+function webPush_() {
+  if (!WEB_PUSH_) WEB_PUSH_ = makeWebPush_({
+    sha256: function (u8) { return fromSigned_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, toSigned_(u8))); },
+    hmac: function (key, data) { return fromSigned_(Utilities.computeHmacSha256Signature(toSigned_(data), toSigned_(key))); },
+    // random bytes: every Utilities.getUuid() comes from Java's secure random generator; they are mixed through SHA-256
+    random: function (n) {
+      const out = new Uint8Array(n); let at = 0, i = 0;
+      while (at < n) { const block = fromSigned_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid() + ':' + (i++) + ':' + Date.now())); for (let j = 0; j < block.length && at < n; j++) out[at++] = block[j]; }
+      return out;
+    }
+  });
+  return WEB_PUSH_;
+}
+
+// One alert to every device of the given people. recipients = [{ userId, silent }]. Never throws; says how it went: { sent, failed, removed, errors, devices }.
+// The messages are encrypted for each device and sent in ONE parallel call (so ten devices cost about as long as one). A device the push service says is
+// gone (404/410) is forgotten; a device that fails is marked with the reason, which the person sees in their notification settings.
+function pushNotify_(store, payload, recipients) {
+  const res = { sent: 0, failed: 0, removed: 0, errors: [], devices: 0 };
+  try {
+    const priv = prop_('VAPID_PRIVATE_KEY'), pub = prop_('VAPID_PUBLIC_KEY');
+    if (!priv || !pub) { res.errors.push('Notifications are not set up on the server yet (run setupPush in the Apps Script editor)'); return res; }
+    const want = {}; recipients.forEach(function (r) { want[r.userId] = r; });
+    const subs = store.all('PushSubs').filter(function (s) { return want[s.userId]; });
+    if (!subs.length) return res;
+    const wp = webPush_(), privB = wp.unb64u(priv), pubB = wp.unb64u(pub), nowSec = Math.floor(Date.now() / 1000), subject = prop_('VAPID_SUBJECT') || ScriptApp.getService().getUrl() || 'https://example.org/';
+    const jwt = {}, reqs = [], used = [], topic = payload.g ? sha256Hex_('topic:' + payload.g).slice(0, 24) : '';
+    subs.forEach(function (s) {
+      res.devices++;
+      try {
+        const body = wp.encrypt(wp.utf8(JSON.stringify(Object.assign({}, payload, { s: want[s.userId].silent ? 1 : 0 }))), wp.unb64u(s.p256dh), wp.unb64u(s.auth));
+        const aud = s.endpoint.match(/^(https:\/\/[^\/]+)/)[1];
+        if (!jwt[aud]) jwt[aud] = wp.vapidHeader(s.endpoint, subject, privB, pubB, nowSec);
+        const headers = { 'Content-Encoding': 'aes128gcm', TTL: String(payload.c === 'messages' ? 21600 : 86400), Urgency: payload.c === 'reminders' ? 'normal' : 'high', Authorization: jwt[aud] };
+        if (topic) headers.Topic = topic;
+        reqs.push({ url: s.endpoint, method: 'post', contentType: 'application/octet-stream', payload: toSigned_(body), headers: headers, muteHttpExceptions: true, followRedirects: false });
+        used.push(s);
+      } catch (e) { res.failed++; res.errors.push(String(e && e.message || e).slice(0, 120)); }
+    });
+    let out = [];
+    try { out = UrlFetchApp.fetchAll(reqs); } catch (e) { res.failed += reqs.length; res.errors.push('The push services could not be reached: ' + String(e && e.message || e).slice(0, 100)); return res; }
+    const gone = [], marks = [];
+    out.forEach(function (r, i) {
+      const code = r.getResponseCode(), s = used[i];
+      if (code >= 200 && code < 300) { res.sent++; if (s.lastError || Date.now() - Number(s.lastOk || 0) > 86400000) marks.push({ id: s.id, patch: { lastOk: Date.now(), lastError: '' } }); }
+      else if (code === 404 || code === 410) { res.removed++; gone.push(s.id); }
+      else { res.failed++; const why = 'push service answered ' + code + ': ' + String(r.getContentText()).replace(/\s+/g, ' ').slice(0, 100); res.errors.push(why); marks.push({ id: s.id, patch: { lastError: why.slice(0, 200) } }); }
+    });
+    if (gone.length || marks.length) lock_(function () {                        // notes about devices are written under the same lock as every other change
+      marks.forEach(function (m) { try { store.update('PushSubs', m.id, m.patch); } catch (e) { /* the device may have been removed meanwhile */ } });
+      if (gone.length) store.removeWhere('PushSubs', function (s) { return gone.indexOf(s.id) >= 0; });
+    });
+  } catch (e) { res.failed++; res.errors.push(String(e && e.message || e).slice(0, 150)); console.error('pushNotify_ failed: ' + e); }
+  return res;
 }

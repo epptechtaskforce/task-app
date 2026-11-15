@@ -211,6 +211,7 @@
         Object.assign(files, JSON.parse(root.localStorage.getItem(options.persistKey + '.files') || '{}'));
       } catch (e) { /* ignore */ }
     }
+    const pushes = [];       // alerts that would have been sent (see env.notify below)
     const byContent = {};   // the same picture or sound is stored once
     const keep = function (o) {
       const k = o.mime + '|' + o.b64.length + '|' + o.b64.slice(0, 40) + o.b64.slice(-40);
@@ -272,8 +273,20 @@
         url: function () { return 'https://docs.google.com/spreadsheets/d/EPPHISTORY'; },
         fileId: function () { return 'EPPHISTORY'; }
       },
+      // alerts: nothing is sent anywhere; what WOULD be sent is kept so tests can look at it (options.failPush = "an error text" makes every delivery fail)
+      notify: function (payload, recipients) {
+        const subs = store.all('PushSubs'), res = { sent: 0, failed: 0, removed: 0, errors: [], devices: 0 };
+        recipients.forEach(function (r) {
+          subs.filter(function (s) { return s.userId === r.userId; }).forEach(function (s) {
+            res.devices++;
+            if (options.failPush) { res.failed++; res.errors.push(options.failPush); return; }
+            pushes.push({ userId: r.userId, endpoint: s.endpoint, silent: !!r.silent, payload: JSON.parse(JSON.stringify(payload)) }); res.sent++;
+          });
+        });
+        return res;
+      },
       ai: options.ai || fakeAi(),
-      _files: files, _archives: archives, _folders: folders, _shares: shares, _history: hist
+      _pushes: pushes, _files: files, _archives: archives, _folders: folders, _shares: shares, _history: hist
     };
     return env;
   }

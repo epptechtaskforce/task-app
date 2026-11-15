@@ -152,6 +152,7 @@
   }
   function setUnread(tasks) {
     S.unread = tasks.filter(function (t) { return t.unread; }).length;
+    try { if (navigator.setAppBadge) { if (S.unread) navigator.setAppBadge(S.unread); else navigator.clearAppBadge(); } } catch (e) { /* not every phone has it */ }
     document.title = (S.unread ? '(' + S.unread + ') ' : '') + (S.company || 'Task Manager');
     document.querySelectorAll('[data-nav="tasks"]').forEach(function (a) {
       const host = a.querySelector('.pill') || a, b = host.querySelector('.nav-badge');
@@ -184,7 +185,7 @@
       ev.preventDefault(); UI.clear(err); btn.disabled = true; btn.textContent = 'Signing in…';
       try {
         const r = await Api.call('login', { username: user.value, password: pass.value });
-        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign; S.canUseAi = !!r.canUseAi; S.stuckAdmin = r.stuckAdmin || 0;
+        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign; S.canUseAi = !!r.canUseAi; S.stuckAdmin = r.stuckAdmin || 0; S.pushKey = r.pushKey || '';
         if (r.user.mustChange) return viewMustChange();
         if (r.canAssign === undefined) await loadMe(); else rememberMe();   // the sign-in answer already holds the profile
         Profiles.load(); Profiles.refresh(true);
@@ -220,17 +221,19 @@
   }
 
   async function signOut() {
+    try { await Push.forget(); } catch (e) { /* never stops signing out */ }
     try { await Api.call('logout'); } catch (e) { /* ignore */ }
+    S.pushSynced = false;
     Api.setToken(''); S.user = null; stopTimers(); showLogin('You have been signed out.');
   }
 
   async function loadMe() {
     const me = await Api.call('me');
-    S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign; S.canUseAi = !!me.canUseAi; S.stuckAdmin = me.stuckAdmin || 0;
+    S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign; S.canUseAi = !!me.canUseAi; S.stuckAdmin = me.stuckAdmin || 0; S.pushKey = me.pushKey || '';
     rememberMe();
   }
   function rememberMe() {
-    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign, canUseAi: S.canUseAi, stuckAdmin: S.stuckAdmin || 0 });
+    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign, canUseAi: S.canUseAi, stuckAdmin: S.stuckAdmin || 0, pushKey: S.pushKey || '' });
     Api.saveCompany(S.company);
   }
 
@@ -357,7 +360,7 @@
         h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), subLine, statBox),
       h('div', { class: 'home-grid' },
         h('div', { class: 'home-side' }, glance.el),
-        h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, attnBox, activeBox, list)),
+        h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, notifyPrompt(), attnBox, activeBox, list)),
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks', { bare: true });
     let tasks = [], statSig = '', animated = false;
     const cacheKey = 'tasks:' + S.user.id;
@@ -1293,6 +1296,87 @@
     load();
   }
 
+  /* ============================== notifications (Account page and the first-time question) ============================== */
+
+  function ago(ms) { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; }
+  // A small question on the home page, once: "get alerts?". Not asked in the demo, where there is no server to send them.
+  function notifyPrompt() {
+    const box = h('div');
+    if (Api.demo || !S.pushKey || !window.Push || Push.promptSeen()) return box;
+    Push.state().then(function (st) {
+      if (st !== 'off' || Notification.permission !== 'default') return;
+      const card = h('div', { class: 'card notify-ask' }, icon('bell', 24),
+        h('div', { class: 'grow' }, h('strong', null, 'Never miss an update'), h('div', { class: 'muted small' }, 'Get a quick alert on this phone about new tasks, messages and approvals. Tap an alert to open the task.')),
+        h('div', { class: 'row', style: 'gap:.4rem' },
+          h('button', { class: 'btn primary small', type: 'button', onclick: async function (ev) {
+            const b = ev.currentTarget; b.disabled = true;
+            try { await Push.enable(S.pushKey, S.user.id); Push.promptDone(); card.remove(); UI.toast('Notifications are on'); }
+            catch (e) { UI.toast(e.message, 'bad'); b.disabled = false; if (Notification.permission === 'denied') { Push.promptDone(); card.remove(); } }
+          } }, 'Turn on'),
+          h('button', { class: 'btn small', type: 'button', onclick: function () { Push.promptDone(); card.remove(); } }, 'Not now')));
+      box.appendChild(card);
+    }).catch(function () { /* just no question */ });
+    return box;
+  }
+  function notifyCard() {
+    const card = h('div', { class: 'card' }, h('h2', null, 'Notifications'));
+    async function draw() {
+      UI.clear(card); card.appendChild(h('h2', null, 'Notifications'));
+      const st = await Push.state();
+      const say = function (t) { card.appendChild(h('p', { class: 'muted small' }, t)); };
+      if (st === 'demo') return say('Notifications are not available in the demo. In the real app you get an alert on your phone about new tasks, messages and approvals.');
+      if (st === 'unsupported') return say('This browser cannot show notifications. Chrome on Android works, and so does the installed app on iPhone.');
+      if (st === 'install') return say('On iPhone, notifications work for the installed app. Tap Share, then "Add to Home Screen", open the app from your home screen and come back to this page.');
+      if (st === 'blocked') return say('Notifications are blocked for this app. Allow them in your phone settings (Settings, Apps, this app, Notifications; or in Chrome: Site settings, Notifications), then come back here.');
+      if (!S.pushKey) return say('Notifications are not switched on at the server yet. Ask the administrator.');
+      if (st === 'off') {
+        say('Get an alert on this phone when someone gives you a task, writes in a task, finishes work for your approval, or approves yours. Tap an alert to open that task.');
+        const b = h('button', { class: 'btn primary', type: 'button' }, icon('bell', 18), 'Turn on notifications');
+        b.addEventListener('click', async function () {
+          b.disabled = true;
+          try { await Push.enable(S.pushKey, S.user.id); UI.toast('Notifications are on'); await draw(); }
+          catch (e) { UI.toast(e.message, 'bad'); b.disabled = false; }
+        });
+        return card.appendChild(b);
+      }
+      // on: what to hear about, a test, and the devices
+      let info; try { info = await Api.call('pushStatus'); } catch (e) { return card.appendChild(errBox(e)); }
+      const prefs = info.prefs, rows = [
+        ['messages', 'Messages in your tasks', 'Text, voice and files from the people on a task'],
+        ['tasks', 'Tasks and approvals', 'New tasks, finished work waiting for you, approved or sent back, changes, and anything that needs attention'],
+        ['reminders', 'Morning summary', 'Around 07:00: what is late, due today or waiting for your approval (nothing is sent on a quiet day)'],
+        ['quiet', 'Quiet at night', 'From ' + info.quiet.from + ':00 to 0' + info.quiet.to + ':00 alerts still arrive, without sound or buzz']
+      ];
+      card.appendChild(h('p', { class: 'ok-line' }, icon('check', 16), 'Notifications are on for this device.'));
+      rows.forEach(function (r) {
+        const box = h('input', { type: 'checkbox', 'aria-label': r[1] }); box.checked = !!prefs[r[0]];
+        box.addEventListener('change', async function () {
+          const want = box.checked; box.disabled = true;
+          try { const o = {}; o[r[0]] = want; await Api.call('pushPrefs', o); prefs[r[0]] = want; }
+          catch (e) { box.checked = !want; UI.toast(e.message, 'bad'); }
+          box.disabled = false;
+        });
+        card.appendChild(h('label', { class: 'nrow' }, box, h('span', null, h('strong', null, r[1]), h('small', null, r[2]))));
+      });
+      const test = h('button', { class: 'btn small', type: 'button' }, icon('bell', 16), 'Send me a test'), off = h('button', { class: 'btn small', type: 'button' }, 'Turn off on this device');
+      test.addEventListener('click', async function () {
+        test.disabled = true;
+        try {
+          const r = await Api.call('pushTest', {}, { timeout: 60000 });
+          UI.toast(r.sent ? 'Sent. It should arrive in a few seconds.' + (r.failed ? ' (' + r.failed + ' device(s) did not answer)' : '') : 'It could not be delivered: ' + (r.errors[0] || 'the push service did not accept it'), r.sent ? undefined : 'bad');
+          await draw();
+        } catch (e) { UI.toast(e.message, 'bad'); test.disabled = false; }
+      });
+      off.addEventListener('click', async function () { off.disabled = true; try { await Push.disable(); UI.toast('Notifications are off on this device'); await draw(); } catch (e) { UI.toast(e.message, 'bad'); off.disabled = false; } });
+      card.appendChild(h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.8rem' }, test, off));
+      if (info.devices.length) card.appendChild(h('div', { class: 'devices' }, h('h3', null, 'Your devices'), info.devices.map(function (d) {
+        return h('div', { class: 'dev' }, icon('phone', 16), h('span', null, h('strong', null, d.label), h('small', { class: d.lastError ? 'bad-text' : '' }, d.lastError ? 'Last problem: ' + d.lastError : d.lastOk ? 'Last alert delivered ' + ago(d.lastOk) : 'No alert sent yet')));
+      })));
+    }
+    draw().catch(function (e) { card.appendChild(errBox(e)); });
+    return card;
+  }
+
   function viewAccount() {
     const me = S.user;
     const o = UI.passwordField({ autocomplete: 'current-password' }), n = UI.passwordField({ autocomplete: 'new-password' }), r = UI.passwordField({ autocomplete: 'new-password' });
@@ -1351,6 +1435,7 @@
           });
           return box;
         })()),
+      notifyCard(),
       isPureAdmin() || !S.canUseAi ? null : Assistant.settingsCard(),
       h('div', { class: 'card' }, h('h2', null, 'Change password'), form),
       h('div', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('strong', null, 'App version'), h('div', { class: 'muted small' }, (window.Updater && window.Updater.version) || 'demo')),
@@ -1370,6 +1455,7 @@
     stopAudio(); stopTimers(); runLeave(); unsettle(); S.peek = null; S.fill = null; S.kind = '';
     if (!S.user) return showLogin();
     if (S.user.mustChange) { Assistant.hide(); return viewMustChange(); }
+    if (!S.pushSynced) { S.pushSynced = true; Push.sync(S.pushKey, S.user.id); }
     Profiles.refresh();
     const p = (location.hash || '#/tasks').slice(2).split('/');
     // the AI bubble floats over every screen (not over the administrator-only pages); it knows which task or completed task is open
@@ -1460,7 +1546,7 @@
         const known = Api.cacheGet('me');
         if (known && known.user) {
           // Returning visitor: open straight into the app with the last known profile and check it in the background.
-          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign; S.canUseAi = !!known.canUseAi; S.stuckAdmin = known.stuckAdmin || 0;
+          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign; S.canUseAi = !!known.canUseAi; S.stuckAdmin = known.stuckAdmin || 0; S.pushKey = known.pushKey || '';
           const sig = function () { const u = S.user || {}; return [u.id, u.isAdmin, u.mustChange, u.jobTitleId, u.active, S.canAssign, S.canUseAi].join('|'); };
           const before = sig();
           loadMe().then(function () { if (S.user && sig() !== before) route(); }).catch(function () { /* AUTH is handled by Api.onAuthLost; offline keeps the cached view */ });
@@ -1470,6 +1556,10 @@
         }
       }
       window.addEventListener('hashchange', route);
+      if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', function (ev) {
+        const d = ev.data;
+        if (d && d.type === 'open' && typeof d.hash === 'string' && /^#\/[A-Za-z0-9_\/%.-]{0,120}$/.test(d.hash) && S.user) go(d.hash);
+      });
       route();
     } catch (e) { authPage(h('h1', null, 'Something went wrong'), 'Please reload the page.', h('div', { class: 'card' }, errBox(e))); }
   }
