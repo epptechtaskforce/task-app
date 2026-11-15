@@ -1001,3 +1001,12 @@ h1 { letter-spacing: -.025em; }
 .attn { background: var(--warn-soft); border-left: 4px solid var(--warn); border-radius: var(--radius-sm); padding: .75rem .95rem; margin: .8rem 0; }
 .attn h3 { margin: 0 0 .25rem; color: var(--warn); font-size: 1rem; } .attn p { margin: .25rem 0; } .attn .why { overflow-wrap: anywhere; font-size: .92rem; }
 .card .why { overflow-wrap: anywhere; font-size: .92rem; margin: .35rem 0; }
+
+/* notifications: the settings card and the one-time question */
+.notify-ask { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; } .notify-ask .grow { flex: 1 1 14rem; } .notify-ask > svg { color: var(--accent); flex: none; }
+.ok-line { display: flex; align-items: center; gap: .4rem; color: var(--ok); font-weight: 700; margin: .2rem 0 .6rem; }
+.nrow { display: flex; align-items: flex-start; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--line, rgba(127,127,127,.18)); cursor: pointer; }
+.nrow input { width: 1.25rem; height: 1.25rem; margin-top: .15rem; accent-color: var(--accent); flex: none; }
+.nrow span { display: grid; gap: .1rem; } .nrow small { color: var(--mute); font-size: .83rem; line-height: 1.35; }
+.devices { margin-top: 1rem; } .devices h3 { margin: 0 0 .4rem; }
+.dev { display: flex; align-items: flex-start; gap: .6rem; padding: .4rem 0; } .dev > svg { color: var(--mute); margin-top: .15rem; flex: none; } .dev span { display: grid; gap: .1rem; } .dev small { color: var(--mute); } .dev small.bad-text { color: var(--bad); }

@@ -93,6 +93,8 @@ const TABLES = {
   Attachments:  { key: 'id', cols: { id: 's', taskId: 's', name: 's', mime: 's', size: 'n', fileId: 's', thumb: 's', w: 'n', h: 'n', createdAt: 'n' } },   // id = the id of the message that carries the file
   Briefings:    { key: 'userId', cols: { userId: 's', sig: 's', at: 'n', data: 'j' } },                                                               // the last home-page overview made for each person
   ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n', folderId: 's', purpose: 's', fileCount: 'n', archiveNo: 'n', docs: 'j', dueDate: 's', note: 's' } },
+  PushSubs:     { key: 'id', cols: { id: 's', userId: 's', endpoint: 's', p256dh: 's', auth: 's', label: 's', createdAt: 'n', lastOk: 'n', lastError: 's' } },   // one row per phone/computer that gets notifications
+  NotifyPrefs:  { key: 'userId', cols: { userId: 's', data: 'j' } },                                                                                       // what each person wants to be told about
   AuditLog:     { key: 'id', cols: { id: 's', at: 'n', userId: 's', action: 's', detail: 's' } }
 };
 
@@ -330,7 +332,7 @@ function createCore(env) {
   }
   function meView(ctx, user) {
     const company = (ctx.rows('Settings').filter(function (x) { return x.key === 'companyName'; })[0] || {}).value || '';
-    return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }), canUseAi: aiAllowed(ctx, user), stuckAdmin: user.isAdmin ? stuckTasks(ctx).length : 0 };
+    return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }), canUseAi: aiAllowed(ctx, user), stuckAdmin: user.isAdmin ? stuckTasks(ctx).length : 0, pushKey: (env.setting && env.setting('VAPID_PUBLIC_KEY')) || '' };
   }
   A.me = { run: function (ctx, user) { return meView(ctx, user); } };
 
@@ -468,7 +470,7 @@ function createCore(env) {
           if (broken.length) throw fail('VALIDATION', 'Changing this job title would break ' + broken.length + ' tether(s). Remove them in the Org chart first.');
         }
         update(ctx, 'Users', req.id, { name: name, username: username, jobTitleId: jobTitleId, isAdmin: isAdmin, active: active });
-        if (!active) removeWhere(ctx, 'Sessions', function (s) { return s.userId === req.id; });
+        if (!active) { removeWhere(ctx, 'Sessions', function (s) { return s.userId === req.id; }); removeWhere(ctx, 'PushSubs', function (s) { return s.userId === req.id; }); }
         audit(ctx, user, 'user.update', username);
         return { user: publicUser(ctx, usersById(ctx)[req.id]) };
       }
@@ -489,6 +491,7 @@ function createCore(env) {
       const temp = DEFAULT_PASSWORD;
       setPassword(ctx, u.id, temp, true);
       removeWhere(ctx, 'Sessions', function (s) { return s.userId === u.id; });
+      removeWhere(ctx, 'PushSubs', function (s) { return s.userId === u.id; });
       audit(ctx, user, 'user.resetPassword', u.username);
       return { tempPassword: temp };
     });
@@ -544,13 +547,15 @@ function createCore(env) {
     ids.forEach(function (id) {
       if (!allowed[id] || !users[id] || !users[id].active) throw fail('FORBIDDEN', 'You are not allowed to assign tasks to one of the chosen people');
     });
-    return ctx.write(function () {
+    const out = ctx.write(function () {
       const t = env.now(), id = newId('T');
       insert(ctx, 'Tasks', { id: id, title: title, description: description, creatorId: user.id, assigneeIds: ids, status: 'open', progress: 0, progressBy: '', dueDate: dueDate, createdAt: t, updatedAt: t, pendingAt: 0, closedAt: 0, summary: null, summaryMsgCount: 0, summaryAt: 0 });
       insert(ctx, 'Messages', { id: newId('M'), taskId: id, senderId: '', type: 'system', text: user.name + ' created this task', transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: t });
       const task = ctx.rows('Tasks').filter(function (x) { return x.id === id; })[0];
       return { task: taskView(ctx, user, task, { detail: true }) };
     });
+    notifyNewTask(ctx, user, out.task.id);
+    return out;
   } };
 
   A.listTasks = { run: function (ctx, user) {
@@ -586,12 +591,14 @@ function createCore(env) {
   A.postMessage = { run: function (ctx, user, req) {
     const t = loadTask(ctx, user, req.taskId, { open: true });
     const text = str(req.text, 'Message', LIMITS.text);
-    return ctx.write(function () {
+    const out = ctx.write(function () {
       stillOpen(ctx, user, t.id);
       const row = insert(ctx, 'Messages', { id: newId('M'), taskId: t.id, senderId: user.id, type: 'text', text: text, transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: env.now() });
       update(ctx, 'Tasks', t.id, { updatedAt: row.createdAt });
       return { message: msgView(ctx, row) };
     });
+    notifyChat(ctx, user, t.id, clip(text, 140));
+    return out;
   } };
 
   A.postVoice = { run: function (ctx, user, req) {
@@ -609,6 +616,7 @@ function createCore(env) {
       const row = insert(ctx, 'Messages', { id: msgId, taskId: t.id, senderId: user.id, type: 'voice', text: '', transcript: '', translation: '', lang: '', audioFileId: fileId, audioMime: mime, audioSecs: secs, status: 'transcribing', createdAt: env.now() });
       update(ctx, 'Tasks', t.id, { updatedAt: row.createdAt });
     });
+    notifyChat(ctx, user, t.id, '\u{1F3A4} Voice message');   // told at once; the transcript (a slow AI call) is not waited for
     let patch;
     try { // AI call happens OUTSIDE the lock so other people are never blocked by a slow model
       const hints = 'Task: ' + t.title + '. People: ' + [t.creatorId].concat(t.assigneeIds).map(function (id) { return brief(ctx, id).name; }).join(', ') + '.';
@@ -669,7 +677,7 @@ function createCore(env) {
     const dim = function (v) { return Math.max(0, Math.min(Math.round(Number(v) || 0), 20000)); };
     const msgId = newId('M');
     const fileId = env.files.saveFile({ taskId: t.id, messageId: msgId, name: name, mime: mime, b64: b64 });   // the slow part happens outside the lock
-    return ctx.write(function () {
+    const out = ctx.write(function () {
       try { stillOpen(ctx, user, t.id); } catch (e) { try { if (env.files.remove) env.files.remove(fileId); } catch (x) { /* an unused file is harmless */ } throw e; }
       const at = env.now();
       insert(ctx, 'Attachments', { id: msgId, taskId: t.id, name: name, mime: mime, size: size, fileId: fileId, thumb: thumb, w: dim(req.w), h: dim(req.h), createdAt: at });
@@ -677,6 +685,8 @@ function createCore(env) {
       update(ctx, 'Tasks', t.id, { updatedAt: at });
       return { message: msgView(ctx, row) };
     });
+    notifyChat(ctx, user, t.id, '\u{1F4CE} ' + name + (caption ? ' - ' + clip(caption, 100) : ''));
+    return out;
   } };
 
   A.getFile = { run: function (ctx, user, req) {
@@ -697,7 +707,8 @@ function createCore(env) {
 
   // The person who gave the task can correct its title, details or due date later.
   A.updateTask = { run: function (ctx, user, req) {
-    return ctx.write(function () {
+    let changed = '';
+    const out = ctx.write(function () {
       const t = loadTask(ctx, user, req.taskId, { open: true });
       if (t.creatorId !== user.id) throw fail('FORBIDDEN', 'Only the person who assigned the task can change it');
       const patch = {}, notes = [];
@@ -709,33 +720,39 @@ function createCore(env) {
         if (d !== t.dueDate) { patch.dueDate = d; notes.push(d ? 'changed the due date to ' + d : 'removed the due date'); }
       }
       if (notes.length) {
-        const now = env.now(); patch.updatedAt = now;
+        const now = env.now(); patch.updatedAt = now; changed = notes.join(' and ');
         update(ctx, 'Tasks', t.id, patch);
         insert(ctx, 'Messages', { id: newId('M'), taskId: t.id, senderId: '', type: 'system', text: user.name + ' ' + notes.join(' and '), transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: now });
       }
       const fresh = ctx.rows('Tasks').filter(function (x) { return x.id === t.id; })[0];
       return { task: taskView(ctx, user, fresh, { detail: true }) };
     });
+    if (changed) notifyUpdated(ctx, user, out.task.id, changed);
+    return out;
   } };
 
   A.setProgress = { run: function (ctx, user, req) {
     const progress = Number(req.progress);
     if (!Number.isInteger(progress) || progress < 0 || progress > 100) throw fail('VALIDATION', 'Progress must be a whole number from 0 to 100');
-    return ctx.write(function () {
+    let finished = false;
+    const out = ctx.write(function () {
       const t = loadTask(ctx, user, req.taskId, { open: true });
       if (t.assigneeIds.indexOf(user.id) < 0) throw fail('FORBIDDEN', 'Only the people assigned to this task can update its progress');
       const now = env.now(), status = progress === 100 ? 'pending' : 'open';
       if (progress === t.progress && status === t.status) return { task: taskView(ctx, user, t, { detail: true }) };
       update(ctx, 'Tasks', t.id, { progress: progress, progressBy: user.id, status: status, updatedAt: now, pendingAt: status === 'pending' ? now : 0 });
+      finished = status === 'pending';
       insert(ctx, 'Messages', { id: newId('M'), taskId: t.id, senderId: '', type: 'system', text: user.name + ' set progress to ' + progress + '%' + (status === 'pending' ? ' - waiting for approval' : ''), transcript: '', translation: '', lang: '', audioFileId: '', audioMime: '', audioSecs: 0, status: 'ok', createdAt: now });
       const fresh = ctx.rows('Tasks').filter(function (x) { return x.id === t.id; })[0];
       return { task: taskView(ctx, user, fresh, { detail: true }) };
     });
+    if (finished) notifyFinished(ctx, user, out.task.id);
+    return out;
   } };
 
   A.rejectTask = { run: function (ctx, user, req) {
     const note = clip(req.note, LIMITS.note).trim();
-    return ctx.write(function () {
+    const out = ctx.write(function () {
       const t = loadTask(ctx, user, req.taskId, { open: true });
       if (t.creatorId !== user.id) throw fail('FORBIDDEN', 'Only the person who assigned the task can send it back');
       if (t.status !== 'pending') throw fail('VALIDATION', 'This task is not waiting for approval');
@@ -745,6 +762,8 @@ function createCore(env) {
       const fresh = ctx.rows('Tasks').filter(function (x) { return x.id === t.id; })[0];
       return { task: taskView(ctx, user, fresh, { detail: true }) };
     });
+    notifySentBack(ctx, user, out.task.id, note);
+    return out;
   } };
 
   // Approving only CLOSES the task (a few milliseconds under the lock). Filing it in Google Drive (the zip, the History row) is the slow part: the night job
@@ -765,6 +784,7 @@ function createCore(env) {
       audit(ctx, user, 'task.approve', t.id);
       return t.id;
     });
+    notifyApproved(ctx, user, id);
     let filed = null;
     if (!env.archiveAtNight) { try { filed = archiveClosed(id); } catch (e) { env.log('filing ' + id + ' failed, the background job will try again: ' + e); noteArchiveFailure(id, e); } }
     return { closed: true, archived: !!filed, id: id, archiveCode: filed ? filed.archiveCode : '' };
@@ -1624,6 +1644,7 @@ function createCore(env) {
   function noteArchiveFailure(taskId, e) {
     if (e && e.code === 'BUSY') return;                                            // the app was only busy for a moment: not a failure of the task
     const msg = clip(String(e && e.message || e), 300), ctx = makeCtx();
+    let stuckNow = null;
     try {
       ctx.write(function () {
         const row = ctx.rows('Tasks').filter(function (x) { return x.id === String(taskId); })[0];
@@ -1631,8 +1652,10 @@ function createCore(env) {
         const n = (Number(row.archiveFails) || 0) + 1;
         update(ctx, 'Tasks', row.id, { archiveFails: n, archiveError: msg, archiveFailedAt: env.now(), archiveStartedAt: 0 });
         if (n === 1 || n === STUCK_FAILS || n % 24 === 0) audit(ctx, null, 'task.archive.failed', taskId + ' (attempt ' + n + '): ' + msg);
+        if (n === STUCK_FAILS) stuckNow = row.id;
       });
     } catch (x) { /* the note is only a note */ }
+    if (stuckNow) notifyStuck(ctx, stuckNow);
   }
 
   // The background job (every hour): files every approved task that is waiting, oldest first, one at a time. `keepGoing()` (optional) says whether there is still time; the
@@ -1647,6 +1670,145 @@ function createCore(env) {
     });
     return out;
   }
+
+  /* ============================== push notifications ============================== */
+  // Alerts to people's phones and computers (Web Push). Core only decides WHO is told WHAT; env.notify(payload, recipients) delivers it (encrypts, sends, drops
+  // devices that no longer exist) and tells how many arrived. Telling people never breaks what they did: every call here is wrapped, a failure is only logged.
+  //   payload = { t: title, b: text, u: '#/task/ID' (what opens when it is tapped), g: tag (a newer message with the same tag replaces the older one), c: category, a: button label, ts }
+  const NOTIFY_DEFAULTS = { messages: true, tasks: true, reminders: true, quiet: false };
+  const QUIET_FROM = 21, QUIET_TO = 7, MAX_DEVICES = 6;
+  // only the push services of the big browsers (a person could otherwise make the server send requests to any address)
+  const PUSH_HOSTS = /^https:\/\/(fcm\.googleapis\.com|android\.googleapis\.com|[a-z0-9-]+(\.[a-z0-9-]+)*\.push\.services\.mozilla\.com|[a-z0-9-]+(\.[a-z0-9-]+)*\.push\.apple\.com|[a-z0-9-]+(\.[a-z0-9-]+)*\.notify\.windows\.com)\/[\x21-\x7e]*$/;
+  function prefsOf(ctx, userId) {
+    const row = ctx.rows('NotifyPrefs').filter(function (r) { return r.userId === userId; })[0];
+    return Object.assign({}, NOTIFY_DEFAULTS, (row && row.data) || {});
+  }
+  function quietNow() { const h = Number(env.formatDate(env.now()).slice(11, 13)); return h >= QUIET_FROM || h < QUIET_TO; }   // company time: 21:00-07:00, alerts still arrive, without sound
+  function niceDue(iso) {
+    if (!iso) return '';
+    const today = env.formatDate(env.now()).slice(0, 10), tomorrow = env.formatDate(env.now() + 86400000).slice(0, 10);
+    if (iso === today) return 'due today';
+    if (iso === tomorrow) return 'due tomorrow';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+    return m ? 'due ' + Number(m[3]) + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(m[2]) - 1] : '';
+  }
+  // spec: { users, except (the person who did it), category, force (ignore the person's choices: only for the test button), title, body, url, tag, button }
+  function notify(ctx, spec) {
+    if (!env.notify) return null;
+    try {
+      const users = usersById(ctx), seen = {}, to = [];
+      (spec.users || []).forEach(function (id) {
+        if (seen[id] || id === spec.except || !users[id] || !users[id].active) return;
+        seen[id] = 1;
+        const p = prefsOf(ctx, id);
+        if (!spec.force && p[spec.category] === false) return;
+        to.push({ userId: id, silent: !spec.force && !!p.quiet && quietNow() });
+      });
+      if (!to.length) return { sent: 0, failed: 0, removed: 0, errors: [], devices: 0 };
+      return env.notify({ t: clip(spec.title, 80), b: clip(spec.body, 180), u: spec.url || '#/tasks', g: spec.tag || '', c: spec.category || 'tasks', a: spec.button || '', ts: env.now() }, to);
+    } catch (e) { env.log('notify failed: ' + e); return null; }
+  }
+  function taskRow(ctx, id) { return ctx.rows('Tasks').filter(function (x) { return x.id === id; })[0]; }
+  function notifyNewTask(ctx, user, id) {
+    const t = taskRow(ctx, id); if (!t) return;
+    notify(ctx, { users: t.assigneeIds, except: user.id, category: 'tasks', title: user.name + ' gave you a task', body: t.title + (t.dueDate ? ' \u00B7 ' + niceDue(t.dueDate) : ''), url: '#/task/' + id, tag: 'task:' + id, button: 'Open task' });
+  }
+  function notifyChat(ctx, user, id, what) {
+    const t = taskRow(ctx, id); if (!t) return;
+    notify(ctx, { users: [t.creatorId].concat(t.assigneeIds), except: user.id, category: 'messages', title: user.name + ' \u00B7 ' + t.title, body: what, url: '#/task/' + id, tag: 'chat:' + id, button: 'Open' });
+  }
+  function notifyFinished(ctx, user, id) {
+    const t = taskRow(ctx, id); if (!t) return;
+    notify(ctx, { users: [t.creatorId], except: user.id, category: 'tasks', title: user.name + ' finished a task', body: t.title + ' \u00B7 waiting for your approval', url: '#/task/' + id, tag: 'approve:' + id, button: 'Review' });
+  }
+  function notifySentBack(ctx, user, id, note) {
+    const t = taskRow(ctx, id); if (!t) return;
+    notify(ctx, { users: t.assigneeIds, except: user.id, category: 'tasks', title: user.name + ' sent a task back', body: t.title + (note ? ' \u00B7 ' + note : ' \u00B7 more work is needed'), url: '#/task/' + id, tag: 'approve:' + id, button: 'Open task' });
+  }
+  function notifyApproved(ctx, user, id) {
+    const t = taskRow(ctx, id); if (!t) return;
+    notify(ctx, { users: t.assigneeIds, except: user.id, category: 'tasks', title: 'Approved \u2713', body: user.name + ' approved "' + t.title + '"', url: '#/history/' + id, tag: 'approve:' + id, button: 'Open' });
+  }
+  function notifyUpdated(ctx, user, id, what) {
+    const t = taskRow(ctx, id); if (!t) return;
+    notify(ctx, { users: t.assigneeIds, except: user.id, category: 'tasks', title: user.name + ' updated a task', body: t.title + ' \u00B7 ' + what, url: '#/task/' + id, tag: 'task:' + id, button: 'Open task' });
+  }
+  function notifyStuck(ctx, id) {
+    const t = taskRow(ctx, id); if (!t) return;
+    const admins = ctx.rows('Users').filter(function (u) { return u.isAdmin && u.active; }).map(function (u) { return u.id; });
+    notify(ctx, { users: [t.creatorId].concat(t.assigneeIds), category: 'tasks', title: 'Needs attention', body: '"' + t.title + '" could not be saved to Google Drive yet', url: '#/history/' + id, tag: 'stuck:' + id, button: 'Open' });
+    notify(ctx, { users: admins, category: 'tasks', title: 'Needs attention', body: '"' + t.title + '" could not be saved to Google Drive. Open Drive to decide what to do', url: '#/admin/drive', tag: 'stuck:' + id, button: 'Open Drive' });
+  }
+  // The morning message (the 07:00 trigger): what is late, what is due today, what waits for approval; nothing is sent when there is nothing to say.
+  function dailyDigest() {
+    const ctx = makeCtx(), today = env.formatDate(env.now()).slice(0, 10), tasks = ctx.rows('Tasks').filter(function (t) { return t.status === 'open' || t.status === 'pending'; });
+    const stuck = stuckTasks(ctx).length;
+    let told = 0;
+    ctx.rows('Users').filter(function (u) { return u.active; }).forEach(function (u) {
+      let late = 0, dueToday = 0, approve = 0;
+      tasks.forEach(function (t) {
+        if (t.status === 'open' && t.assigneeIds.indexOf(u.id) >= 0) { if (t.dueDate && t.dueDate < today) late++; else if (t.dueDate === today) dueToday++; }
+        if (t.status === 'pending' && t.creatorId === u.id) approve++;
+      });
+      const parts = [];
+      if (late) parts.push(late + ' late');
+      if (dueToday) parts.push(dueToday + ' due today');
+      if (approve) parts.push(approve + ' waiting for your approval');
+      if (u.isAdmin && stuck) parts.push(stuck + ' not saved to Drive');
+      if (!parts.length) return;
+      const r = notify(ctx, { users: [u.id], category: 'reminders', title: 'Good morning, ' + String(u.name).split(/\s+/)[0], body: parts.join(' \u00B7 '), url: u.isAdmin && !approve && !late && !dueToday ? '#/admin/drive' : '#/tasks', tag: 'digest', button: 'Open' });
+      if (r && r.sent) told++;
+    });
+    return { told: told };
+  }
+
+  // Which devices get the alerts, and what each person wants to hear about.
+  A.pushStatus = { run: function (ctx, user) {
+    return {
+      key: (env.setting && env.setting('VAPID_PUBLIC_KEY')) || '', prefs: prefsOf(ctx, user.id), quiet: { from: QUIET_FROM, to: QUIET_TO },
+      devices: ctx.rows('PushSubs').filter(function (s) { return s.userId === user.id; }).sort(function (a, b) { return b.createdAt - a.createdAt; })
+        .map(function (s) { return { id: s.id, label: s.label, createdAt: s.createdAt, lastOk: s.lastOk, lastError: s.lastError }; })
+    };
+  } };
+  A.pushSubscribe = { run: function (ctx, user, req) {
+    const endpoint = String(req.endpoint || ''), p256dh = String(req.p256dh || ''), authKey = String(req.auth || '');
+    if (!PUSH_HOSTS.test(endpoint) || endpoint.length > 700) throw fail('VALIDATION', 'This browser\'s notification address is not one the app can use');
+    if (!/^[A-Za-z0-9_-]{86,88}$/.test(p256dh) || !/^[A-Za-z0-9_-]{22,24}$/.test(authKey)) throw fail('VALIDATION', 'The notification keys of this device are not valid');
+    const label = clip(String(req.label || 'Device').replace(/[^\p{L}\p{N} .,()+\-]/gu, ''), 60) || 'Device';
+    return ctx.write(function () {
+      const id = env.sha256Hex('push:' + endpoint).slice(0, 20), now = env.now();
+      const mine = ctx.rows('PushSubs').filter(function (s) { return s.id === id; })[0];
+      if (mine) update(ctx, 'PushSubs', id, { userId: user.id, p256dh: p256dh, auth: authKey, label: label, lastError: '' });      // the same phone signed in as someone else: it now belongs to them
+      else insert(ctx, 'PushSubs', { id: id, userId: user.id, endpoint: endpoint, p256dh: p256dh, auth: authKey, label: label, createdAt: now, lastOk: 0, lastError: '' });
+      const all = ctx.rows('PushSubs').filter(function (s) { return s.userId === user.id; }).sort(function (a, b) { return b.createdAt - a.createdAt; });
+      all.slice(MAX_DEVICES).forEach(function (s) { removeWhere(ctx, 'PushSubs', function (x) { return x.id === s.id; }); });          // the oldest devices make room
+      return { id: id, devices: Math.min(all.length, MAX_DEVICES) };
+    });
+  } };
+  A.pushUnsubscribe = { run: function (ctx, user, req) {
+    const endpoint = String(req.endpoint || ''), id = String(req.id || '');
+    return ctx.write(function () {
+      const n = removeWhere(ctx, 'PushSubs', function (s) { return s.userId === user.id && ((endpoint && s.endpoint === endpoint) || (id && s.id === id)); });
+      return { removed: n };
+    });
+  } };
+  A.pushPrefs = { run: function (ctx, user, req) {
+    const data = {};
+    ['messages', 'tasks', 'reminders', 'quiet'].forEach(function (k) { data[k] = req[k] === undefined ? prefsOf(ctx, user.id)[k] : !!req[k]; });
+    return ctx.write(function () {
+      if (ctx.rows('NotifyPrefs').some(function (r) { return r.userId === user.id; })) update(ctx, 'NotifyPrefs', user.id, { data: data });
+      else insert(ctx, 'NotifyPrefs', { userId: user.id, data: data });
+      return { prefs: data };
+    });
+  } };
+  // "Send me a test": goes to every device of the caller at once and says honestly how it went.
+  A.pushTest = { run: function (ctx, user) {
+    const mine = ctx.rows('PushSubs').filter(function (s) { return s.userId === user.id; }).length;
+    if (!mine) throw fail('VALIDATION', 'No device is registered for notifications yet. Turn them on first.');
+    const r = notify(ctx, { users: [user.id], force: true, category: 'tasks', title: 'Notifications are working \u2713', body: 'You will get alerts like this one about your tasks, messages and approvals.', url: '#/tasks', tag: 'test', button: 'Open' });
+    if (!r) throw fail('ERROR', 'Notifications are not set up on the server yet');
+    return { sent: r.sent, failed: r.failed, devices: mine, errors: (r.errors || []).slice(0, 3) };
+  } };
 
   /* ============================== dispatcher ============================== */
 
@@ -1714,7 +1876,7 @@ function createCore(env) {
     });
   }
 
-  return { handle: handle, setup: setup, maintenance: maintenance, archiveWaiting: archiveWaiting, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
+  return { handle: handle, setup: setup, maintenance: maintenance, archiveWaiting: archiveWaiting, dailyDigest: dailyDigest, TABLES: TABLES, _renderConversationText: renderConversationText, _renderSummaryText: renderSummaryText };
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = { createCore: createCore, TABLES: TABLES, LIMITS: LIMITS, HISTORY_COLUMNS: HISTORY_COLUMNS };
