@@ -39,6 +39,18 @@ test('issueTempPasswords: unknown or weak input changes nothing for the rest', (
   assert.equal(call('login', null, { username: 'sam', password: '1111' }).ok, true);
 });
 
+test('resetToDefault: back to 1111, which only opens the change-password step', () => {
+  const { core, call, mk } = boot();
+  mk('sam'); core.issueTempPasswords(['sam'], () => 'Temp-pass-1');
+  assert.equal(call('login', null, { username: 'sam', password: 'Temp-pass-1' }).ok, true);
+  core.resetToDefault(['sam']);
+  assert.equal(call('login', null, { username: 'sam', password: 'Temp-pass-1' }).ok, false);
+  const l = call('login', null, { username: 'sam', password: '1111' });
+  assert.equal(l.ok, true); assert.equal(l.data.user.mustChange, true);
+  assert.equal(call('changePassword', l.data.token, { oldPassword: '1111', newPassword: '1111' }).ok, false, '1111 is never accepted as a chosen password');
+  assert.throws(() => core.resetToDefault(['nobody']), /No active person/);
+});
+
 test('addAdminAccount: a pure administrator with its own temporary password; no duplicate names', () => {
   const { core, call, A } = boot();
   const r = core.addAdminAccount('Dilshan', 'Dilshan', 'Temp-pass-9');
