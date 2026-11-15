@@ -367,6 +367,7 @@ function wipeWorkData(confirmText) {
   });
   const rows = {};
   WIPE_TABLES_.forEach(function (name) { rows[name] = env.store.removeWhere(name, function () { return true; }); });
+  rows.ArchiveCounter = env.store.removeWhere('Settings', function (k) { return k.key === 'archiveCounter'; });   // the first real archive is EPP-0001 again
   rows.FullHistorySheet = env.history.clear();                                   // the rows of the full history sheet; the sheet itself stays
   let eppItems = 0;
   const epp = env.archive.eppFolder(), folders = epp.getFolders(), loose = epp.getFiles(), keepId = env.history.fileId();
@@ -376,6 +377,56 @@ function wipeWorkData(confirmText) {
   env.store.insert('AuditLog', { id: 'Awipe' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), at: Date.now(), userId: '', action: 'data.wipe', detail: JSON.stringify(rows) });
   Logger.log('Rows removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '. Items moved out of the EPP folder: ' + eppItems + '.');
   Logger.log('Kept: job titles, user accounts, the org chart, profiles, settings and sign-ins.');
+}
+
+// ------------------------------ launch check ------------------------------
+// launchCheck()  Read-only report of everything that must be right before the real launch: settings, accounts, triggers, backups, Drive, AI keys, data size.
+//                Writes nothing and prints no secrets. Lines starting CHECK need a look.
+function launchCheck() {
+  const props = PropertiesService.getScriptProperties(), env = makeEnv_({}), rows = function (n) { return env.store.all(n); };
+  const say = function (ok, msg) { Logger.log((ok ? 'OK     ' : 'CHECK  ') + msg); };
+  ['SPREADSHEET_ID', 'ROOT_FOLDER_ID', 'VOICE_FOLDER_ID', 'ARCHIVE_FOLDER_ID', 'BACKUP_FOLDER_ID', 'EPP_FOLDER_ID', 'HISTORY_SHEET_ID'].forEach(function (k) { say(!!props.getProperty(k), 'script property ' + k + (props.getProperty(k) ? ' is set' : ' is MISSING')); });
+  const keys = ['GEMINI_API_KEY', 'GROQ_API_KEY', 'ANTHROPIC_API_KEY'].filter(function (k) { return !!props.getProperty(k); });
+  say(keys.indexOf('GEMINI_API_KEY') >= 0, 'AI keys present: ' + (keys.join(', ') || 'none') + ' (Gemini is the last fallback and the only one that reads pictures/PDFs)');
+  say(!props.getProperty('SETUP_ADMIN_PASSWORD'), 'no setup password is left in the script properties');
+  const users = rows('Users'), active = users.filter(function (u) { return u.active; }), admins = active.filter(function (u) { return u.isAdmin; });
+  say(admins.length >= 2, 'active administrators: ' + admins.length + (admins.length < 2 ? ' (make a second admin, so one lost password cannot lock everybody out)' : ''));
+  const never = active.filter(function (u) { return !u.lastLogin; }), temp = active.filter(function (u) { return u.mustChange; });
+  say(true, active.length + ' active people; never signed in: ' + (never.map(function (u) { return u.username; }).join(', ') || 'nobody') + '; still on a temporary password: ' + (temp.map(function (u) { return u.username; }).join(', ') || 'nobody'));
+  const trig = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction() + (t.getEventType() === ScriptApp.EventType.CLOCK ? ' (time)' : ' (' + t.getEventType() + ')'); });
+  say(trig.join(' ').indexOf('nightlyJob') >= 0 && trig.join(' ').indexOf('archiveJob ') >= 0, 'triggers: ' + trig.join(', '));
+  const tasks = rows('Tasks'), by = {}; tasks.forEach(function (t) { by[t.status] = (by[t.status] || 0) + 1; });
+  const closed = tasks.filter(function (t) { return t.status === 'closed'; });
+  say(!closed.length, 'tasks by status: ' + JSON.stringify(by) + '; waiting to be filed: ' + closed.length + ', failing: ' + closed.filter(function (t) { return Number(t.archiveFails) > 0; }).length);
+  const idx = rows('ArchiveIndex'); let histIds = 0; try { histIds = Object.keys(env.history.ids()).length; } catch (e) { histIds = -1; }
+  say(histIds >= idx.length, 'archived tasks in the app: ' + idx.length + ', in the full history sheet: ' + histIds + (histIds < idx.length ? ' (the sheet is missing some: the nightly job adds them)' : ''));
+  const counts = {}; ['Tasks', 'Messages', 'Attachments', 'ArchiveIndex', 'AuditLog', 'Sessions', 'Users', 'Links'].forEach(function (n) { counts[n] = rows(n).length; });
+  say(true, 'rows: ' + JSON.stringify(counts) + ' (a Google Sheet holds 10 million cells: no worry at this size)');
+  const folder = DriveApp.getFolderById(props.getProperty('BACKUP_FOLDER_ID')), names = [], it = folder.getFiles();
+  while (it.hasNext()) names.push(it.next().getName());
+  names.sort();
+  const nb = names.filter(function (n) { return n.indexOf('TaskApp backup ') === 0; }), hb = names.filter(function (n) { return n.indexOf('EPP History backup ') === 0; });
+  say(nb.length > 0 && hb.length > 0, 'backups: ' + nb.length + ' database copies (newest ' + (nb[nb.length - 1] || 'none') + '), ' + hb.length + ' history-sheet copies, ' + names.filter(function (n) { return n.indexOf('EPP History monthly ') === 0; }).length + ' monthly');
+  const epp = env.archive.eppFolder(), people = epp.getFolders(); let nf = 0, nz = 0;
+  while (people.hasNext()) { nf++; const z = people.next().getFiles(); while (z.hasNext()) { z.next(); nz++; } }
+  say(true, 'EPP folder: ' + nf + ' person folders, ' + nz + ' zip files');
+  say(!props.getProperty('SIM_STATE') && !props.getProperty('MOCK_STATE'), 'leftover test data markers: SIM_STATE ' + (props.getProperty('SIM_STATE') ? 'present' : 'none') + ', MOCK_STATE ' + (props.getProperty('MOCK_STATE') ? 'present' : 'none') + ' (wipeWorkData clears the work itself)');
+  const grants = rows('DriveAccess').filter(function (r) { return r.status === 'granted'; }).length;
+  say(true, 'people allowed to open their own Drive folder: ' + grants);
+  Logger.log('launchCheck done.');
+}
+
+// launchTestFinish()  Part of the launch test: the person a task titled "LAUNCH TEST ..." is assigned to reports it 100% finished, so the person who assigned it
+//                     can approve it on their phone. Borrows that account in memory only (nothing is written to Users or Sessions, no password is needed).
+function launchTestFinish() {
+  const env = makeEnv_({ ai: { transcribe: function () { throw new Error('no AI here'); }, summarize: function () { throw new Error('no AI here'); } } }), core = createCore(env), realAll = env.store.all.bind(env.store);
+  const t = realAll('Tasks').filter(function (x) { return /^LAUNCH TEST/.test(x.title) && x.status === 'open'; })[0];
+  if (!t) { Logger.log('No open task titled LAUNCH TEST was found.'); return; }
+  const who = realAll('Users').filter(function (u) { return u.id === t.assigneeIds[0]; })[0], tok = 'launch-' + Utilities.getUuid();
+  const virtual = [{ tokenHash: env.sha256Hex('token:' + tok), userId: who.id, expires: 9e15, createdAt: 0, lastSeen: 9e15 }];
+  env.store.all = function (name) { const rows = realAll(name); if (name === 'Users') return rows.map(function (u) { return Object.assign({}, u, { mustChange: false }); }); if (name === 'Sessions') return rows.concat(virtual); return rows; };
+  const r = core.handle({ action: 'setProgress', token: tok, taskId: t.id, progress: 100 });
+  Logger.log('Reported 100% as ' + who.name + ' for "' + t.title + '": ' + (r.ok ? 'ok' : JSON.stringify(r)));
 }
 
 // ------------------------------ simulation: about three months of company life ------------------------------
