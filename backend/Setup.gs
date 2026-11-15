@@ -78,6 +78,9 @@ function installTriggers() {
 // Every minute: delivers the alerts that are waiting (a safety net: the app asks for delivery itself, in the background, right after each action; this catches
 // anything that request did not, and the alerts made by the other timers: the morning summary and "a task needs attention"). Nothing waiting = nothing happens.
 function alertJob() {
+  // Runs 1,440 times a day and a free Google account may use 90 minutes of timers a day, so an empty run must cost almost nothing: one property read, and
+  // nothing is built (the app, the Drive helpers and the AI settings are only set up when there really is an alert waiting).
+  if (!PropertiesService.getScriptProperties().getProperty(NOTIFY_QUEUE_KEY_)) return;
   const out = makeEnv_({}).flushNotify();
   if (out.items) Logger.log('Alerts delivered: ' + JSON.stringify(out));
 }
