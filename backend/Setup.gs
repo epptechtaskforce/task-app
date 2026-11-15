@@ -408,6 +408,22 @@ function wipeWorkData(confirmText) {
   Logger.log('Kept: job titles, user accounts, the org chart, profiles, settings and sign-ins.');
 }
 
+// wipeEverythingExceptAdmin('DELETE EVERYTHING EXCEPT THE ADMIN')  - the guarded full reset: first wipeWorkData (tasks, messages, files, history, Drive
+// folder contents; a safety copy of the whole database is made before anything is removed), then every account except the original administrator
+// (SETUP_ADMIN_USERNAME) with the org chart and everything on those accounts, then the leftover test markers (SIM_STATE, MOCK_STATE) and the stored
+// setup password. Kept: the administrator, job titles, settings, keys, triggers, backups. Called with anything else it does nothing.
+const FULL_RESET_PHRASE_ = 'DELETE EVERYTHING EXCEPT THE ADMIN';
+function wipeEverythingExceptAdmin(confirmText) {
+  if (confirmText !== FULL_RESET_PHRASE_) throw new Error('Nothing was deleted. To reset the whole app call wipeEverythingExceptAdmin("' + FULL_RESET_PHRASE_ + '"). Only the administrator account, job titles and settings are kept.');
+  const props = PropertiesService.getScriptProperties(), admin = String(props.getProperty('SETUP_ADMIN_USERNAME') || 'admin').toLowerCase();
+  const env = makeEnv_({});
+  if (!env.store.all('Users').some(function (u) { return u.username === admin && u.isAdmin && u.active; })) throw new Error('No active administrator "' + admin + '" found: nothing was deleted.');
+  wipeWorkData(WIPE_PHRASE_);
+  const removed = createCore(makeEnv_({})).removeAllAccountsExcept(admin);
+  ['SIM_STATE', 'MOCK_STATE', 'SETUP_ADMIN_PASSWORD'].forEach(function (k) { props.deleteProperty(k); });
+  Logger.log('Accounts and what hangs on them removed: ' + JSON.stringify(removed) + '. Kept the administrator "' + admin + '", job titles and settings. Test markers and the stored setup password are gone.');
+}
+
 // ------------------------------ first sign-in passwords ------------------------------
 // resetUnclaimedAccounts()  Every active person (not an administrator) who has NEVER signed in gets their OWN one-time temporary password, shown ONCE in
 //                           the execution log: hand each one to that person. Until then the shared default 1111 would let anybody who knows a username
