@@ -592,12 +592,12 @@
   // The "attach" menu. Resolves with the chosen files (or []).
   function attachMenu() {
     return new Promise(function (resolve) {
-      let m = null, answered = false;
+      let m = null, answered = false, chosen = false;   // chosen: an option was tapped, so closing the sheet must NOT answer "no files" while the phone's file picker is still open
       const answer = function (v) { if (!answered) { answered = true; resolve(v); } };
       const opt = function (ic, title, sub, kind) {
-        return h('button', { type: 'button', class: 'attach-opt', onclick: function () { pickFiles(kind).then(answer); m.close(); } }, h('span', { class: 'ic' }, icon(ic, 22)), h('span', null, title, h('small', null, sub)));
+        return h('button', { type: 'button', class: 'attach-opt', onclick: function () { chosen = true; pickFiles(kind).then(answer); m.close(); } }, h('span', { class: 'ic' }, icon(ic, 22)), h('span', null, title, h('small', null, sub)));
       };
-      m = modal({ title: 'Share a file', noFocus: true, onClose: function () { setTimeout(function () { answer([]); }, 300); },
+      m = modal({ title: 'Share a file', noFocus: true, onClose: function () { setTimeout(function () { if (!chosen) answer([]); }, 300); },
         body: h('div', { class: 'attach-sheet' }, opt('camera', 'Take a photo', 'Use the camera', 'camera'), opt('image', 'Photo from gallery', 'Pictures are shrunk automatically', 'photo'), opt('file', 'Document', 'PDF, Word, Excel, PowerPoint, text (up to 10 MB)', 'doc')) });
     });
   }
