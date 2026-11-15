@@ -237,10 +237,10 @@ function smokeTest() {
     check(must('speak', boss1, { text: 'Hello there' }).mime.indexOf('audio/') === 0, 'the speak action returns audio');
     check(must('briefing', boss1, {}).briefing.headline === 'All good', 'the overview is made and saved (Briefings sheet)');
     const idxSheet = SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex');
-    idxSheet.getRange(1, 14, 1, 6).clearContent();            // pretend this sheet was made before the newest columns existed
+    idxSheet.getRange(1, 14, 1, 7).clearContent();            // pretend this sheet was made before the newest columns existed
     must('setProgress', staff1, { taskId: t2.id, progress: 100 });
     must('approveTask', boss1, { taskId: t2.id });
-    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 6).getValues()[0].join('|') === 'folderId|purpose|fileCount|archiveNo|docs|dueDate', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
+    check(SpreadsheetApp.openById(ss.getId()).getSheetByName('ArchiveIndex').getRange(1, 14, 1, 7).getValues()[0].join('|') === 'folderId|purpose|fileCount|archiveNo|docs|dueDate|note', 'an older ArchiveIndex sheet gets its new columns the first time a task is archived');
     const doc2 = must('getArchived', staff1, { taskId: t2.id });
     const z2 = zipOf(doc2), e2 = z2 ? entries(z2) : {}, docName = Object.keys(e2).filter(function (n) { return n.indexOf('Files/') === 0; });
     check(doc2.archive.code === 'EPP-0002', 'the second archived task gets the next number: ' + doc2.archive.code);
@@ -287,7 +287,7 @@ function smokeTest() {
     check(call('postFile', staff1, { taskId: tBig.id, name: 'Too big.pdf', b64: 'JVBERi0x' + new Array(3500002).join('QUJD') }).code === 'VALIDATION', 'a document over 10 MB is refused');
     must('setProgress', staff1, { taskId: tBig.id, progress: 100 });
     // approving only closes the task (instant); the background job then files it, one lock-free zip
-    const coreN = getCore_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi, archiveAtNight: true });
+    const envN = makeEnv_({ ssId: ss.getId(), voiceFolderId: voice.getId(), archiveFolderId: archive.getId(), eppFolderId: epp.getId(), ai: stubAi, archiveAtNight: true }), coreN = createCore(envN);
     const tAp = Date.now(), ap = coreN.handle({ action: 'approveTask', token: boss1, taskId: tBig.id });
     check(ap.ok && ap.data.closed === true && ap.data.archived === false && ap.data.archiveCode === '', 'approving only closes the task, nothing is filed yet (' + (Date.now() - tAp) + ' ms)');
     check(must('listHistory', staff1, {}).items.some(function (i) { return i.id === tBig.id && i.waiting; }) && must('getArchived', staff1, { taskId: tBig.id }).archive.waiting === true, 'meanwhile the task shows in History as being saved to Drive');
@@ -297,6 +297,29 @@ function smokeTest() {
     check(coreN.archiveWaiting().archived === 0 && must('getArchived', staff1, { taskId: tBig.id }).archive.waiting === false, 'a second run finds nothing to do, and the History page shows the archive ID');
     const docBig = must('getArchived', staff1, { taskId: tBig.id }), zBig = zipOf(docBig), eBig = zBig ? entries(zBig) : {}, nBig = Object.keys(eBig).filter(function (n) { return n.indexOf('Files/') === 0; });
     check(nBig.length === 1 && eBig[nBig[0]].length === bigBytes && eBig[nBig[0]].slice(0, 12) === '%PDF-1ABCABC', 'the 10 MB document is inside the zip, complete (filing took ' + Math.round((Date.now() - t0big) / 1000) + ' s)');
+    // A task that cannot be filed: one of its stored documents is gone from Drive. Three hourly runs fail, then people and the administrator are told, and the
+    // administrator saves what remains: a zip with the reason, the missing document listed and the other document inside.
+    const callN = function (action, token, params) { return coreN.handle(Object.assign({ action: action, token: token }, params || {})); };
+    const tBad = must('createTask', boss1, { title: 'Broken file task', assigneeIds: [u2.user.id] }).task;
+    must('postMessage', staff1, { taskId: tBad.id, text: 'Here are the drawings' });
+    const mA = must('postFile', staff1, { taskId: tBad.id, name: 'Drawings A.pdf', b64: 'JVBERi0xQQ==' }).message;
+    must('postFile', staff1, { taskId: tBad.id, name: 'Drawings B.pdf', b64: 'JVBERi0xQg==' });
+    must('setProgress', staff1, { taskId: tBad.id, progress: 100 });
+    check(callN('approveTask', boss1, { taskId: tBad.id }).ok, 'the task with a document that will go missing is approved');
+    envN.store.update('Attachments', mA.id, { fileId: 'GONE-FROM-DRIVE-1' });                    // the stored document is no longer in Drive
+    let bad = null; for (let i = 0; i < 3; i++) bad = coreN.archiveWaiting();
+    check(bad.failed === 1 && bad.archived === 0, 'filing fails each hour while a document is missing: ' + JSON.stringify(bad));
+    const stuckList = callN('adminStuckList', admin, {}).data;
+    check(stuckList.tasks.length === 1 && stuckList.tasks[0].fails === 3 && stuckList.tasks[0].reason.length > 5, 'after 3 failed runs the administrator sees the task and the reason: ' + (stuckList.tasks[0] ? stuckList.tasks[0].reason : '-'));
+    const hStuck = callN('listHistory', staff1, {}).data;
+    check(hStuck.attention === 1 && hStuck.items.some(function (i) { return i.id === tBad.id && i.stuck; }) && callN('listTasks', boss1, {}).data.attention === 1, 'the people on the task see that it needs attention');
+    const again = callN('adminStuckRetry', admin, { taskId: tBad.id }).data;
+    check(again.archived === false && again.error.length > 5, 'trying again shows the reason: ' + again.error);
+    const salv = callN('adminStuckSalvage', admin, { taskId: tBad.id });
+    check(salv.ok && /Saved with problems/.test(salv.data.note), 'save what remains: ' + (salv.ok ? salv.data.note : JSON.stringify(salv)));
+    const docBad = must('getArchived', staff1, { taskId: tBad.id }), zBad = zipOf(docBad), eBad = zBad ? entries(zBad) : {}, nBad = Object.keys(eBad).filter(function (n) { return n.indexOf('Files/') === 0; });
+    check(nBad.length === 1 && /Drawings B/.test(nBad[0]) && eBad['Summary.txt'].indexOf('!! SAVED WITH PROBLEMS !!') >= 0 && eBad['Summary.txt'].indexOf('Drawings A.pdf') >= 0 && eBad['Conversation.txt'].indexOf('Here are the drawings') >= 0, 'the zip has the conversation, the document that exists, and a note of why and what is missing');
+    check(docBad.archive.note.length > 10 && callN('adminStuckList', admin, {}).data.tasks.length === 0 && callN('listHistory', staff1, {}).data.attention === 0, 'it shows in History as saved with problems and leaves the problem list');
   } finally {
     ss.getId() && DriveApp.getFileById(ss.getId()).setTrashed(true);
     root.setTrashed(true);

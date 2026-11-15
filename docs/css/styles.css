@@ -996,3 +996,8 @@ h1 { letter-spacing: -.025em; }
 .arch-where .row { gap: .5rem; flex-wrap: wrap; }
 .doc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
 .doc-list li { overflow-wrap: anywhere; padding: .35rem .6rem; border-radius: 10px; background: color-mix(in srgb, var(--accent) 9%, transparent); }
+
+/* finished tasks that could not be saved to Google Drive: a warm notice, not an error (nothing is lost) */
+.attn { background: var(--warn-soft); border-left: 4px solid var(--warn); border-radius: var(--radius-sm); padding: .75rem .95rem; margin: .8rem 0; }
+.attn h3 { margin: 0 0 .25rem; color: var(--warn); font-size: 1rem; } .attn p { margin: .25rem 0; } .attn .why { overflow-wrap: anywhere; font-size: .92rem; }
+.card .why { overflow-wrap: anywhere; font-size: .92rem; margin: .35rem 0; }

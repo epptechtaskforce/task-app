@@ -84,14 +84,14 @@ const TABLES = {
   Links:        { key: 'id', cols: { id: 's', fromId: 's', toId: 's', createdAt: 'n' } },
   LinkVersions: { key: 'id', cols: { id: 's', version: 'n', createdBy: 's', createdAt: 'n', note: 's', links: 'j' } },
   Sessions:     { key: 'tokenHash', cols: { tokenHash: 's', userId: 's', expires: 'n', createdAt: 'n', lastSeen: 'n' } },
-  Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n', archiveNo: 'n', archiveStartedAt: 'n' } },
+  Tasks:        { key: 'id', cols: { id: 's', title: 's', description: 's', creatorId: 's', assigneeIds: 'j', status: 's', progress: 'n', progressBy: 's', dueDate: 's', createdAt: 'n', updatedAt: 'n', pendingAt: 'n', closedAt: 'n', summary: 'j', summaryMsgCount: 'n', summaryAt: 'n', archiveNo: 'n', archiveStartedAt: 'n', archiveFails: 'n', archiveError: 's', archiveFailedAt: 'n' } },
   Messages:     { key: 'id', cols: { id: 's', taskId: 's', senderId: 's', type: 's', text: 's', transcript: 's', translation: 's', lang: 's', audioFileId: 's', audioMime: 's', audioSecs: 'n', status: 's', createdAt: 'n' } },
   Reads:        { key: 'id', cols: { id: 's', taskId: 's', userId: 's', lastReadAt: 'n' } },
   DriveAccess:  { key: 'userId', cols: { userId: 's', email: 's', status: 's', requestedAt: 'n', grantedAt: 'n', grantedBy: 's', folderId: 's' } },   // who may read their own archive folder in Google Drive
   Profiles:     { key: 'userId', cols: { userId: 's', bio: 's', photo: 's', ver: 'n' } },
   Attachments:  { key: 'id', cols: { id: 's', taskId: 's', name: 's', mime: 's', size: 'n', fileId: 's', thumb: 's', w: 'n', h: 'n', createdAt: 'n' } },   // id = the id of the message that carries the file
   Briefings:    { key: 'userId', cols: { userId: 's', sig: 's', at: 'n', data: 'j' } },                                                               // the last home-page overview made for each person
-  ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n', folderId: 's', purpose: 's', fileCount: 'n', archiveNo: 'n', docs: 'j', dueDate: 's' } },
+  ArchiveIndex: { key: 'id', cols: { id: 's', title: 's', creatorId: 's', creatorName: 's', assigneeNames: 's', participantIds: 'j', createdAt: 'n', closedAt: 'n', storage: 's', path: 's', fileId: 's', summaryText: 's', messageCount: 'n', folderId: 's', purpose: 's', fileCount: 'n', archiveNo: 'n', docs: 'j', dueDate: 's', note: 's' } },
   AuditLog:     { key: 'id', cols: { id: 's', at: 'n', userId: 's', action: 's', detail: 's' } }
 };
 
@@ -329,7 +329,7 @@ function createCore(env) {
   }
   function meView(ctx, user) {
     const company = (ctx.rows('Settings').filter(function (x) { return x.key === 'companyName'; })[0] || {}).value || '';
-    return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }), canUseAi: aiAllowed(ctx, user) };
+    return { user: publicUser(ctx, user), companyName: company, canAssign: ctx.rows('Links').some(function (l) { return l.fromId === user.id; }), canUseAi: aiAllowed(ctx, user), stuckAdmin: user.isAdmin ? stuckTasks(ctx).length : 0 };
   }
   A.me = { run: function (ctx, user) { return meView(ctx, user); } };
 
@@ -557,7 +557,7 @@ function createCore(env) {
     const views = mine.map(function (t) { return taskView(ctx, user, t); });
     const rank = function (v) { return v.status === 'pending' && v.role === 'creator' ? 0 : 1; };
     views.sort(function (a, b) { return rank(a) - rank(b) || b.updatedAt - a.updatedAt; });
-    return { tasks: views, serverTime: env.now() };
+    return { tasks: views, serverTime: env.now(), attention: stuckTasks(ctx).filter(function (t) { return isParticipant(t, user.id); }).length };   // attention: finished tasks of this person that could not be saved to Drive yet
   } };
 
   A.getTask = { run: function (ctx, user, req) {
@@ -765,7 +765,7 @@ function createCore(env) {
       return t.id;
     });
     let filed = null;
-    if (!env.archiveAtNight) { try { filed = archiveClosed(id); } catch (e) { env.log('filing ' + id + ' failed, the night job will try again: ' + e); } }
+    if (!env.archiveAtNight) { try { filed = archiveClosed(id); } catch (e) { env.log('filing ' + id + ' failed, the background job will try again: ' + e); noteArchiveFailure(id, e); } }
     return { closed: true, archived: !!filed, id: id, archiveCode: filed ? filed.archiveCode : '' };
   } };
 
@@ -1218,6 +1218,63 @@ function createCore(env) {
     return { url: env.history.url(), keepDays: HISTORY_KEEP_DAYS };
   } };
 
+  /* ---- tasks the background job could not file ---- */
+  function stuckTask(ctx, id) {
+    const t = ctx.rows('Tasks').filter(function (x) { return x.id === String(id || ''); })[0];
+    if (!t || !isStuck(t)) throw fail('NOT_FOUND', 'This task is not waiting with a problem (it may have been saved meanwhile).');
+    return t;
+  }
+  const TRY_LATER = 'Nothing was changed: the background job is working on this task right now, or something new arrived in it. Look again in a few minutes.';
+  A.adminStuckList = { admin: true, run: function (ctx) {
+    const list = stuckTasks(ctx).sort(function (a, b) { return a.closedAt - b.closedAt; });
+    const msgs = list.length ? ctx.rows('Messages') : [], atts = list.length ? ctx.rows('Attachments') : [];
+    return {
+      waiting: ctx.rows('Tasks').filter(function (t) { return t.status === 'closed' && !isStuck(t); }).length,
+      tasks: list.map(function (t) {
+        return { id: t.id, title: t.title, creatorName: brief(ctx, t.creatorId).name, assigneeNames: names(t.assigneeIds.map(function (id) { return brief(ctx, id); })), closedAt: t.closedAt, fails: Number(t.archiveFails) || 0,
+          lastFailedAt: Number(t.archiveFailedAt) || 0, reason: stuckReason(t), messageCount: countContent(msgs.filter(function (m) { return m.taskId === t.id; })), fileCount: atts.filter(function (a) { return a.taskId === t.id; }).length };
+      })
+    };
+  } };
+  // Try the normal filing again right now (the reason is shown if it fails again).
+  A.adminStuckRetry = { admin: true, run: function (ctx, user, req) {
+    const t = stuckTask(ctx, req.taskId);
+    let r;
+    try { r = archiveClosed(t.id, { force: true, by: user }); }
+    catch (e) { noteArchiveFailure(t.id, e); return { archived: false, error: clip(String(e && e.message || e), 300) }; }
+    return r ? { archived: true, archiveCode: r.archiveCode } : { archived: false, error: TRY_LATER };
+  } };
+  // The standard way to save a task that cannot be filed normally: everything that can still be read goes into the zip in Drive, together with a note of why it
+  // failed and what is missing; then the task is removed from the app like any filed task. It shows in History as "Saved with problems".
+  A.adminStuckSalvage = { admin: true, run: function (ctx, user, req) {
+    const t = stuckTask(ctx, req.taskId);
+    let r;
+    try { r = archiveClosed(t.id, { force: true, salvage: true, by: user, reason: stuckReason(t) }); }
+    catch (e) { noteArchiveFailure(t.id, e); throw fail('VALIDATION', 'Even the simplest way of saving did not work: ' + clip(String(e && e.message || e), 200)); }
+    if (!r) throw fail('VALIDATION', TRY_LATER);
+    return { archived: true, archiveCode: r.archiveCode, note: r.note };
+  } };
+  // Deletes the task for good: its rows leave the app and its stored files go to the Drive trash (which the Drive owner can still restore for about 30 days).
+  // Only a task that is stuck, only with the word DELETE typed; what was deleted is written to the log.
+  A.adminStuckDelete = { admin: true, run: function (ctx, user, req) {
+    if (String(req.confirm || '').trim() !== 'DELETE') throw fail('VALIDATION', 'Type DELETE to confirm');
+    let fileIds = [], info = null;
+    ctx.write(function () {
+      const t = stuckTask(ctx, req.taskId);
+      const msgs = ctx.rows('Messages').filter(function (m) { return m.taskId === t.id; }), atts = ctx.rows('Attachments').filter(function (a) { return a.taskId === t.id; });
+      msgs.forEach(function (m) { if (m.audioFileId) fileIds.push(m.audioFileId); }); atts.forEach(function (a) { if (a.fileId) fileIds.push(a.fileId); });
+      info = { title: t.title, messages: countContent(msgs), files: atts.length };
+      removeWhere(ctx, 'Messages', function (m) { return m.taskId === t.id; });
+      removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
+      removeWhere(ctx, 'Reads', function (r) { return r.taskId === t.id; });
+      removeWhere(ctx, 'Tasks', function (x) { return x.id === t.id; });
+      audit(ctx, user, 'task.archive.deleted', clip(t.title, 80) + ' (by ' + brief(ctx, t.creatorId).name + ', ' + info.messages + ' messages, ' + info.files + ' files) - ' + clip(stuckReason(t), 250));
+    });
+    let trashed = 0;
+    fileIds.forEach(function (id) { try { if (env.files.remove) { env.files.remove(id); trashed++; } } catch (e) { env.log('could not trash ' + id + ': ' + e); } });
+    return { deleted: true, title: info.title, messages: info.messages, files: info.files, trashed: trashed };
+  } };
+
   A.adminDriveList = { admin: true, run: function (ctx) {
     const rows = {}; ctx.rows('DriveAccess').forEach(function (r) { rows[r.userId] = r; });
     const order = { requested: 0, granted: 1, '': 2 };
@@ -1279,10 +1336,18 @@ function createCore(env) {
       const docs = attsAll.filter(function (a) { return a.taskId === t.id; }).slice(0, 40).map(function (a) { return { name: clip(a.name, 100), size: a.size, by: sender[a.id] ? brief(ctx, sender[a.id]).name : '', at: env.formatDate(a.createdAt).slice(0, 10) }; });
       return { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: brief(ctx, t.creatorId).name, assigneeNames: names(t.assigneeIds.map(function (id) { return brief(ctx, id); })), participantIds: [t.creatorId].concat(t.assigneeIds),
         createdAt: t.createdAt, closedAt: t.closedAt, storage: 'waiting', waiting: true, path: '', fileId: '', folderId: '', summaryText: t.summary && t.summary.summary_en ? clip(t.summary.summary_en, 400) : '',
-        messageCount: countContent(msgs), purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: 0, docs: docs, dueDate: t.dueDate || '' };
+        messageCount: countContent(msgs), purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: 0, docs: docs, dueDate: t.dueDate || '',
+        stuck: isStuck(t), problem: isStuck(t) ? stuckReason(t) : '', fails: Number(t.archiveFails) || 0 };
     });
   }
   function historyRows(ctx) { return ctx.rows('ArchiveIndex').concat(waitingRows(ctx)); }
+  // A closed task the background job cannot file is "stuck": it failed STUCK_FAILS times in a row, or it has waited more than a day (the job may not be running).
+  // The people on the task see "Needs attention" in History; the administrator sees it, with the reason, in Admin > Drive and can try again, save what remains
+  // in Drive (a zip that says why and lists what is missing), or delete it. Nothing is ever hidden: the task keeps showing until one of those happens.
+  const STUCK_FAILS = 3, STUCK_MS = 24 * 3600 * 1000;
+  function isStuck(t) { return t.status === 'closed' && (Number(t.archiveFails) >= STUCK_FAILS || (!!t.closedAt && env.now() - t.closedAt > STUCK_MS)); }
+  function stuckReason(t) { return t.archiveError ? String(t.archiveError) : 'The background job has not filed it for more than a day.'; }
+  function stuckTasks(ctx) { return ctx.rows('Tasks').filter(isStuck); }
   function archiveIndexFor(ctx, user, taskId) {
     const idx = historyRows(ctx).filter(function (x) { return x.id === String(taskId || ''); })[0];
     if (!idx || idx.participantIds.indexOf(user.id) < 0) throw fail('NOT_FOUND', 'Task not found');
@@ -1299,13 +1364,14 @@ function createCore(env) {
     if (from && to && from > to) { const t = from; from = to; to = t; }                       // dates picked the wrong way round still work
     const role = ['mine', 'byme'].indexOf(req.role) >= 0 ? req.role : 'all';
     let rows = historyRows(ctx).filter(function (x) { return x.participantIds.indexOf(user.id) >= 0; });
+    const attention = rows.filter(function (x) { return x.stuck; }).length;                     // before search and groups: always shown
     if (q) rows = rows.filter(function (x) { return (x.title + ' ' + x.creatorName + ' ' + x.assigneeNames + ' ' + x.summaryText + ' ' + (x.archiveNo ? archiveCode(x.archiveNo) : '') + ' ' + (x.docs || []).map(function (d) { return d.name; }).join(' ')).toLowerCase().indexOf(q) >= 0; });
     if (from || to) rows = rows.filter(function (x) { const d = env.formatDate(x.closedAt).slice(0, 10); return (!from || d >= from) && (!to || d <= to); });   // the day it was completed, company time
     const byMe = function (x) { return x.creatorId === user.id; }, toMe = function (x) { return x.participantIds.slice(1).indexOf(user.id) >= 0; };
     const counts = { all: rows.length, mine: rows.filter(toMe).length, byme: rows.filter(byMe).length };
     if (role === 'mine') rows = rows.filter(toMe); else if (role === 'byme') rows = rows.filter(byMe);
     rows.sort(function (a, b) { return b.closedAt - a.closedAt; });
-    return { total: rows.length, counts: counts, items: rows.slice(offset, offset + limit).map(function (x) { return { id: x.id, title: x.title, creatorName: x.creatorName, assigneeNames: x.assigneeNames, createdAt: x.createdAt, closedAt: x.closedAt, summaryText: x.summaryText, messageCount: x.messageCount, archiveCode: x.archiveNo ? archiveCode(x.archiveNo) : '', docCount: x.fileCount || 0, waiting: !!x.waiting }; }) };
+    return { total: rows.length, counts: counts, attention: attention, items: rows.slice(offset, offset + limit).map(function (x) { return { id: x.id, title: x.title, creatorName: x.creatorName, assigneeNames: x.assigneeNames, createdAt: x.createdAt, closedAt: x.closedAt, summaryText: x.summaryText, messageCount: x.messageCount, archiveCode: x.archiveNo ? archiveCode(x.archiveNo) : '', docCount: x.fileCount || 0, waiting: !!x.waiting, stuck: !!x.stuck, note: x.note || '' }; }) };
   } };
 
   A.getArchived = { run: function (ctx, user, req) {
@@ -1318,7 +1384,7 @@ function createCore(env) {
         version: 3, detailsOnly: true, id: idx.id,
         task: { id: idx.id, title: idx.title, description: idx.purpose || '', creator: brief(ctx, idx.creatorId), assignees: ids.slice(1).map(function (id) { return brief(ctx, id); }), createdAt: idx.createdAt, closedAt: idx.closedAt, approvedBy: idx.creatorName, summary: idx.summaryText ? { summary_en: idx.summaryText } : null },
         documents: idx.docs || [], messageCount: idx.messageCount,
-        archive: { waiting: !!idx.waiting, code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: idx.waiting ? niceName(idx.creatorName, 60) : parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id, status: idx.creatorId === user.id && access ? access.status : '', email: idx.creatorId === user.id && access ? access.email : '' }
+        archive: { waiting: !!idx.waiting, stuck: !!idx.stuck, problem: idx.problem || '', fails: idx.fails || 0, note: idx.note || '', code: idx.archiveNo ? archiveCode(idx.archiveNo) : '', path: idx.path, person: idx.waiting ? niceName(idx.creatorName, 60) : parts[1] || '', zipName: parts[2] || '', folderUrl: canOpen && idx.folderId ? 'https://drive.google.com/drive/folders/' + idx.folderId : '', fileUrl: canOpen && idx.fileId ? 'https://drive.google.com/file/d/' + idx.fileId + '/view' : '', canOpen: canOpen, mine: idx.creatorId === user.id, status: idx.creatorId === user.id && access ? access.status : '', email: idx.creatorId === user.id && access ? access.email : '' }
       };
     }
     const doc = readArchiveDoc(idx);   // the stored copy keeps what the AI understood from voice messages; the browser only gets the audio
@@ -1351,7 +1417,7 @@ function createCore(env) {
     const day = function (ms) { return env.formatDate(ms).slice(0, 10); }, closed = day(x.closedAt), parts = String(x.path || '').split('/');
     const lateMs = x.dueDate ? Date.parse(closed) - Date.parse(x.dueDate) : 0;
     return [archiveCode(x.archiveNo), closed, day(x.createdAt), x.dueDate || '', Math.max(0, Math.round((x.closedAt - x.createdAt) / 86400000)), lateMs > 0 ? Math.round(lateMs / 86400000) : 0,
-      x.title, x.creatorName, x.assigneeNames, x.purpose || '', x.summaryText || '', (x.docs || []).map(function (d) { return d.name; }).join('; '), x.messageCount || 0,
+      x.title, x.creatorName, x.assigneeNames, x.purpose || '', (x.note ? '[' + x.note + '] ' : '') + (x.summaryText || ''), (x.docs || []).map(function (d) { return d.name; }).join('; '), x.messageCount || 0,
       parts[2] || '', parts[0] && parts[1] ? parts[0] + ' / ' + parts[1] : '', x.storage === 'zip' && x.fileId ? 'https://drive.google.com/file/d/' + x.fileId + '/view' : '', x.folderId ? 'https://drive.google.com/drive/folders/' + x.folderId : '', x.id];
   }
 
@@ -1367,7 +1433,7 @@ function createCore(env) {
         L.push('    Said: ' + (indent(m.transcript) || '(no transcript available' + (m.audioFileId ? '; the audio is kept in the folder "Voice (no transcript)"' : '') + ')'));
         if (m.translation) L.push('    Key points: ' + indent(m.translation));
       } else if (m.type === 'file' && m.file) {
-        L.push(at + m.senderName + ' shared a file: ' + (m.file.archivedAs ? 'Files/' + m.file.archivedAs : m.file.name) + ' (' + sizeText(m.file.size) + ')');
+        L.push(at + m.senderName + ' shared a file: ' + (m.file.missing ? m.file.name + ' - NOT SAVED, the stored file could not be found' : m.file.inPlace ? m.file.name + ' - kept in Google Drive outside this zip (see Summary.txt)' : m.file.archivedAs ? 'Files/' + m.file.archivedAs : m.file.name) + ' (' + sizeText(m.file.size) + ')');
         if (m.text) L.push('    ' + indent(m.text));
       } else L.push(at + m.senderName + ': ' + indent(m.text));
     });
@@ -1383,6 +1449,15 @@ function createCore(env) {
       'Task:         ' + t.title, 'Purpose:      ' + (t.description ? indent(t.description) : '(no description)'),
       'Assigned by:  ' + t.creator.name, 'Done by:      ' + names(t.assignees), 'Started:      ' + t.startedText, 'Completed:    ' + t.completedText + ' (' + days + (days === 1 ? ' day' : ' days') + ')',
       'Due date:     ' + (t.dueDate || '(none)'), 'Approved by:  ' + t.approvedBy, '');
+    if (doc.problem) {
+      const p = doc.problem;
+      L.push('!! SAVED WITH PROBLEMS !!', 'The normal filing of this task failed, so it was saved by hand' + (p.by ? ' by ' + p.by + ' (administrator)' : '') + ' on ' + p.savedAt + '.', 'Why the normal filing failed: ' + indent(p.reason));
+      if (p.zipError) L.push('Why the documents are not in this zip: ' + indent(p.zipError));
+      if (p.missing.length) { L.push('NOT SAVED (could not be found in Google Drive any more):'); p.missing.forEach(function (x) { L.push('  - ' + x.name + ' (' + x.why + ')'); }); }
+      if (p.inPlace.length) { L.push('KEPT IN GOOGLE DRIVE, NOT IN THIS ZIP (open them with these links):'); p.inPlace.forEach(function (x) { L.push('  - ' + x.name + ': https://drive.google.com/file/d/' + x.id + '/view'); }); }
+      if (!p.missing.length && !p.inPlace.length) L.push('Everything that belongs to the task is in this zip.');
+      L.push('');
+    }
     if (s && s.summary_en) {
       L.push('HOW IT WENT', indent(s.summary_en));
       if (s.progress_note) L.push('So far: ' + indent(s.progress_note));
@@ -1394,8 +1469,8 @@ function createCore(env) {
       '  Summary.txt       this page',
       '  Conversation.txt  the whole conversation (' + countContent(doc.messages) + ' messages' + (voices.length ? ', ' + voices.length + ' voice message' + (voices.length === 1 ? '' : 's') + ' written out' : '') + ')',
       '  Files/            ' + (files.length ? files.length + ' shared document' + (files.length === 1 ? '' : 's') + ' and picture' + (files.length === 1 ? '' : 's') : 'nothing was shared'));
-    files.forEach(function (m) { L.push('                    - ' + (m.file.archivedAs || m.file.name) + ' (' + sizeText(m.file.size) + ')'); });
-    if (doc.unlinked && doc.unlinked.length) { L.push('', 'ALSO STORED WITH THIS TASK (no message points to them):'); doc.unlinked.forEach(function (n) { L.push('                    - ' + n); }); }
+    files.forEach(function (m) { L.push('                    - ' + (m.file.archivedAs || m.file.name) + ' (' + sizeText(m.file.size) + ')' + (m.file.missing ? ' - NOT SAVED' : m.file.inPlace ? ' - kept in Drive, not in this zip' : '')); });
+    if (doc.unlinked && doc.unlinked.length) { L.push('', 'ALSO STORED WITH THIS TASK (no message points to them):'); doc.unlinked.forEach(function (n) { L.push('                    - ' + n.name); }); }
     if (voices.some(function (m) { return !m.audioFileId; })) L.push('', 'Voice messages are not kept as audio, to save space: what was said is written in Conversation.txt.');
     return L.join('\n') + '\n';
   }
@@ -1416,14 +1491,17 @@ function createCore(env) {
   //   2. no lock: build and check the zip(s);
   //   3. a short lock: write the History row and let go of the live rows - but only if nothing arrived in the task meanwhile (then the zips are removed
   //      and the next run files it again with the late message).
-  const CLAIM_MS = 15 * 60 * 1000;
-  function archiveClosed(taskId) {
+  const CLAIM_MS = 15 * 60 * 1000, FORCE_CLAIM_MS = 3 * 60 * 1000;
+  // opts (the administrator's buttons): force = also take a task whose claim is only a few minutes old; salvage = save what can still be saved (see below);
+  // by = the administrator (for the log); reason = why the normal filing failed (goes into Summary.txt).
+  function archiveClosed(taskId, opts) {
+    opts = opts || {};
     const claim = makeCtx();
     const t = claim.write(function () {
       const row = claim.rows('Tasks').filter(function (x) { return x.id === String(taskId); })[0];
       if (!row || row.status !== 'closed') return null;
       const now = env.now();
-      if (Number(row.archiveStartedAt) > 0 && now - Number(row.archiveStartedAt) < CLAIM_MS) return null;       // another run is on it
+      if (Number(row.archiveStartedAt) > 0 && now - Number(row.archiveStartedAt) < (opts.force ? FORCE_CLAIM_MS : CLAIM_MS)) return null;       // another run is on it
       if (env.store.ensureColumns) { try { env.store.ensureColumns('Tasks'); } catch (e) { env.log('ensureColumns failed: ' + e); } }   // an older sheet gets the two new columns
       const no = Number(row.archiveNo) || nextArchiveNo(claim);
       if (!Number(row.archiveNo)) saveArchiveNo(claim, no);                                                          // a retry keeps the same number: no gaps
@@ -1442,7 +1520,8 @@ function createCore(env) {
     };
     // Shared documents and pictures go into "Files" with names a person can read. A voice message is large: once its words are written down
     // the audio is simply not put in the zip. One without a transcript goes in (folder "Voice (no transcript)"), so nothing is ever lost.
-    const moves = [], trash = [], taken = {};
+    let moves = [], trash = [];
+    const taken = {};
     // A name inside the zip is "<date time> <first name> - [(2) ]<original name>". Two things must never happen to a document: its name used twice
     // (the second would replace or hide the first) and its ending cut off (".pdf" lost). So the name is made unique first and only the middle is shortened.
     const entryName = function (folder, stamp, base, ext) {
@@ -1471,19 +1550,51 @@ function createCore(env) {
     doc.unlinked = [];
     ctx.rows('Attachments').filter(function (a) { return a.taskId === t.id && !linked[a.id] && a.fileId; }).forEach(function (a) {
       const dot = String(a.name).lastIndexOf('.'), nm = entryName('Files/', 'not linked to a message', dot > 0 ? String(a.name).slice(0, dot) : a.name, dot > 0 ? String(a.name).slice(dot + 1) : '');
-      moves.push({ id: a.fileId, name: 'Files/' + nm }); trash.push(a.fileId); doc.unlinked.push(nm);
+      moves.push({ id: a.fileId, name: 'Files/' + nm }); trash.push(a.fileId); doc.unlinked.push({ name: nm, id: a.fileId });
     });
+    // SAVE WHAT REMAINS (the administrator's choice for a task that cannot be filed normally): a document Drive can no longer find is listed as missing and the rest
+    // is saved as usual; if the zip still cannot be made, the documents stay where they are in Drive (not trashed) and the zip holds the summary and the
+    // conversation with a link to each. Summary.txt starts with why the normal filing failed and what is missing, so a person reading it in Drive knows.
+    let problem = null;
+    if (opts.salvage) {
+      problem = { reason: clip(opts.reason || t.archiveError || 'unknown', 500), missing: [], inPlace: [], zipError: '', savedAt: env.formatDate(env.now()), by: opts.by ? opts.by.name : '' };
+      const WHY = 'the stored file is no longer in Google Drive', ids = {}, gone = {};
+      moves.forEach(function (mv) { ids[mv.id] = 1; }); trash.forEach(function (id) { ids[id] = 1; });
+      Object.keys(ids).forEach(function (id) { let ok = true; try { ok = env.files.exists ? !!env.files.exists(id) : true; } catch (e) { ok = false; } gone[id] = !ok; });
+      doc.messages.forEach(function (m) {
+        if (m.file && m.file.fileId && gone[m.file.fileId]) { m.file.missing = true; problem.missing.push({ name: m.file.name, why: WHY }); }
+        if (m.type === 'voice' && m.audioFileId && gone[m.audioFileId]) { m.audioFileId = ''; problem.missing.push({ name: 'voice message of ' + m.senderName + ' (' + m.time + ')', why: WHY }); }
+      });
+      doc.unlinked = doc.unlinked.filter(function (u) { if (!gone[u.id]) return true; problem.missing.push({ name: u.name, why: WHY }); return false; });
+      moves = moves.filter(function (mv) { return !gone[mv.id]; }); trash = trash.filter(function (id) { return !gone[id]; });
+      doc.problem = problem;
+    }
     const d = env.formatDate(closedAt), person = niceName(doc.task.creator.name, 60);
     const zipName = niceName(code + ' - ' + t.title, 90) + ' - ' + d.slice(0, 10) + '.zip';
-    const saved = env.archive.saveZip({
-      person: person, zipName: zipName,
-      files: [{ name: 'Summary.txt', content: renderSummaryText(doc, { code: code, person: person, zipName: zipName }), mime: 'text/plain' }, { name: 'Conversation.txt', content: renderConversationText(doc), mime: 'text/plain' }],
-      moves: moves, trashIds: trash
-    });
+    const makeZip = function () {
+      return env.archive.saveZip({
+        person: person, zipName: zipName,
+        files: [{ name: 'Summary.txt', content: renderSummaryText(doc, { code: code, person: person, zipName: zipName }), mime: 'text/plain' }, { name: 'Conversation.txt', content: renderConversationText(doc), mime: 'text/plain' }],
+        moves: moves, trashIds: trash
+      });
+    };
+    let saved;
+    try { saved = makeZip(); }
+    catch (e) {
+      if (!problem) throw e;                                                       // the normal way: nothing changes, the job tries again
+      problem.zipError = clip(String(e && e.message || e), 300);
+      const keep = {}; moves.forEach(function (mv) { keep[mv.id] = 1; problem.inPlace.push({ name: String(mv.name).replace(/^[^\/]*\//, ''), id: mv.id }); });
+      doc.messages.forEach(function (m) { if (m.file && keep[m.file.fileId]) m.file.inPlace = true; if (m.type === 'voice' && keep[m.audioFileId]) m.audioFileId = ''; });
+      moves = []; trash = [];
+      saved = makeZip();
+    }
+    const note = problem ? clip('Saved with problems. Why the normal filing failed: ' + problem.reason
+      + (problem.missing.length ? ' Not found in Drive: ' + problem.missing.map(function (x) { return x.name; }).join(', ') + '.' : '')
+      + (problem.inPlace.length ? ' ' + problem.inPlace.length + ' document(s) are kept in Google Drive outside the zip (Summary.txt in the zip has the links).' : ''), 500) : '';
     const participantIds = [t.creatorId].concat(t.assigneeIds);
     const docs = doc.messages.filter(function (m) { return m.file; }).slice(0, 40).map(function (m) { return { name: clip(m.file.name, 100), size: m.file.size, by: m.senderName, at: m.time.slice(0, 10) }; });
     const gist = t.summary && t.summary.summary_en ? t.summary.summary_en : plainGist(doc);
-    const idxRow = { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: names(doc.task.assignees), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(gist, 400), messageCount: countContent(msgs), folderId: saved.folderId || '', purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: no, docs: docs, dueDate: t.dueDate || '' };
+    const idxRow = { id: t.id, title: t.title, creatorId: t.creatorId, creatorName: doc.task.creator.name, assigneeNames: names(doc.task.assignees), participantIds: participantIds, createdAt: t.createdAt, closedAt: closedAt, storage: saved.storage, path: saved.path, fileId: saved.fileId, summaryText: clip(gist, 400), messageCount: countContent(msgs), folderId: saved.folderId || '', purpose: clip(t.description, 300), fileCount: docs.length, archiveNo: no, docs: docs, dueDate: t.dueDate || '', note: note };
     return ctx.write(function () {
       const now = ctx.rows('Tasks').filter(function (x) { return x.id === t.id; })[0];
       if (!now || now.status !== 'closed') return null;                          // gone (data wiped): leave the zip, there is nothing to commit
@@ -1502,9 +1613,25 @@ function createCore(env) {
       if (hasFiles) removeWhere(ctx, 'Attachments', function (a) { return a.taskId === t.id; });
       removeWhere(ctx, 'Reads', function (r) { return r.taskId === t.id; });
       removeWhere(ctx, 'Tasks', function (x) { return x.id === t.id; });
-      audit(ctx, { id: t.creatorId }, 'task.archive', t.id);
-      return { archived: true, id: t.id, archiveCode: code };
+      audit(ctx, opts.by || { id: t.creatorId }, problem ? 'task.archive.salvaged' : 'task.archive', problem ? t.id + ': ' + note : t.id);
+      return { archived: true, id: t.id, archiveCode: code, salvaged: !!problem, note: note };
     });
+  }
+
+  // A failed attempt is written on the task itself (how many times, when, why), so people and the administrator can see it, and in the log (the first
+  // time, the third, then once a day, so an endless failure does not fill the log). The claim is let go: the next run tries again.
+  function noteArchiveFailure(taskId, e) {
+    if (e && e.code === 'BUSY') return;                                            // the app was only busy for a moment: not a failure of the task
+    const msg = clip(String(e && e.message || e), 300), ctx = makeCtx();
+    try {
+      ctx.write(function () {
+        const row = ctx.rows('Tasks').filter(function (x) { return x.id === String(taskId); })[0];
+        if (!row || row.status !== 'closed') return;
+        const n = (Number(row.archiveFails) || 0) + 1;
+        update(ctx, 'Tasks', row.id, { archiveFails: n, archiveError: msg, archiveFailedAt: env.now(), archiveStartedAt: 0 });
+        if (n === 1 || n === STUCK_FAILS || n % 24 === 0) audit(ctx, null, 'task.archive.failed', taskId + ' (attempt ' + n + '): ' + msg);
+      });
+    } catch (x) { /* the note is only a note */ }
   }
 
   // The background job (every hour): files every approved task that is waiting, oldest first, one at a time. `keepGoing()` (optional) says whether there is still time; the
@@ -1515,10 +1642,7 @@ function createCore(env) {
     ctx.rows('Tasks').filter(function (t) { return t.status === 'closed'; }).sort(function (a, b) { return a.closedAt - b.closedAt; }).forEach(function (t) {
       if (opts.keepGoing && !opts.keepGoing()) { out.left++; return; }
       try { if (archiveClosed(t.id)) out.archived++; else out.skipped++; }
-      catch (e) {
-        out.failed++; env.log('filing ' + t.id + ' failed: ' + (e && e.message || e));
-        try { ctx.write(function () { audit(ctx, null, 'task.archive.failed', t.id + ': ' + (e && e.message || e)); }); } catch (x) { /* the log is only a note */ }
-      }
+      catch (e) { out.failed++; env.log('filing ' + t.id + ' failed: ' + (e && e.message || e)); noteArchiveFailure(t.id, e); }
     });
     return out;
   }

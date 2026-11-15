@@ -93,9 +93,21 @@
   function navModel() {
     const u = S.user, pure = isPureAdmin();
     const work = pure ? [] : [{ k: 'tasks', href: '#/tasks', label: 'Tasks', ic: 'tasks' }, { k: 'history', href: '#/history', label: 'History', ic: 'history' }];
-    const admin = u.isAdmin ? [{ k: 'users', href: '#/admin/users', label: 'Users', ic: 'users' }, { k: 'titles', href: '#/admin/titles', label: 'Job titles', ic: 'briefcase' }, { k: 'org', href: '#/admin/org', label: 'Org chart', ic: 'org' }, { k: 'drive', href: '#/admin/drive', label: 'Drive access', ic: 'history' }] : [];
+    const admin = u.isAdmin ? [{ k: 'users', href: '#/admin/users', label: 'Users', ic: 'users' }, { k: 'titles', href: '#/admin/titles', label: 'Job titles', ic: 'briefcase' }, { k: 'org', href: '#/admin/org', label: 'Org chart', ic: 'org' }, { k: 'drive', href: '#/admin/drive', label: 'Drive', ic: 'history' }] : [];
     const account = { k: 'account', href: '#/account', label: 'Account', ic: 'user' };
     return { work: work, admin: admin, account: account };
+  }
+  // A red number where a finished task could not be saved to Google Drive: on History for the people on the task, on Drive (and Admin) for the administrator.
+  function attnCount(k) { return k === 'history' ? S.attention || 0 : k === 'drive' || k === 'admin' ? S.stuckAdmin || 0 : 0; }
+  function attnBadge(k) { const n = attnCount(k); return n ? h('span', { class: 'nav-badge attn', 'aria-label': n + ' need attention' }, n) : null; }
+  function setBadges() {
+    ['history', 'drive', 'admin'].forEach(function (k) {
+      document.querySelectorAll('[data-nav="' + k + '"]').forEach(function (a) {
+        const host = a.querySelector('.pill') || a, b = host.querySelector('.nav-badge.attn');
+        if (b) b.remove();
+        const nb = attnBadge(k); if (nb) host.appendChild(nb);
+      });
+    });
   }
   function unreadBadge() { return S.unread ? h('span', { class: 'nav-badge', 'aria-label': S.unread + ' unread' }, S.unread) : null; }
 
@@ -105,7 +117,7 @@
     const u = S.user, m = navModel();
     const adminKeys = ['users', 'titles', 'org', 'drive'];
 
-    const sideLink = function (n) { return h('a', { href: n.href, class: (n.k === active ? 'active' : '') + (n.k === 'assistant' ? ' ai-link' : ''), 'data-nav': n.k, 'aria-current': n.k === active ? 'page' : false }, icon(n.ic, 20), n.label, n.k === 'tasks' ? unreadBadge() : null); };
+    const sideLink = function (n) { return h('a', { href: n.href, class: (n.k === active ? 'active' : '') + (n.k === 'assistant' ? ' ai-link' : ''), 'data-nav': n.k, 'aria-current': n.k === active ? 'page' : false }, icon(n.ic, 20), n.label, n.k === 'tasks' ? unreadBadge() : attnBadge(n.k)); };
     const sidebar = h('aside', { class: 'sidebar' },
       h('div', { class: 'side-brand' }, h('span', { class: 'logo' }, UI.logoMark(24)), h('span', null, S.company || 'Task Manager')),
       S.canAssign ? h('a', { class: 'btn primary side-new', href: '#/new' }, icon('plus', 18), 'New task') : null,
@@ -126,7 +138,7 @@
     const tabs = isPureAdmin() ? m.admin.concat([m.account]) : m.work.concat(u.isAdmin ? [{ k: 'admin', href: '#/admin/users', label: 'Admin', ic: 'shield' }] : [], [m.account]);
     const bottom = opts.focus ? null : h('nav', { class: 'bottom-nav', 'aria-label': 'Main' }, tabs.map(function (n) {
       const on = n.k === active || (n.k === 'admin' && adminKeys.indexOf(active) >= 0);
-      return h('a', { href: n.href, class: (on ? 'active' : '') + (n.k === 'assistant' ? ' ai' : ''), 'data-nav': n.k, 'aria-current': on ? 'page' : false }, h('span', { class: 'pill' }, icon(n.ic, n.k === 'assistant' ? 26 : 22), n.k === 'tasks' ? unreadBadge() : null), n.label);
+      return h('a', { href: n.href, class: (on ? 'active' : '') + (n.k === 'assistant' ? ' ai' : ''), 'data-nav': n.k, 'aria-current': on ? 'page' : false }, h('span', { class: 'pill' }, icon(n.ic, n.k === 'assistant' ? 26 : 22), n.k === 'tasks' ? unreadBadge() : attnBadge(n.k)), n.label);
     }));
 
     const adminSwitch = u.isAdmin && adminKeys.indexOf(active) >= 0 && !isPureAdmin()
@@ -172,7 +184,7 @@
       ev.preventDefault(); UI.clear(err); btn.disabled = true; btn.textContent = 'Signing in…';
       try {
         const r = await Api.call('login', { username: user.value, password: pass.value });
-        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign; S.canUseAi = !!r.canUseAi;
+        Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign; S.canUseAi = !!r.canUseAi; S.stuckAdmin = r.stuckAdmin || 0;
         if (r.user.mustChange) return viewMustChange();
         if (r.canAssign === undefined) await loadMe(); else rememberMe();   // the sign-in answer already holds the profile
         Profiles.load(); Profiles.refresh(true);
@@ -214,11 +226,11 @@
 
   async function loadMe() {
     const me = await Api.call('me');
-    S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign; S.canUseAi = !!me.canUseAi;
+    S.user = me.user; S.company = me.companyName; S.canAssign = me.canAssign; S.canUseAi = !!me.canUseAi; S.stuckAdmin = me.stuckAdmin || 0;
     rememberMe();
   }
   function rememberMe() {
-    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign, canUseAi: S.canUseAi });
+    Api.cacheSet('me', { user: S.user, company: S.company, canAssign: S.canAssign, canUseAi: S.canUseAi, stuckAdmin: S.stuckAdmin || 0 });
     Api.saveCompany(S.company);
   }
 
@@ -334,7 +346,7 @@
 
   function viewTasks() {
     const glance = glanceCard(S.canUseAi ? Assistant.briefingCard(App) : null);   // the picture card is for everyone; the spoken AI overview and the bubble are for Senior General Managers and above
-    const statBox = h('div'), list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show tasks' }), activeBox = h('div');
+    const statBox = h('div'), attnBox = h('div'), list = h('div', null, UI.skeleton('card', 3)), filters = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show tasks' }), activeBox = h('div');
     const q = h('input', { type: 'search', placeholder: 'Search tasks or people…', 'aria-label': 'Search tasks or people', value: S.q });
     const sort = h('select', { 'aria-label': 'Sort tasks' }, h('option', { value: 'recent', selected: S.sort === 'recent' }, 'Latest first'), h('option', { value: 'due', selected: S.sort === 'due' }, 'Due date'));
     const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -345,7 +357,7 @@
         h('div', { class: 'date' }, date), h('h1', null, UI.greeting() + (firstName() ? ', ' + firstName() : '')), subLine, statBox),
       h('div', { class: 'home-grid' },
         h('div', { class: 'home-side' }, glance.el),
-        h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, activeBox, list)),
+        h('div', { class: 'home-main' }, h('div', { class: 'toolbar' }, h('div', { class: 'search' }, icon('search', 18), q), sort), filters, attnBox, activeBox, list)),
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks', { bare: true });
     let tasks = [], statSig = '', animated = false;
     const cacheKey = 'tasks:' + S.user.id;
@@ -427,13 +439,21 @@
       });
     }
     function redraw() { drawStats(); drawList(); glance.update(tasks); settle(); }
+    // a finished task of this person that could not be saved to Google Drive: said plainly, with a way to look (the details are in History)
+    function drawAttention() {
+      UI.clear(attnBox);
+      if (!S.attention) return;
+      attnBox.appendChild(h('a', { class: 'attn', href: '#/history', style: 'display:block;text-decoration:none;color:inherit' }, h('h3', null, 'Needs attention'),
+        h('p', null, S.attention === 1 ? 'A finished task could not be saved to Google Drive yet.' : S.attention + ' finished tasks could not be saved to Google Drive yet.'),
+        h('p', { class: 'muted small' }, 'Nothing is lost, and the administrator can see it. Tap to open History.')));
+    }
     const listSig = function (list) { return JSON.stringify(list) + '|' + new Date().toDateString(); };   // (the date: "3d late" changes at midnight)
     let lastSig = '';
 
     let loaded = false;
     async function load() {
       try {
-        const fresh = (await Api.call('listTasks')).tasks; setUnread(fresh); loaded = true;
+        const resp = await Api.call('listTasks'), fresh = resp.tasks; S.attention = resp.attention || 0; drawAttention(); setBadges(); setUnread(fresh); loaded = true;
         const sg = listSig(fresh);
         if (sg === lastSig) return;                                 // nothing changed: leave the screen exactly as it is
         lastSig = sg; tasks = fresh; redraw();
@@ -927,7 +947,8 @@
       h('label', { style: 'display:grid;gap:.25rem' }, 'Completed from', from), h('label', { style: 'display:grid;gap:.25rem' }, 'until', to),
       h('button', { class: 'btn small', type: 'button', onclick: function () { H.from = H.to = ''; from.value = to.value = ''; datePanel.style.display = 'none'; load(); } }, 'Clear dates'));
     S.peek = function () { return { q: q.value }; };
-    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks: who, what, when, and where each archive is saved in Google Drive.'))), h('div', { class: 'search' }, icon('search', 18), q), filters, datePanel, list), 'history');
+    const attnBox = h('div');
+    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'), h('p', { class: 'sub' }, 'Completed and approved tasks: who, what, when, and where each archive is saved in Google Drive.'))), h('div', { class: 'search' }, icon('search', 18), q), attnBox, filters, datePanel, list), 'history');
     let timer = null, items = [], counts = { all: 0, mine: 0, byme: 0 };
     const niceDay = function (d) { return UI.date(Date.parse(d + 'T12:00:00')); };
     function drawFilters() {
@@ -953,7 +974,7 @@
       items.forEach(function (t, i) {
         list.appendChild(h('a', { class: 'card task st-ok', href: '#/history/' + t.id, style: '--i:' + Math.min(i, 12) }, h('div', { class: 'top' }, h('div', { class: 'title' }, t.title)),
           h('div', { class: 'people' }, UI.avatarStack([t.creatorName]), h('span', { class: 't' }, t.creatorName + ' → ' + t.assigneeNames)),
-          h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null, t.waiting ? UI.chip('Being saved to Drive', 'warn', 'history') : null),
+          h('div', { class: 'meta' }, UI.chip('Completed ' + UI.date(t.closedAt), 'ok', 'check'), UI.chip('Started ' + UI.date(t.createdAt)), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), t.docCount ? UI.chip(t.docCount + ' document' + (t.docCount === 1 ? '' : 's')) : null, t.archiveCode ? UI.chip(t.archiveCode, 'info', 'history') : null, t.waiting ? (t.stuck ? UI.chip('Needs attention', 'bad', 'history') : UI.chip('Being saved to Drive', 'warn', 'history')) : null, t.note ? UI.chip('Saved with problems', 'warn', 'history') : null),
           t.summaryText ? h('div', { class: 'last' }, t.summaryText) : null));
       });
       list.appendChild(h('p', { class: 'muted small', style: 'text-align:center;margin:.8rem 0' }, 'The app shows the last 12 months. Older tasks are kept for good in the full history sheet in Google Drive (the admin can open it).'));
@@ -964,6 +985,10 @@
       try {
         const r = await Api.call('listHistory', { q: q.value, role: H.role, from: H.from, to: H.to, limit: 50, offset: items.length });
         counts = r.counts; items = items.concat(r.items);
+        S.attention = r.attention || 0; setBadges(); UI.clear(attnBox);
+        if (S.attention) attnBox.appendChild(h('div', { class: 'attn' }, h('h3', null, 'Needs attention'),
+          h('p', null, (S.attention === 1 ? 'One finished task' : S.attention + ' finished tasks') + ' could not be saved to Google Drive yet. They are marked below. The app keeps trying every hour, and the administrator can see why and will fix it or save what remains.'),
+          h('p', { class: 'muted small' }, 'Nothing is lost: the conversation and every document are still stored safely.')));
         drawFilters(); drawList(r.total);
       } catch (e) { UI.clear(list); list.appendChild(errBox(e)); }
     }
@@ -994,7 +1019,13 @@
       h('div', { class: 'sec-title' }, h('h3', null, 'Being saved to Google Drive')),
       h('p', null, 'This task is approved. The app is putting the whole conversation and every document into one zip in Google Drive (Google Drive › EPP › ' + (ar.person || '') + '). This happens by itself within the hour, you do not have to do anything.'),
       h('p', { class: 'muted small' }, 'This page then shows the Archive ID and where to find it.'));
-    const where = ar.waiting ? waitingBox : h('div', { class: 'card arch-where' },
+    // Tried again and again and it did not work (or it waited more than a day): said plainly, with the reason the app has.
+    const stuckBox = h('div', { class: 'attn' }, h('h3', null, 'Could not be saved to Google Drive yet'),
+      h('p', null, 'The app tried ' + (ar.fails ? ar.fails + ' time' + (ar.fails === 1 ? '' : 's') : 'again and again') + ' to put this task into Google Drive, and it did not work. Nothing is lost: the whole conversation and every document are still stored safely. The administrator can see this task and will fix it or save what remains.'),
+      h('p', { class: 'why' }, h('strong', null, 'Why: '), ar.problem || 'not known'), h('p', { class: 'muted small' }, 'The app keeps trying every hour.'));
+    // Saved by the administrator the standard way after it could not be filed normally: Summary.txt in the zip says what happened.
+    const noteBox = ar.note ? h('div', { class: 'attn' }, h('h3', null, 'Saved with problems'), h('p', { class: 'why' }, ar.note), h('p', { class: 'muted small' }, 'Summary.txt inside the zip tells the same, and lists anything that is missing and where the rest is.')) : null;
+    const where = ar.waiting ? (ar.stuck ? stuckBox : waitingBox) : h('div', { class: 'card arch-where' },
       h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, ar.code || '–')),
         ar.code ? h('button', { class: 'btn small', type: 'button', onclick: function () { try { navigator.clipboard.writeText(ar.code); UI.toast('Copied ' + ar.code); } catch (e) { UI.toast('Archive ID: ' + ar.code); } } }, 'Copy ID') : null),
       h('div', { class: 'sec-title' }, h('h3', null, 'Where it is saved')),
@@ -1011,7 +1042,7 @@
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'To'), h('span', { class: 'names' }, t.assignees.map(function (a) { return personBtn(a); }))),
           h('div', { class: 'person-line' }, h('span', { class: 'k' }, 'Approved'), h('span', { class: 'names' }, t.approvedBy))),
         t.description ? h('div', { class: 'desc' }, t.description) : null)),
-      where, t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, docCard);
+      where, noteBox, t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, docCard);
   }
 
   async function viewArchived(id) {
@@ -1180,8 +1211,53 @@
   // People who give tasks to others keep their finished tasks in their own Drive folder. Here the admin allows (or withdraws) read-and-download access
   // to that ONE folder. The Google email is typed by the person themself on their Account page; the admin can only allow or refuse it.
   async function viewDrive() {
-    const box = h('div', null, UI.skeleton('card', 2));
-    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Drive access'), h('p', { class: 'sub' }, 'People who give tasks to others keep the finished ones in their own folder in Google Drive. Here you allow a person to read and download that one folder. Nothing else.'))), box), 'drive');
+    const box = h('div', null, UI.skeleton('card', 2)), problems = h('div');
+    shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Google Drive'), h('p', { class: 'sub' }, 'Finished tasks are saved to Google Drive by themselves. Here you see any that could not be saved, and you allow people to read their own folder.'))), problems, box), 'drive');
+    // Finished tasks the hourly job could not save. The administrator decides: try again, save what remains (the standard way, with the reason written into the zip), or delete.
+    async function loadProblems() {
+      let r;
+      try { r = await Api.call('adminStuckList'); } catch (e) { UI.clear(problems); return problems.appendChild(errBox(e)); }
+      S.stuckAdmin = r.tasks.length; setBadges(); UI.clear(problems);
+      if (!r.tasks.length) return problems.appendChild(h('div', { class: 'card' }, h('h3', null, 'Saving finished tasks'),
+        h('p', { class: 'muted small' }, (r.waiting ? r.waiting + ' finished task' + (r.waiting === 1 ? ' is' : 's are') + ' waiting for the hourly job. ' : 'Every finished task has been saved to Google Drive. ') + 'A task that cannot be saved shows up here, with the reason.')));
+      problems.appendChild(h('div', { class: 'attn' }, h('h3', null, r.tasks.length + ' finished task' + (r.tasks.length === 1 ? '' : 's') + ' could not be saved to Google Drive'),
+        h('p', null, 'The app tries every hour and it did not work for these. Nothing has been deleted: you decide. Try again, or save what remains (the conversation and every document that can still be found go into the Drive archive, with a note of what went wrong), or delete the task.')));
+      r.tasks.forEach(function (t) {
+        const busy = async function (btn, fn) { btn.disabled = true; try { await fn(); } finally { btn.disabled = false; } };
+        const again = h('button', { class: 'btn small primary', type: 'button' }, 'Try again now');
+        again.addEventListener('click', function () { busy(again, async function () {
+          await guarded(async function () {
+            const res = await Api.call('adminStuckRetry', { taskId: t.id }, { timeout: 300000 });
+            if (res.archived) { UI.toast('Saved to Google Drive as ' + res.archiveCode); return loadProblems(); }
+            UI.modal({ title: 'Still not saved', body: h('div', null, h('p', null, 'It did not work again. The reason:'), h('p', { class: 'why' }, res.error)), actions: [{ label: 'OK', kind: 'primary' }] });
+            return loadProblems();
+          });
+        }); });
+        const salvage = h('button', { class: 'btn small', type: 'button' }, 'Save what remains');
+        salvage.addEventListener('click', function () { busy(salvage, async function () {
+          if (!(await UI.confirm('Save what remains?', 'The conversation and every document the app can still find go into one zip in Google Drive (EPP > ' + t.creatorName + '). The first page of the zip says why this task could not be saved and lists anything that is missing. The task then leaves the app like any saved task and shows in History as "Saved with problems".', 'Save it'))) return;
+          await guarded(async function () { const res = await Api.call('adminStuckSalvage', { taskId: t.id }, { timeout: 300000 }); UI.toast('Saved as ' + res.archiveCode + ', with a note of what went wrong'); await loadProblems(); });
+        }); });
+        const del = h('button', { class: 'btn small', type: 'button', style: 'color:var(--bad)' }, 'Delete');
+        del.addEventListener('click', function () {
+          const word = h('input', { type: 'text', placeholder: 'DELETE', autocomplete: 'off', 'aria-label': 'Type DELETE to confirm', style: 'width:100%' });
+          UI.modal({ title: 'Delete this task for good?', body: h('div', null,
+            h('p', null, t.title + ' (' + t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's') + ', ' + t.fileCount + ' document' + (t.fileCount === 1 ? '' : 's') + ') will be removed from the app and nothing is written to the Drive archive. Its stored files go to the Google Drive trash.'),
+            h('p', { class: 'muted small' }, 'The app cannot undo this. The Google Drive owner can still restore the files from the Drive trash for about 30 days. Tell the people on the task: ' + t.creatorName + ' to ' + t.assigneeNames + '.'),
+            h('p', null, 'Type DELETE to confirm:'), word),
+          actions: [{ label: 'Cancel' }, { label: 'Delete for good', kind: 'danger', onClick: async function () {
+            if (word.value.trim() !== 'DELETE') { UI.toast('Type DELETE first', 'bad'); return false; }
+            try { await Api.call('adminStuckDelete', { taskId: t.id, confirm: 'DELETE' }, { timeout: 120000 }); UI.toast('Task deleted'); await loadProblems(); }
+            catch (e) { UI.toast(e.message, 'bad'); return false; }
+          } }] });
+        });
+        problems.appendChild(h('div', { class: 'card' }, h('h3', null, t.title),
+          h('div', { class: 'row', style: 'gap:.4rem;flex-wrap:wrap;margin:.3rem 0' }, UI.chip(t.creatorName + ' to ' + t.assigneeNames), UI.chip('Approved ' + UI.date(t.closedAt)), UI.chip(t.fails + ' failed attempt' + (t.fails === 1 ? '' : 's'), 'bad'), UI.chip(t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's')), UI.chip(t.fileCount + ' document' + (t.fileCount === 1 ? '' : 's'))),
+          h('p', { class: 'why' }, h('strong', null, 'Why: '), t.reason), t.lastFailedAt ? h('p', { class: 'muted small' }, 'Last tried ' + UI.dateTime(t.lastFailedAt)) : null,
+          h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.6rem' }, again, salvage, del)));
+      });
+    }
+    loadProblems();
     async function load() {
       let r;
       try { r = await Api.call('adminDriveList'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
@@ -1384,7 +1460,7 @@
         const known = Api.cacheGet('me');
         if (known && known.user) {
           // Returning visitor: open straight into the app with the last known profile and check it in the background.
-          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign; S.canUseAi = !!known.canUseAi;
+          S.user = known.user; S.company = known.company; S.canAssign = known.canAssign; S.canUseAi = !!known.canUseAi; S.stuckAdmin = known.stuckAdmin || 0;
           const sig = function () { const u = S.user || {}; return [u.id, u.isAdmin, u.mustChange, u.jobTitleId, u.active, S.canAssign, S.canUseAi].join('|'); };
           const before = sig();
           loadMe().then(function () { if (S.user && sig() !== before) route(); }).catch(function () { /* AUTH is handled by Api.onAuthLost; offline keeps the cached view */ });
