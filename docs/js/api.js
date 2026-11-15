@@ -5,6 +5,7 @@
   const TOKEN_KEY = 'taskapp.token';
   const cfg = w.APP_CONFIG || {};
   const demo = !!cfg.demo || /[?&]demo=1\b/.test(location.search);
+  const DEMO_LAG = Number((/[?&]lag=(\d+)/.exec(location.search) || [])[1]) || 120;   // ?demo=1&lag=2000 makes the demo as slow as the real server, to feel what people feel
   const CACHE_PREFIX = demo ? 'taskapp.demo.c.' : 'taskapp.c.';   // demo data is kept apart from real data
 
   function load(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
@@ -75,6 +76,7 @@
     // server (1-3 s per call on Apps Script) is asked again. Kept in this browser only and wiped at sign-out.
     cacheGet: function (k) { try { const v = localStorage.getItem(CACHE_PREFIX + k); return v ? JSON.parse(v) : null; } catch (e) { return null; } },
     cacheSet: function (k, v) { try { localStorage.setItem(CACHE_PREFIX + k, JSON.stringify(v)); } catch (e) { /* storage full or blocked */ } },
+    cacheDel: function (k) { try { localStorage.removeItem(CACHE_PREFIX + k); } catch (e) { /* ignore */ } },
     cacheClear: function () { try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(CACHE_PREFIX) === 0) localStorage.removeItem(k); }); } catch (e) { /* ignore */ } },
     // The company name is public (it is on the sign-in page), so it is kept across sign-outs to paint the login page at once.
     savedCompany: function () { return load(demo ? 'taskapp.demo.company' : 'taskapp.company'); },
@@ -86,10 +88,10 @@
      */
     call: async function (action, params, opts) {
       opts = opts || {};
-      const req = Object.assign({ action: action, token: Api.token || undefined }, params || {});
+      const req = Object.assign({ action: action, token: opts.token !== undefined ? (opts.token || undefined) : (Api.token || undefined) }, params || {});   // opts.token: act as that session even after the browser has let go of it (signing out in the background)
       let res;
       if (demo) {
-        await new Promise(function (r) { setTimeout(r, 120); });
+        await new Promise(function (r) { setTimeout(r, DEMO_LAG); });
         res = await w.DemoBackend.handle(JSON.parse(JSON.stringify(req)));
       } else {
         // Apps Script sometimes loses a request completely (it never even starts) while the next one is answered in about
@@ -102,7 +104,7 @@
       if (!res || !res.ok) {
         const err = new Error((res && res.error) || 'Unknown error');
         err.code = res && res.code;
-        if (err.code === 'AUTH' && action !== 'login' && Api.token) { Api.setToken(''); Api.onAuthLost(err.message); }
+        if (err.code === 'AUTH' && action !== 'login' && Api.token && opts.token === undefined) { Api.setToken(''); Api.onAuthLost(err.message); }
         throw err;
       }
       if (!demo && ALERTING.indexOf(action) >= 0) flushAlerts();

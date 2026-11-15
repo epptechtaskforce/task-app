@@ -298,13 +298,17 @@ function createCore(env) {
       });
       throw fail('AUTH', 'Wrong username or password');
     }
-    return ctx.write(function () {
+    const made = ctx.write(function () {
       update(ctx, 'Users', u.id, { failCount: 0, lockedUntil: 0, lastLogin: env.now() });
       // (expired sessions are cleared by maintenance() every night; doing it here made every sign-in rewrite the whole sheet)
       const token = createSession(ctx, u.id);
       const fresh = usersById(ctx)[u.id];
-      return Object.assign({ token: token }, meView(ctx, fresh));   // same payload as "me", so the browser needs no second call
+      return { out: Object.assign({ token: token }, meView(ctx, fresh)), user: fresh };   // same payload as "me", so the browser needs no second call
     });
+    // The first screen after signing in is the task list: it comes in the same answer (one round trip of about 2 s less). Not for a person who must first
+    // choose a password, nor for the pure administrator (no tasks).
+    if (!made.user.mustChange && made.user.jobTitleId) { try { made.out.list = listTasksFor(ctx, made.user); } catch (e) { env.log('login list failed: ' + e); } }
+    return made.out;
   } };
 
   A.logout = { run: function (ctx, user, req) {
@@ -558,13 +562,14 @@ function createCore(env) {
     return out;
   } };
 
-  A.listTasks = { run: function (ctx, user) {
+  function listTasksFor(ctx, user) {
     const mine = ctx.rows('Tasks').filter(function (t) { return t.status !== 'closed' && isParticipant(t, user.id); });
     const views = mine.map(function (t) { return taskView(ctx, user, t); });
     const rank = function (v) { return v.status === 'pending' && v.role === 'creator' ? 0 : 1; };
     views.sort(function (a, b) { return rank(a) - rank(b) || b.updatedAt - a.updatedAt; });
     return { tasks: views, serverTime: env.now(), attention: stuckTasks(ctx).filter(function (t) { return isParticipant(t, user.id); }).length };   // attention: finished tasks of this person that could not be saved to Drive yet
-  } };
+  }
+  A.listTasks = { run: function (ctx, user) { return listTasksFor(ctx, user); } };
 
   A.getTask = { run: function (ctx, user, req) {
     const t = loadTask(ctx, user, req.taskId);
@@ -572,7 +577,7 @@ function createCore(env) {
     const view = taskView(ctx, user, t, { detail: true });
     const newest = msgs.length ? msgs[msgs.length - 1].createdAt : 0;
     const read = ctx.rows('Reads').filter(function (r) { return r.id === t.id + '|' + user.id; })[0];
-    if (newest && (!read || read.lastReadAt < newest)) {
+    if (!req.peek && newest && (!read || read.lastReadAt < newest)) {   // peek: the app looked ahead so the task opens at once; that does not count as reading it
       ctx.write(function () {
         const id = t.id + '|' + user.id;
         if (ctx.rows('Reads').some(function (r) { return r.id === id; })) update(ctx, 'Reads', id, { lastReadAt: newest });
@@ -617,10 +622,17 @@ function createCore(env) {
       update(ctx, 'Tasks', t.id, { updatedAt: row.createdAt });
     });
     notifyChat(ctx, user, t.id, '\u{1F3A4} Voice message');   // told at once; the transcript (a slow AI call) is not waited for
+    // defer: the app sends the audio, gets the stored message back at once, and asks for the transcript in a second, background call (transcribeVoice)
+    if (req.defer) return { message: msgView(ctx, ctx.rows('Messages').filter(function (x) { return x.id === msgId; })[0]), deferred: true };
+    return transcribeInto(ctx, t, msgId, wavB64 || audioB64, wavB64 ? 'audio/wav' : mime);
+  } };
+
+  // The AI call happens OUTSIDE the lock so other people are never blocked by a slow model. A failure keeps the audio and marks the message 'failed'.
+  function transcribeInto(ctx, t, msgId, b64, mime) {
     let patch;
-    try { // AI call happens OUTSIDE the lock so other people are never blocked by a slow model
+    try {
       const hints = 'Task: ' + t.title + '. People: ' + [t.creatorId].concat(t.assigneeIds).map(function (id) { return brief(ctx, id).name; }).join(', ') + '.';
-      const r = env.ai.transcribe(wavB64 || audioB64, wavB64 ? 'audio/wav' : mime, hints) || {};
+      const r = env.ai.transcribe(b64, mime, hints) || {};
       // transcript = what was said, in English (Sinhala is translated); translation = the key points. Both are only for the AI's memory of the task.
       patch = { status: 'ok', transcript: clip(r.english || r.english_translation || r.transcript, LIMITS.transcript), translation: clip(r.key_points, 600), lang: clip(r.language, 40) };
     } catch (e) {
@@ -629,6 +641,20 @@ function createCore(env) {
     }
     const updated = ctx.write(function () { return update(ctx, 'Messages', msgId, patch); });
     return { message: msgView(ctx, updated), transcribeFailed: patch.status === 'failed' };
+  }
+
+  // The second half of a deferred voice message: reads the stored audio and writes the transcript. Only the sender may ask; asking again for a message that
+  // is already done changes nothing (the app asks again for one that stayed "transcribing" because its first request was lost).
+  A.transcribeVoice = { run: function (ctx, user, req) {
+    const m = ctx.rows('Messages').filter(function (x) { return x.id === String(req.messageId || '') && x.type === 'voice'; })[0];
+    if (!m) throw fail('NOT_FOUND', 'Message not found');
+    const t = loadTask(ctx, user, m.taskId);
+    if (m.senderId !== user.id) throw fail('FORBIDDEN', 'Only the person who sent a voice message can ask for its transcript');
+    if (m.status !== 'transcribing') return { message: msgView(ctx, m), transcribeFailed: m.status === 'failed' };
+    let audio;
+    try { audio = env.files.readAudio(m.audioFileId); }
+    catch (e) { env.log('transcribeVoice: audio not readable: ' + e); const bad = ctx.write(function () { return update(ctx, 'Messages', m.id, { status: 'failed' }); }); return { message: msgView(ctx, bad), transcribeFailed: true }; }
+    return transcribeInto(ctx, t, m.id, audio.b64, audio.mime || m.audioMime);
   } };
 
   A.getAudio = { run: function (ctx, user, req) {

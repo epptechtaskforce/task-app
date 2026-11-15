@@ -377,9 +377,9 @@
     if (!B.pending.length || B.busy) return;
     const todo = B.pending; B.pending = []; B.editing = false; drawCard(); store.save();
     const my = ++B.token; B.busy = true; B.fab.classList.add('busy'); dissolve(B.botEl); B.botEl = null; sync();
-    let done = 0, big = false; const bad = [];
-    for (let i = 0; i < todo.length; i++) {
-      const a = todo[i];
+    let done = 0, big = false, authLost = false; const bad = [];
+    // all at once (each takes the server about 2 s: one after the other made three actions take six seconds); the server still handles them one by one
+    await Promise.all(todo.map(async function (a) {
       try {
         if (a.type === 'create_task') { await Api.call('createTask', { title: a.title, description: a.description, dueDate: a.dueDate, assigneeIds: a.assigneeIds }); big = true; }
         else if (a.type === 'set_progress') { await Api.call('setProgress', { taskId: a.taskId, progress: a.progress }); if (a.progress === 100) big = true; }
@@ -389,10 +389,11 @@
         else if (a.type === 'update_task') await Api.call('updateTask', Object.assign({ taskId: a.taskId }, a.patch));
         done++;
       } catch (e) {
-        if (e.code === 'AUTH') { B.busy = false; return; }
+        if (e.code === 'AUTH') { authLost = true; return; }
         bad.push('Could not do "' + a.label + '": ' + (e.message || 'something went wrong'));
       }
-    }
+    }));
+    if (authLost) { B.busy = false; return; }
     B.busy = false; B.fab.classList.remove('busy');
     if (my !== B.token) return;
     if (done && B.App) { B.App.invalidate(); window.dispatchEvent(new Event('taskapp:changed')); if (big) UI.confetti(); }

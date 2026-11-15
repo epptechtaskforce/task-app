@@ -4,10 +4,11 @@
   const root = document.getElementById('app');
   // S.kind / S.peek: which screen is open and a live look at it (what is filled in, what is listed). The AI bubble asks for it on every
   // question so that it and the person look at the same screen. S.fill lets it fill in the New task form; S.pendingFill waits for that form.
-  const S = { kind: '', peek: null, fill: null, pendingFill: null, user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {} };
+  const S = { kind: '', peek: null, fill: null, pendingFill: null, user: null, company: '', canAssign: false, canUseAi: false, only: [], histQ: '', timers: [], leave: [], filter: 'all', sort: 'recent', q: '', unread: 0, playing: null, taskMem: {}, writes: 0, pending: [], reload: null };
 
   /* ============================== helpers ============================== */
 
+  const DEFAULT_PW = '1111';   // the same as DEFAULT_PASSWORD in Core.gs: what a reset gives, so the box can show it before the server has answered
   function stopTimers() { S.timers.forEach(clearInterval); S.timers = []; }
   // Things a screen must clean up when the person leaves it (stop talking, stop the microphone, ...).
   function onLeave(fn) { S.leave.push(fn); }
@@ -21,10 +22,82 @@
   let settleT = 0;
   function settle() { if (settleT) return; settleT = setTimeout(function () { document.body.classList.add('calm'); }, 1500); }
   function unsettle() { clearTimeout(settleT); settleT = 0; document.body.classList.remove('calm'); }
+  // ---- instant feel ----
+  // A change is shown on screen first and saved in the background (the server needs about 2 s per call, so waiting for it made every tap feel slow).
+  // save(send, undo): runs send() (a call to the server); if the server says no, undo(error) puts the screen back and the person is told why.
+  // While a save is in flight the background refreshes wait (S.writes), so an older answer never paints over a change that is still being saved.
+  function save(send, undo) {
+    S.writes++;
+    return Promise.resolve().then(send).catch(function (e) {
+      try { if (undo) undo(e); } catch (x) { /* putting things back must never throw */ }
+      if (e && e.code !== 'AUTH') UI.toast((e && e.message) || 'Could not save that. Please try again.', 'bad');
+      throw e;
+    }).then(function (r) { S.writes--; if (!S.writes && S.reload) S.reload(); return r; }, function (e) { S.writes--; if (!S.writes && S.reload) S.reload(); throw e; });   // (a list on screen catches up with the server once nothing is being saved)
+  }
+  // swr(key, action, params, paint): paints the last known answer at once (if this browser has one), asks the server, paints the fresh answer and keeps it for next
+  // time. If the server cannot be reached but something was painted, the old answer simply stays. Kept per person and wiped at sign-out like the rest.
+  function swr(key, action, params, paint, opts) {
+    const k = key + (S.user ? ':' + S.user.id : ''), known = Api.cacheGet(k);
+    if (known) { try { paint(known, true); } catch (e) { /* a stale paint must never stop the fresh one */ } }
+    return Api.call(action, params, opts).then(function (fresh) {
+      const text = JSON.stringify(fresh);
+      if (text.length < 300000) Api.cacheSet(k, fresh);                   // (an answer this big stays out of the browser's small storage)
+      if (known && JSON.stringify(known) === text) return fresh;          // the same as what is already on screen: nothing to repaint (no flicker, nothing lost the person just typed)
+      paint(fresh, false); return fresh;
+    }, function (e) {
+      if (known && e && e.code !== 'AUTH') return known;
+      throw e;
+    });
+  }
+  // ---- tasks kept in this browser (so a task opens at once, even the first time on this phone) ----
+  const TASK_KEEP = 14;                                                  // how many task pages are kept per person (oldest leave first)
+  const taskKey = function (id) { return 'task:' + (S.user ? S.user.id : '') + ':' + id; };
+  function rememberTask(id, d) {
+    if (!S.user || !d || !d.task) return;
+    S.taskMem[id] = d;
+    const idxKey = 'taskidx:' + S.user.id;
+    let idx = Api.cacheGet(idxKey) || [];
+    idx = idx.filter(function (x) { return x !== id; }); idx.push(id);
+    while (idx.length > TASK_KEEP) Api.cacheDel(taskKey(idx.shift()));
+    Api.cacheSet(idxKey, idx);
+    Api.cacheSet(taskKey(id), { task: d.task, messages: (d.messages || []).slice(-80), serverTime: d.serverTime });
+  }
+  function forgetTask(id) {
+    delete S.taskMem[id];
+    if (!S.user) return;
+    Api.cacheDel(taskKey(id));
+    const idxKey = 'taskidx:' + S.user.id; Api.cacheSet(idxKey, (Api.cacheGet(idxKey) || []).filter(function (x) { return x !== id; }));
+  }
+  // change one task in the saved list (progress, status...) so the list is right the moment the person goes back to it; patch === null removes it
+  function patchList(id, patch) {
+    if (!S.user) return;
+    const key = 'tasks:' + S.user.id, l = Api.cacheGet(key);
+    if (!l || !Array.isArray(l.tasks)) return;
+    l.tasks = patch === null ? l.tasks.filter(function (t) { return t.id !== id; }) : l.tasks.map(function (t) { return t.id === id ? Object.assign({}, t, patch) : t; });
+    Api.cacheSet(key, l);
+  }
+  // Once per sign-in, after the first list: get the people list for "New task" and the first page of History, so both open at once the first time too.
+  function warm() {
+    if (!S.user || S.warmed === S.user.id) return;
+    S.warmed = S.user.id;
+    if (S.canAssign && !Api.cacheGet('assignable')) Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* only a speed-up */ });
+    if (!Api.cacheGet('hist:' + S.user.id)) Api.call('listHistory', { q: '', role: 'all', from: '', to: '', limit: 50, offset: 0 }).then(function (r) { Api.cacheSet('hist:' + S.user.id, r); }).catch(function () { /* only a speed-up */ });
+  }
+  // After the list arrives: look at the first few tasks that changed since this browser last saw them, WITHOUT marking them read (peek), so opening one is instant.
+  let looking = false;
+  function lookAhead(rows) {
+    if (looking || document.hidden || S.writes > 0) return;
+    const want = rows.filter(function (t) { if (t.creating) return false; const c = Api.cacheGet(taskKey(t.id)); return !c || !c.task || (c.task.updatedAt || 0) < (t.updatedAt || 0); }).slice(0, 4);
+    if (!want.length) return;
+    looking = true;
+    want.reduce(function (p, t) {
+      return p.then(function () { return Api.call('getTask', { taskId: t.id, peek: true }).then(function (d) { if (S.user) rememberTask(t.id, d); }).catch(function () { /* only a speed-up */ }); });
+    }, Promise.resolve()).then(function () { looking = false; });
+  }
   function poll(fn, ms) {
     let busy = false, skip = 0;
     S.timers.push(setInterval(function () {
-      if (document.hidden || busy) return;
+      if (document.hidden || busy || S.writes > 0) return;
       if (skip > 0) { skip--; return; }
       busy = true;
       Promise.resolve().then(fn).then(function () { skip = 0; fails = 0; }, function () { skip = Math.min(++fails, 4); }).then(function () { busy = false; });
@@ -171,7 +244,7 @@
   }
 
   function showLogin(message) {
-    stopTimers(); runLeave(); S.user = null; S.taskMem = {}; Profiles.reset(); Assistant.reset();
+    stopTimers(); runLeave(); S.user = null; S.taskMem = {}; S.pending = []; S.warmed = null; Profiles.reset(); Assistant.reset();
     // Paint the sign-in page at once with the last known company name; the server (which may need a few seconds to
     // wake up) is asked in the background. Asking first made people stare at "Loading…".
     const company = S.company || Api.savedCompany();
@@ -188,6 +261,7 @@
         Api.setToken(r.token); S.user = r.user; S.company = r.companyName; S.canAssign = !!r.canAssign; S.canUseAi = !!r.canUseAi; S.stuckAdmin = r.stuckAdmin || 0; S.pushKey = r.pushKey || '';
         if (r.user.mustChange) return viewMustChange();
         if (r.canAssign === undefined) await loadMe(); else rememberMe();   // the sign-in answer already holds the profile
+        if (r.list && r.list.tasks) { S.attention = r.list.attention || 0; S.listAt = Date.now(); Api.cacheSet('tasks:' + r.user.id, { tasks: r.list.tasks }); }   // ... and the task list, so the first screen needs no second call
         Profiles.load(); Profiles.refresh(true);
         go(landing());
       } catch (e) { err.appendChild(errBox(e)); pass.value = ''; }
@@ -210,21 +284,27 @@
     const form = h('form', { onsubmit: async function (ev) {
       ev.preventDefault(); UI.clear(err);
       if (n.input.value !== r.input.value) return err.appendChild(errBox(new Error('The two new passwords do not match.')));
+      const b = ev.target.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Saving…';
       try {
         await Api.call('changePassword', { oldPassword: o.input.value, newPassword: n.input.value });
-        S.user.mustChange = false; UI.toast('Password changed'); await loadMe(); Profiles.load(); Profiles.refresh(true); go(landing());
-      } catch (e) { err.appendChild(errBox(e)); }
+        S.user.mustChange = false; UI.toast('Password changed');
+        go(landing());                                                  // straight in; the profile and the list load behind the first screen
+        loadMe().catch(function () { /* the saved profile is used meanwhile */ }); Profiles.load(); Profiles.refresh(true);
+      } catch (e) { err.appendChild(errBox(e)); b.disabled = false; b.textContent = 'Save new password'; }
     } }, h('label', null, 'Default password you were given', o.el), h('label', null, 'New password (at least 8 characters)', n.el), h('label', null, 'Repeat new password', r.el),
       h('button', { class: 'btn primary block', type: 'submit', style: 'margin-top:1.2rem' }, 'Save new password'), err);
     authPage(h('h1', null, 'Choose a new password'), 'For your security, replace the default password before continuing.', [
       h('div', { class: 'card' }, form), h('p', { style: 'text-align:center;margin-top:.8rem' }, h('button', { class: 'btn ghost small', type: 'button', onclick: signOut }, 'Sign out'))]);
   }
 
-  async function signOut() {
-    try { await Push.forget(); } catch (e) { /* never stops signing out */ }
-    try { await Api.call('logout'); } catch (e) { /* ignore */ }
+  // Signing out is instant: the sign-in page appears at once, and the device is forgotten / the session ended on the server in the background, with the
+  // token the person had (so a quick sign-in as somebody else is not affected).
+  function signOut() {
+    const tok = Api.token;
     S.pushSynced = false;
     Api.setToken(''); S.user = null; stopTimers(); showLogin('You have been signed out.');
+    if (!tok) return;
+    Promise.resolve().then(function () { return Push.forget(tok); }).catch(function () { /* never stops signing out */ }).then(function () { return Api.call('logout', {}, { token: tok }); }).catch(function () { /* the session expires by itself */ });
   }
 
   async function loadMe() {
@@ -275,8 +355,10 @@
       mine ? who(me, 'You') : who(t.creator, first(t.creator.name)),
       h('span', { class: 'arrow', 'aria-hidden': 'true' }, icon('arrowRight', 14)),
       mine ? (t.assignees.length > 1 ? h('span', { class: 'who' }, UI.avatarStack(t.assignees, 3), h('span', null, toLabel)) : who(t.assignees[0], toLabel)) : who(me, 'You'));
-    const due = dueBadge(t, f), used = timeUsed(t);
-    return h('a', { class: 'card task' + (state ? ' st-' + state : '') + (b === 'late' ? ' is-late' : '') + (S.spot === t.id ? ' ai-spot' : ''), href: '#/task/' + t.id, 'data-id': t.id, style: '--i:' + Math.min(i || 0, 10) },
+    const due = t.creating ? { cls: 'warn', ic: 'clock', text: 'Sending…', tip: 'Being sent to ' + names(t.assignees).join(', ') } : dueBadge(t, f), used = timeUsed(t);
+    const attrs = { class: 'card task' + (state ? ' st-' + state : '') + (b === 'late' ? ' is-late' : '') + (t.creating ? ' creating' : '') + (S.spot === t.id ? ' ai-spot' : ''), href: t.creating ? '#/tasks' : '#/task/' + t.id, 'data-id': t.id, style: '--i:' + Math.min(i || 0, 10) };
+    if (t.creating) attrs.onclick = function (e) { e.preventDefault(); UI.toast('Still sending this task…'); };   // there is no page for it until the server has made it (about 2 s)
+    return h('a', attrs,
       h('div', { class: 't-row' },
         h('div', { class: 't-dn' }, UI.ring(t.progress, '', 58)),
         h('div', { class: 't-main' },
@@ -364,6 +446,9 @@
       S.canAssign ? h('a', { class: 'btn primary fab', href: '#/new', 'aria-label': 'New task' }, icon('plus', 22), 'New task') : null), 'tasks', { bare: true });
     let tasks = [], statSig = '', animated = false;
     const cacheKey = 'tasks:' + S.user.id;
+    const withPending = function (list) { return S.pending.length ? S.pending.concat(list) : list; };   // tasks that are still being created show at the top at once
+    S.reload = function () { load().catch(function () { /* the error is already shown */ }); };         // asked when a save has finished
+    onLeave(function () { S.reload = null; });
     q.addEventListener('input', function () { S.q = q.value; drawList(); });
     sort.addEventListener('change', function () { S.sort = sort.value; drawList(); });
 
@@ -456,21 +541,24 @@
     let loaded = false;
     async function load() {
       try {
-        const resp = await Api.call('listTasks'), fresh = resp.tasks; S.attention = resp.attention || 0; drawAttention(); setBadges(); setUnread(fresh); loaded = true;
+        const resp = await Api.call('listTasks'), saved = resp.tasks;
+        if (S.writes > 0) return;                                  // something is still being saved: this answer may be older than the change, the list is refreshed when the save ends
+        const fresh = withPending(saved); S.attention = resp.attention || 0; drawAttention(); setBadges(); setUnread(fresh); loaded = true;
         const sg = listSig(fresh);
+        lookAhead(saved); warm();                                   // (also when nothing changed: this browser may not have these pages yet)
         if (sg === lastSig) return;                                 // nothing changed: leave the screen exactly as it is
         lastSig = sg; tasks = fresh; redraw();
-        Api.cacheSet(cacheKey, { tasks: tasks });
-        // Warm the "people I can assign to" list so the New task screen opens at once.
-        if (S.canAssign && !Api.cacheGet('assignable')) Api.call('assignable').then(function (p) { Api.cacheSet('assignable', p); }).catch(function () { /* ignore */ });
+        Api.cacheSet(cacheKey, { tasks: saved });
       }
       catch (e) { if (e.code === 'MUSTCHANGE') return viewMustChange(); if (e.code !== 'AUTH' && !tasks.length) { UI.clear(list); list.appendChild(errBox(e)); } throw e; }
     }
     // Show the last known list immediately (it is refreshed within a moment), instead of an empty "Loading…" screen.
     const known = Api.cacheGet(cacheKey);
-    if (known && Array.isArray(known.tasks)) { tasks = known.tasks; lastSig = listSig(tasks); setUnread(tasks); redraw(); }
+    if (known && Array.isArray(known.tasks)) { tasks = withPending(known.tasks); lastSig = listSig(tasks); setUnread(tasks); redraw(); }
+    else if (S.pending.length) { tasks = withPending([]); lastSig = listSig(tasks); redraw(); }
     // The list comes first; the overview (an AI call) is only asked for after it, and only when the saved one is old or missing.
-    load().catch(function () { /* the error is already shown */ });
+    // (right after sign-in the list has just arrived with the sign-in answer: no need to ask again for a few seconds; the look-ahead below still runs)
+    if (S.listAt && Date.now() - S.listAt < 15000 && known) { S.listAt = 0; lookAhead(known.tasks); warm(); } else if (S.writes > 0 && (known || S.pending.length)) { /* something is being saved: the list refreshes itself when that ends */ } else load().catch(function () { /* the error is already shown */ });
     poll(load, 40000);
   }
 
@@ -564,17 +652,23 @@
 
     // ---- create ----
     const shake = function (el) { el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); };
-    createBtn.addEventListener('click', async function () {
+    createBtn.addEventListener('click', function () {
       if (!title.value.trim()) { shake(title); title.focus(); return UI.toast('Give the task a title first.', 'bad'); }
       const ids = Object.keys(chosen);
       if (!ids.length) { shake(zone); return UI.toast('Drag at least one person onto the task.', 'bad'); }
       createBtn.disabled = true;
-      try {
-        const r = await Api.call('createTask', { title: title.value, description: desc.value, dueDate: dueVal, assigneeIds: ids });
-        // Put the new task at the top of the saved list, so its page opens at once with the title and people (the conversation follows from the server).
-        try { const key = 'tasks:' + S.user.id, l = Api.cacheGet(key) || { tasks: [] }; l.tasks = [r.task].concat((l.tasks || []).filter(function (t) { return t.id !== r.task.id; })); Api.cacheSet(key, l); } catch (e2) { /* only a speed-up */ }
-        UI.confetti(); UI.toast('Task assigned'); go('#/task/' + r.task.id);
-      } catch (e) { UI.toast(e.message, 'bad'); createBtn.disabled = false; }
+      // The task appears in the list at once ("Sending…") and is made on the server in the background (about 2 s). If the server refuses, the form comes back
+      // exactly as it was, with the reason.
+      const sent = { title: title.value, description: desc.value, dueDate: dueVal, assigneeIds: ids };
+      const now = Date.now(), me = S.user;
+      const tmp = { id: 'tmp' + now, creating: true, title: sent.title.trim(), description: sent.description, status: 'open', progress: 0, progressBy: '', dueDate: dueVal, createdAt: now, updatedAt: now, pendingAt: 0, closedAt: 0,
+        creator: { id: me.id, name: me.name, jobTitle: me.jobTitle || '' }, assignees: ids.map(function (id) { return chosen[id]; }), role: 'creator', unread: false, messageCount: 0, lastMessage: null };
+      const drop = function () { S.pending = S.pending.filter(function (x) { return x.id !== tmp.id; }); };
+      S.pending.push(tmp);
+      UI.confetti(); UI.toast('Task assigned');
+      go('#/tasks');
+      save(function () { return Api.call('createTask', sent).then(function (r) { drop(); return r; }); },
+        function () { drop(); S.pendingFill = { title: sent.title, description: sent.description, dueDate: sent.dueDate, assigneeIds: ids }; if (location.hash === '#/tasks') go('#/new'); }).catch(function () { /* already told */ });
     });
 
     const draft = h('div', { class: 'card draft' }, h('div', { class: 'detail-banner' }), h('div', { class: 'draft-in' },
@@ -710,7 +804,7 @@
     // list (title, people, progress), and fetch the conversation in the background. Only a task we know nothing about
     // (e.g. a link opened directly) has to wait for the server.
     const listKey = 'tasks:' + S.user.id;
-    let data = S.taskMem[id] || null, preview = null;
+    let data = S.taskMem[id] || Api.cacheGet(taskKey(id)) || null, preview = null;   // this session's copy, or the one kept in this browser (also from a look-ahead)
     if (!data) { const l = Api.cacheGet(listKey); preview = l && l.tasks ? l.tasks.filter(function (t) { return t.id === id; })[0] || null : null; }
     let freshData = false;
     const barOpts = { focus: true, back: '#/tasks', title: 'Task' };
@@ -753,8 +847,12 @@
           if (v === 100 && !(await UI.confirm('Mark as 100% done?', 'Your manager will be asked to confirm that the work is complete.', 'Yes, it is done'))) { slider.value = task.progress; show(task.progress); return; }
           // The answer already holds the updated task: show it and say "done" now. The conversation (it gets a "set progress" line) is fetched in the
           // background instead of making the person wait for a second round trip of about 2 s.
-          await guarded(async function () { task = (await Api.call('setProgress', { taskId: id, progress: v })).task; if (v === 100) UI.confetti(); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated'); refresh(true).catch(function () { /* the next poll will show it */ }); });
-          drawHead();
+          // On screen at once, saved in the background; if the server says no, the old progress comes back with the reason.
+          const before = task, patch = { progress: v, status: v === 100 ? 'pending' : 'open', progressBy: S.user.name, updatedAt: Date.now() };
+          task = Object.assign({}, task, patch); patchList(id, patch); drawHead();
+          if (v === 100) UI.confetti(); UI.toast(v === 100 ? 'Sent to your manager for approval' : 'Progress updated');
+          save(function () { return Api.call('setProgress', { taskId: id, progress: v }).then(function (r) { task = r.task; drawHead(); refresh(true).catch(function () { /* the next poll will show it */ }); }); },
+            function () { task = before; patchList(id, { progress: before.progress, status: before.status, progressBy: before.progressBy, updatedAt: before.updatedAt }); drawHead(); refresh(true).catch(function () {}); }).catch(function () { /* already told */ });
         }
         slider.addEventListener('input', function () { dragging = true; show(slider.value); });
         slider.addEventListener('change', function () { commit(Number(slider.value)); });
@@ -779,19 +877,29 @@
       const due = h('input', { type: 'date', value: task.dueDate || '', 'aria-label': 'Due date' });
       UI.modal({ title: 'Edit task', body: h('div', null, h('label', null, 'Title', title), h('label', null, 'Details', desc), h('label', null, 'Due date', due), h('p', { class: 'hint' }, 'Everyone on the task is told what you changed. Clear the date to remove it.')),
         actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async function () {
-          try { await Api.call('updateTask', { taskId: id, title: title.value, description: desc.value, dueDate: due.value }); await refresh(true); UI.toast('Saved'); } catch (e) { UI.toast(e.message, 'bad'); return false; }
+          if (!title.value.trim()) { UI.toast('The title cannot be empty.', 'bad'); return false; }
+          const before = task, patch = { title: title.value.trim(), description: desc.value, dueDate: due.value };
+          task = Object.assign({}, task, patch); patchList(id, { title: patch.title, dueDate: patch.dueDate }); drawHead(); UI.toast('Saved');   // on screen now, saved in the background
+          save(function () { return Api.call('updateTask', { taskId: id, title: title.value, description: desc.value, dueDate: due.value }).then(function () { refresh(true).catch(function () {}); }); },
+            function () { task = before; patchList(id, { title: before.title, dueDate: before.dueDate }); drawHead(); }).catch(function () { /* already told */ });
         } }] });
     }
 
     async function approve() {
       if (!(await UI.confirm('Close this task?', 'It will be saved as a zip file in Google Drive (conversation, documents and summary) and listed in History. This cannot be undone.', 'Agree & close', 'ok'))) return;
-      await guarded(async function () { const r = await Api.call('approveTask', { taskId: id }, { timeout: 60000 }); UI.confetti(); UI.toast(r && r.archived ? 'Task closed and archived' : 'Task closed. It is being saved to Google Drive.'); go('#/tasks'); });
+      // The task leaves the list at once and the person is back on the list; the closing happens in the background (a refused approval puts it back, with the reason).
+      patchList(id, null); forgetTask(id);
+      UI.confetti(); UI.toast('Task closed. It is being saved to Google Drive.'); go('#/tasks');
+      save(function () { return Api.call('approveTask', { taskId: id }, { timeout: 60000 }); }, function () { /* the list refreshes itself when the save ends and shows the task again */ }).catch(function () { /* already told */ });
     }
     function sendBack() {
       const note = h('textarea', { maxlength: 300, placeholder: 'What still needs to be done? (optional)' });
       UI.modal({ title: 'Send back for more work', body: h('div', null, h('p', null, 'The progress will be set back to 90% and everyone will see your note.'), note),
         actions: [{ label: 'Cancel' }, { label: 'Send back', kind: 'primary', onClick: async function () {
-          try { task = (await Api.call('rejectTask', { taskId: id, note: note.value })).task; await refresh(true); UI.toast('Sent back'); } catch (e) { UI.toast(e.message, 'bad'); return false; }
+          const before = task, patch = { status: 'open', progress: 90, updatedAt: Date.now() };
+          task = Object.assign({}, task, patch); patchList(id, patch); drawHead(); UI.toast('Sent back');   // on screen now, saved in the background
+          save(function () { return Api.call('rejectTask', { taskId: id, note: note.value }).then(function (r) { task = r.task; drawHead(); refresh(true).catch(function () {}); }); },
+            function () { task = before; patchList(id, { status: before.status, progress: before.progress, updatedAt: before.updatedAt }); drawHead(); }).catch(function () { /* already told */ });
         } }] });
     }
 
@@ -827,7 +935,7 @@
 
     async function refresh(force) { apply(await Api.call('getTask', { taskId: id }), force); }
     function apply(d, force) {
-      S.taskMem[id] = d; settle();
+      rememberTask(id, d); settle();
       const newSig = d.messages.map(function (m) { return m.id + m.status; }).join(',') + '|' + d.task.progress + d.task.status + d.task.summaryAt + d.task.summaryStale;
       if (!force && newSig === sig) return;
       const stick = !sig || nearBottom() || force;
@@ -836,6 +944,9 @@
       drawSummary(); drawFiles();
       renderChat(chatBox, messages, { taskId: id });
       pendingEls.forEach(function (el) { chatBox.appendChild(el); });
+      d.messages.forEach(function (m) {   // a voice message of mine whose first request for the transcript was lost: ask once more
+        if (m.type === 'voice' && m.status === 'transcribing' && m.senderId === S.user.id && Date.now() - m.createdAt > 45000 && !asked[m.id]) { asked[m.id] = 1; Api.call('transcribeVoice', { messageId: m.id }, { timeout: 120000 }).catch(function () {}); }
+      });
       if (stick) window.scrollTo(0, document.body.scrollHeight);
       if (!autoTried && task.summaryStale && task.messageCount > 0) { autoTried = true; setTimeout(function () { if (!summaryBusy) runSummary(false); }, 2500); }   // after the conversation is on screen, not alongside it   // everyone gets an up-to-date summary (it is saved, so this is one AI call per change)
       // Opening the task marks it read on the server; mirror that in the saved task list so the NEW badge goes away at once.
@@ -846,6 +957,15 @@
     /* ---- composer ---- */
     function showPending(node) { pendingEls.push(node); chatBox.appendChild(node); window.scrollTo(0, document.body.scrollHeight); }
     function dropPending(node) { const i = pendingEls.indexOf(node); if (i >= 0) pendingEls.splice(i, 1); if (node.parentNode) node.parentNode.removeChild(node); }
+    const asked = {};                                                        // voice messages whose transcript was asked for again (once each)
+    // The server's answer to a send is the stored message: put it in the conversation now (no second round trip of about 2 s) and drop the "Sending…" row.
+    function addLocal(m, temp) {
+      if (m && !messages.some(function (x) { return x.id === m.id; })) {
+        messages = messages.concat([m]); if (S.taskMem[id]) S.taskMem[id].messages = messages;
+        renderChat(chatBox, messages, { taskId: id }); pendingEls.forEach(function (el) { if (el !== temp) chatBox.appendChild(el); }); window.scrollTo(0, document.body.scrollHeight);
+      }
+      dropPending(temp);
+    }
     const pendingRow = function (inner, extra) { return h('div', { class: 'msg-row me' }, h('div', { class: 'msg me sending' }, inner, extra)); };
 
     function drawComposer() {
@@ -870,12 +990,7 @@
         let sent;
         try { sent = await Api.call('postMessage', { taskId: id, text: v }); }
         catch (e) { dropPending(temp); if (!text.value) { text.value = v; resize(); toggle(); } if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); return; }
-        // The answer is the stored message: put it in the conversation now (no second round trip of about 2 s), then catch up with what others wrote.
-        if (sent && sent.message && !messages.some(function (m) { return m.id === sent.message.id; })) {
-          messages = messages.concat([sent.message]); if (S.taskMem[id]) S.taskMem[id].messages = messages;
-          renderChat(chatBox, messages, { taskId: id }); pendingEls.forEach(function (el) { if (el !== temp) chatBox.appendChild(el); }); window.scrollTo(0, document.body.scrollHeight);
-        }
-        dropPending(temp);
+        addLocal(sent && sent.message, temp);
         refresh(true).catch(function () { /* the next poll will show it */ });
       }
       const attach = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Share a photo or document', title: 'Share a photo or document', onclick: attachFlow }, icon('paperclip', 22));
@@ -888,12 +1003,13 @@
       for (const f of files.slice(0, 5)) {
         const temp = pendingRow(h('div', { class: 'txt' }, '📎 Sending ' + f.name + '…'));
         showPending(temp);
+        let sent;
         try {
           const p = await UI.prepareFile(f);
-          await Api.call('postFile', { taskId: id, name: p.name, b64: p.b64, thumb: p.thumb, w: p.w, h: p.h }, { timeout: 280000 });
+          sent = await Api.call('postFile', { taskId: id, name: p.name, b64: p.b64, thumb: p.thumb, w: p.w, h: p.h }, { timeout: 280000 });
         } catch (e) { if (e.code !== 'AUTH') UI.toast(e.message, 'bad'); }
-        await refresh(true).catch(function () { /* the next poll will show it */ });
-        dropPending(temp);
+        addLocal(sent && sent.message, temp);
+        refresh(true).catch(function () { /* the next poll will show it */ });
       }
     }
     async function attachFlow() { uploadFiles(await UI.attachMenu()); }
@@ -929,12 +1045,15 @@
     async function sendVoice(r) {
       const temp = pendingRow(h('div', { class: 'txt' }, '🎤 Sending voice message (' + UI.duration(r.secs) + ')…'));
       showPending(temp);
+      let sent;
       try {
         const payload = await Audio2.prepare(r.blob, r.secs);
-        await Api.call('postVoice', Object.assign({ taskId: id }, payload), { timeout: 170000 });
+        // defer: the server stores the audio and answers at once; the transcript (the AI's memory of the task, never shown) is asked for in a second, background call
+        sent = await Api.call('postVoice', Object.assign({ taskId: id, defer: true }, payload), { timeout: 170000 });
       } catch (e) { UI.toast(e.message, 'bad'); }
-      await refresh(true).catch(function () {});
-      dropPending(temp);
+      addLocal(sent && sent.message, temp);
+      if (sent && sent.message && sent.deferred) Api.call('transcribeVoice', { messageId: sent.message.id }, { timeout: 120000 }).catch(function () { /* asked again the next time the task is opened */ });
+      refresh(true).catch(function () {});
     }
 
     drawComposer();
@@ -993,17 +1112,29 @@
       list.appendChild(h('p', { class: 'muted small', style: 'text-align:center;margin:.8rem 0' }, 'The app shows the last 12 months. Older tasks are kept for good in the full history sheet in Google Drive (the admin can open it).'));
       if (total > items.length) list.appendChild(h('div', { style: 'text-align:center;margin:.6rem 0 1rem' }, h('button', { class: 'btn small', type: 'button', onclick: function () { load(true); } }, 'Show more (' + (total - items.length) + ' left)')));
     }
+    let seq = 0;
+    function paint(r, more) {
+      counts = r.counts; items = (more ? items : []).concat(r.items);
+      S.attention = r.attention || 0; setBadges(); UI.clear(attnBox);
+      if (S.attention) attnBox.appendChild(h('div', { class: 'attn' }, h('h3', null, 'Needs attention'),
+        h('p', null, (S.attention === 1 ? 'One finished task' : S.attention + ' finished tasks') + ' could not be saved to Google Drive yet. They are marked below. The app keeps trying every hour, and the administrator can see why and will fix it or save what remains.'),
+        h('p', { class: 'muted small' }, 'Nothing is lost: the conversation and every document are still stored safely.')));
+      drawFilters(); drawList(r.total);
+    }
     async function load(more) {
-      if (!more) { items = []; UI.clear(list); list.appendChild(UI.skeleton('card', 3)); }
+      const my = ++seq, base = more ? items.length : 0, plain = !more && !q.value && H.role === 'all' && !H.from && !H.to;
+      const ask = { q: q.value, role: H.role, from: H.from, to: H.to, limit: 50, offset: base };
+      const skeleton = function () { items = []; UI.clear(list); list.appendChild(UI.skeleton('card', 3)); };
       try {
-        const r = await Api.call('listHistory', { q: q.value, role: H.role, from: H.from, to: H.to, limit: 50, offset: items.length });
-        counts = r.counts; items = items.concat(r.items);
-        S.attention = r.attention || 0; setBadges(); UI.clear(attnBox);
-        if (S.attention) attnBox.appendChild(h('div', { class: 'attn' }, h('h3', null, 'Needs attention'),
-          h('p', null, (S.attention === 1 ? 'One finished task' : S.attention + ' finished tasks') + ' could not be saved to Google Drive yet. They are marked below. The app keeps trying every hour, and the administrator can see why and will fix it or save what remains.'),
-          h('p', { class: 'muted small' }, 'Nothing is lost: the conversation and every document are still stored safely.')));
-        drawFilters(); drawList(r.total);
-      } catch (e) { UI.clear(list); list.appendChild(errBox(e)); }
+        if (plain) {                                                 // the plain first page is kept in this browser: shown at once, refreshed behind it
+          if (!Api.cacheGet('hist:' + S.user.id)) skeleton();
+          await swr('hist', 'listHistory', ask, function (r) { if (my === seq) paint(r, false); });
+        } else {
+          if (!more) skeleton();
+          const r = await Api.call('listHistory', ask);
+          if (my === seq) paint(r, more);
+        }
+      } catch (e) { if (my === seq) { UI.clear(list); list.appendChild(errBox(e)); } }
     }
     q.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(load, 350); });
     load();
@@ -1021,8 +1152,14 @@
       const email = h('input', { type: 'email', placeholder: 'name@gmail.com', autocomplete: 'email', maxlength: 120, value: gmail(), style: 'width:100%', 'aria-label': 'Your Google account email' }), err = h('div');
       return h('form', { onsubmit: async function (ev) {
         ev.preventDefault(); UI.clear(err);
-        try { await Api.call('requestDriveAccess', { email: email.value }); try { localStorage.setItem('taskapp.gmail', email.value.trim().toLowerCase()); } catch (e2) { /* not remembered */ } UI.toast('Request sent to the admin'); viewArchived(doc.id); }
-        catch (e) { err.appendChild(errBox(e)); }
+        // "Waiting for the admin" shows at once; the request goes to the server in the background (a refusal puts the form back, with the reason)
+        const addr = email.value.trim().toLowerCase(), key = 'arch:' + doc.id + ':' + S.user.id;
+        try { localStorage.setItem('taskapp.gmail', addr); } catch (e2) { /* not remembered */ }
+        const shown = JSON.parse(JSON.stringify(doc)); shown.archive = Object.assign({}, shown.archive, { status: 'requested', email: addr });
+        Api.cacheSet(key, shown); UI.toast('Request sent to the admin'); viewArchived(doc.id);
+        const here = function () { return location.hash === '#/history/' + doc.id; };
+        save(function () { return Api.call('requestDriveAccess', { email: addr }).then(function () { if (here()) viewArchived(doc.id); }); },
+          function () { Api.cacheSet(key, doc); if (here()) viewArchived(doc.id); }).catch(function () { /* already told */ });
       } }, h('p', { class: 'muted small' }, 'To open this in Google Drive, ask for access with your Google account. You will only ever see your own folder, to read and download.'),
       h('label', { style: 'display:grid;gap:.3rem' }, 'Your Google account email', email), h('button', { class: 'btn primary small', type: 'submit', style: 'margin-top:.5rem' }, 'Request access'), err);
     };
@@ -1058,17 +1195,12 @@
       where, noteBox, t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, docCard);
   }
 
-  async function viewArchived(id) {
-    const barOpts = { back: '#/history', title: 'Closed task' };
-    shell(UI.skeleton('card', 2), 'history', barOpts);
-    let doc;
-    try { doc = await Api.call('getArchived', { taskId: id }, { timeout: 60000 }); }
-    catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/history' }, '← Back to history'))), 'history', barOpts); }
+  function drawArchived(doc, barOpts) {
     const t = doc.task;
     if (doc.detailsOnly) return shell(archivedDetails(doc), 'history', barOpts);
     const msgs = doc.messages.map(function (m) { return { id: m.id, senderId: m.senderId, senderName: m.senderName, senderTitle: '', type: m.type, text: m.text, status: m.status, hasAudio: !!m.audioFileId, audioRemoved: !!m.audioRemoved, transcript: m.transcript, audioSecs: m.audioSecs, createdAt: m.createdAt, file: m.file ? Object.assign({ isImage: String(m.file.mime).indexOf('image/') === 0 }, m.file) : undefined }; });
     const chat = h('div', { class: 'chat' });
-    renderChat(chat, msgs, { archived: true, taskId: id });
+    renderChat(chat, msgs, { archived: true, taskId: t.id });
     shell(h('div', null, h('a', { class: 'back-link desk', href: '#/history' }, icon('back', 18), 'History'),
       h('div', { class: 'card detail' }, h('div', { class: 'detail-banner' }), h('div', { class: 'detail-in' }, h('h1', null, t.title), h('div', { class: 'row' }, UI.chip('Closed', 'ok', 'check'), UI.chip('Started ' + UI.dateTime(t.createdAt)), UI.chip('Completed ' + UI.dateTime(t.closedAt), 'ok')),
         h('div', { style: 'margin-top:.8rem' },
@@ -1080,6 +1212,13 @@
             doc.archive.folderUrl ? h('a', { href: doc.archive.folderUrl, target: '_blank', rel: 'noopener' }, 'Open in Google Drive') : null)) : null),
         t.description ? h('div', { class: 'desc' }, t.description) : null)),
       t.summary && t.summary.summary_en ? summaryNode(t.summary) : null, h('div', { class: 'sec-title' }, h('h2', null, 'Conversation')), chat), 'history', barOpts);
+  }
+
+  async function viewArchived(id) {
+    const barOpts = { back: '#/history', title: 'Closed task' };
+    if (!Api.cacheGet('arch:' + id + ':' + S.user.id)) shell(UI.skeleton('card', 2), 'history', barOpts);
+    try { await swr('arch:' + id, 'getArchived', { taskId: id }, function (doc, cached) { if (!cached && S.writes > 0) return; drawArchived(doc, barOpts); }   /* (an answer that may be older than a request still being saved is not painted) */, { timeout: 60000 }); }
+    catch (e) { return shell(h('div', null, errBox(e), h('p', null, h('a', { href: '#/history' }, '← Back to history'))), 'history', barOpts); }
   }
 
   /* ============================== admin: users ============================== */
@@ -1097,7 +1236,7 @@
         card.appendChild(h('div', { class: 'list-row user' }, UI.avatar(u.name, '', u.id),
           h('div', { class: 'info' }, h('strong', null, u.name), h('span', { class: 'muted small' }, '@' + u.username + (u.lastLogin ? ' · last sign-in ' + UI.ago(u.lastLogin) : ' · never signed in'))),
           h('div', { class: 'tags' }, u.jobTitle ? UI.chip(u.jobTitle + ' · L' + u.level) : null, u.isAdmin ? UI.chip('Admin', 'info', 'shield') : null, !u.active ? UI.chip('Inactive', 'bad') : null, u.mustChange ? UI.chip('Temp password', 'warn') : null),
-          h('button', { class: 'btn small', type: 'button', onclick: function () { editUser(u); } }, icon('edit', 15), 'Edit')));
+          h('button', { class: 'btn small', type: 'button', disabled: String(u.id).indexOf('tmp') === 0, onclick: function () { editUser(u); } }, icon('edit', 15), 'Edit')));
       });
       holder.appendChild(card);
     }
@@ -1119,8 +1258,7 @@
       }
       return wrap;
     }
-    async function load() {
-      try { ov = await Api.call('adminOverview'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
+    function paint() {
       UI.clear(box);
       if (ov.jobTitles.length === 0) box.appendChild(h('div', { class: 'note' }, 'Start with ', h('a', { href: '#/admin/titles' }, 'Job titles'), ' (for example Chairman, Manager, Worker), then add users, then connect them in the ', h('a', { href: '#/admin/org' }, 'Org chart'), '.'));
       box.appendChild(overview());
@@ -1133,30 +1271,48 @@
       box.appendChild(rows); drawRows(rows);
       Profiles.refresh();
     }
+    // The people and titles are kept in this browser: the page appears at once and is refreshed behind it (fresh() = ask the server and repaint).
+    const stash = function () { Api.cacheSet('adminov:' + S.user.id, ov); };
+    const fresh = async function () { ov = await Api.call('adminOverview'); stash(); paint(); };
+    async function load() { try { await swr('adminov', 'adminOverview', {}, function (o, cached) { if (!cached && S.writes > 0) return; ov = o; paint(); }); } catch (e) { UI.clear(box); box.appendChild(errBox(e)); } }
     function showTemp(title, u, temp) {
       const pw = h('div', { class: 'pw' }, temp);
-      UI.modal({ title: title, sticky: true, body: h('div', null, h('p', null, h('strong', null, u.name), ' (@' + u.username + ') must sign in with this default password and will be asked to choose a new one straight away:'), pw,
+      const m = UI.modal({ title: title, sticky: true, body: h('div', null, h('p', null, h('strong', null, u.name), ' (@' + u.username + ') must sign in with this default password and will be asked to choose a new one straight away:'), pw,
         h('p', { class: 'muted small', style: 'margin-top:.6rem' }, 'Tell them privately. Until they sign in for the first time, anyone who knows it could use the account.')),
         actions: [{ label: 'Copy password', onClick: async function () { UI.toast((await UI.copyText(temp)) ? 'Copied' : 'Select the password and copy it manually'); return false; } }, { label: 'Done', kind: 'primary' }] });
+      return { close: m.close, pw: pw };
     }
-    function editUser(u) {
-      const name = h('input', { type: 'text', maxlength: 80, value: u ? u.name : '' });
-      const username = h('input', { type: 'text', maxlength: 30, value: u ? u.username : '', autocapitalize: 'none', spellcheck: 'false' });
-      const title = h('select', null, h('option', { value: '' }, '- none (admin only) -'), ov.jobTitles.map(function (t) { return h('option', { value: t.id, selected: u && u.jobTitleId === t.id }, 'L' + t.level + ' · ' + t.title); }));
-      const admin = h('input', { type: 'checkbox', checked: !!(u && u.isAdmin) });
-      const active = h('input', { type: 'checkbox', checked: u ? u.active : true });
+    // draft: what the person had typed, put back when the server refused it
+    function editUser(u, draft) {
+      const name = h('input', { type: 'text', maxlength: 80, value: draft ? draft.name : u ? u.name : '' });
+      const username = h('input', { type: 'text', maxlength: 30, value: draft ? draft.username : u ? u.username : '', autocapitalize: 'none', spellcheck: 'false' });
+      const title = h('select', null, h('option', { value: '' }, '- none (admin only) -'), ov.jobTitles.map(function (t) { return h('option', { value: t.id, selected: (draft ? draft.jobTitleId : u && u.jobTitleId) === t.id }, 'L' + t.level + ' · ' + t.title); }));
+      const admin = h('input', { type: 'checkbox', checked: draft ? !!draft.isAdmin : !!(u && u.isAdmin) });
+      const active = h('input', { type: 'checkbox', checked: draft ? draft.active : u ? u.active : true });
       const body = h('div', null, h('label', null, 'Full name', name), h('label', null, 'Username (used to sign in)', username), h('label', null, 'Job title (decides the layer in the pyramid)', title),
         h('label', { class: 'check-row' }, admin, 'Administrator (can manage users, job titles and the org chart)'),
         u ? h('label', { class: 'check-row' }, active, 'Account is active') : null,
         u ? h('p', { style: 'margin-top:1rem' }, h('button', { class: 'btn small', type: 'button', onclick: async function () {
           if (!(await UI.confirm('Reset password?', u.name + ' will be signed out. The password becomes the default one (1111) and they must choose a new one when they sign in.', 'Reset password'))) return;
-          await guarded(async function () { const r = await Api.call('adminResetPassword', { userId: u.id }); showTemp('Password reset', u, r.tempPassword); await load(); });
+          // the new password is always the default one: shown at once; the server does it in the background (a refusal closes the box with the reason)
+          const m = showTemp('Password reset', u, DEFAULT_PW);
+          save(function () { return Api.call('adminResetPassword', { userId: u.id }).then(function (r) { if (r && r.tempPassword && r.tempPassword !== DEFAULT_PW) m.pw.textContent = r.tempPassword; return fresh(); }); }, function () { m.close(); }).catch(function () { /* already told */ });
         } }, icon('lock', 15), 'Reset password…')) : null);
-      UI.modal({ title: u ? 'Edit user' : 'Add user', body: body, actions: [{ label: 'Cancel' }, { label: u ? 'Save' : 'Create user', kind: 'primary', onClick: async function () {
-        try {
-          const r = await Api.call('adminSaveUser', { id: u ? u.id : undefined, name: name.value, username: username.value, jobTitleId: title.value, isAdmin: admin.checked, active: u ? active.checked : true });
-          await load(); if (r.tempPassword) showTemp('User created', r.user, r.tempPassword); else UI.toast('Saved');
-        } catch (e) { UI.toast(e.message, 'bad'); return false; }
+      UI.modal({ title: u ? 'Edit user' : 'Add user', body: body, actions: [{ label: 'Cancel' }, { label: u ? 'Save' : 'Create user', kind: 'primary', onClick: function () {
+        const vals = { name: name.value, username: username.value, jobTitleId: title.value, isAdmin: admin.checked, active: u ? active.checked : true };
+        if (!vals.name.trim() || !vals.username.trim()) { UI.toast('Enter a name and a username.', 'bad'); return false; }
+        // The list shows the change now (a new person appears with "Saving…"); the server does it in the background. If it refuses, the list goes back and the form
+        // comes back with what was typed, and the reason.
+        const jt = ov.jobTitles.filter(function (t) { return t.id === vals.jobTitleId; })[0], before = ov.users.slice();
+        const row = Object.assign({}, u || { id: 'tmp' + Date.now(), lastLogin: 0, mustChange: true }, { name: vals.name.trim(), username: vals.username.trim().toLowerCase(), jobTitleId: vals.jobTitleId, jobTitle: jt ? jt.title : '', level: jt ? jt.level : null, isAdmin: vals.isAdmin, active: vals.active });
+        ov.users = u ? ov.users.map(function (x) { return x.id === u.id ? row : x; }) : ov.users.concat([row]);
+        stash(); paint();
+        save(function () { return Api.call('adminSaveUser', Object.assign({ id: u ? u.id : undefined }, vals)).then(function (r) {
+            ov.users = ov.users.map(function (x) { return x.id === row.id ? Object.assign({}, x, r.user) : x; }); stash(); paint();     // the real person replaces the "saving" row
+            if (r.tempPassword) showTemp('User created', r.user, r.tempPassword); else UI.toast('Saved');                                 // said at once, then the list is refreshed behind it
+            return fresh();
+          }); },
+          function () { ov.users = before; stash(); paint(); editUser(u, vals); }).catch(function () { /* already told */ });
       } }] });
     }
     load();
@@ -1169,29 +1325,41 @@
     shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Job titles'), h('p', { class: 'sub' }, 'A job title belongs to a layer of the pyramid. Layer 1 is the top. People can only be connected to people in a lower layer.')),
       h('button', { class: 'btn primary', type: 'button', onclick: function () { editTitle(null); } }, icon('plus', 18), 'Add job title')), box), 'titles');
     let ov;
-    async function load() {
-      try { ov = await Api.call('adminOverview'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
+    function paint() {
       UI.clear(box);
       if (!ov.jobTitles.length) return box.appendChild(UI.emptyState('team', 'No job titles yet', 'Add the first one, for example "Chairman" at layer 1.'));
       const card = h('div', { class: 'card' });
       ov.jobTitles.forEach(function (t) {
         const n = ov.users.filter(function (u) { return u.jobTitleId === t.id; }).length;
         card.appendChild(h('div', { class: 'list-row' }, h('span', { class: 'layer-badge' }, h('small', null, 'Layer'), t.level), h('div', { class: 'info' }, h('strong', null, t.title), h('span', { class: 'muted small' }, n + ' user' + (n === 1 ? '' : 's'))),
-          h('button', { class: 'btn small', type: 'button', onclick: function () { editTitle(t); } }, icon('edit', 15), 'Edit'),
-          h('button', { class: 'icon-btn', type: 'button', title: 'Delete', 'aria-label': 'Delete ' + t.title, onclick: async function () {
+          h('button', { class: 'btn small', type: 'button', disabled: isNew(t), onclick: function () { editTitle(t); } }, icon('edit', 15), 'Edit'),
+          h('button', { class: 'icon-btn', type: 'button', disabled: isNew(t), title: 'Delete', 'aria-label': 'Delete ' + t.title, onclick: async function () {
             if (!(await UI.confirm('Delete "' + t.title + '"?', 'This only works if no user has this job title.', 'Delete', 'danger'))) return;
-            await guarded(async function () { await Api.call('adminDeleteJobTitle', { id: t.id }); UI.toast('Deleted'); await load(); });
+            // gone from the list at once; the server does it in the background (if people still have this title it comes back, with the reason)
+            const before = ov.jobTitles.slice(); ov.jobTitles = ov.jobTitles.filter(function (x) { return x.id !== t.id; }); stash(); paint(); UI.toast('Deleted');
+            save(function () { return Api.call('adminDeleteJobTitle', { id: t.id }).then(fresh); }, function () { ov.jobTitles = before; stash(); paint(); }).catch(function () { /* already told */ });
           } }, icon('trash', 18))));
       });
       box.appendChild(card);
     }
-    function editTitle(t) {
-      const name = h('input', { type: 'text', maxlength: 60, value: t ? t.title : '', placeholder: 'e.g. General Manager' });
-      const level = h('input', { type: 'number', min: 1, max: 20, step: 1, value: t ? t.level : (ov.jobTitles.length ? Math.max.apply(null, ov.jobTitles.map(function (x) { return x.level; })) + 1 : 1) });
+    const isNew = function (t) { return String(t.id).indexOf('tmp') === 0; };   // still being saved: nothing can be done with it until the server has made it
+    const stash = function () { Api.cacheSet('adminov:' + S.user.id, ov); };
+    const fresh = async function () { ov = await Api.call('adminOverview'); stash(); paint(); };
+    async function load() { try { await swr('adminov', 'adminOverview', {}, function (o, cached) { if (!cached && S.writes > 0) return; ov = o; paint(); }); } catch (e) { UI.clear(box); box.appendChild(errBox(e)); } }
+    function editTitle(t, draft) {
+      const name = h('input', { type: 'text', maxlength: 60, value: draft ? draft.title : t ? t.title : '', placeholder: 'e.g. General Manager' });
+      const level = h('input', { type: 'number', min: 1, max: 20, step: 1, value: draft ? draft.level : t ? t.level : (ov.jobTitles.length ? Math.max.apply(null, ov.jobTitles.map(function (x) { return x.level; })) + 1 : 1) });
       UI.modal({ title: t ? 'Edit job title' : 'Add job title', body: h('div', null, h('label', null, 'Job title', name), h('label', null, 'Layer (1 = top of the pyramid)', level)),
-        actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async function () {
-          try { await Api.call('adminSaveJobTitle', { id: t ? t.id : undefined, title: name.value, level: Number(level.value) }); UI.toast('Saved'); await load(); }
-          catch (e) { UI.toast(e.message, 'bad'); return false; }
+        actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: function () {
+          const vals = { title: name.value, level: Number(level.value) };
+          if (!vals.title.trim()) { UI.toast('Enter a job title.', 'bad'); return false; }
+          const before = ov.jobTitles.slice(), row = Object.assign({}, t || { id: 'tmp' + Date.now() }, { title: vals.title.trim(), level: vals.level });
+          ov.jobTitles = (t ? ov.jobTitles.map(function (x) { return x.id === t.id ? row : x; }) : ov.jobTitles.concat([row])).sort(function (a, b) { return a.level - b.level; });
+          stash(); paint(); UI.toast('Saved');   // on screen now, saved in the background; a refusal puts it back and reopens the form
+          save(function () { return Api.call('adminSaveJobTitle', Object.assign({ id: t ? t.id : undefined }, vals)).then(function (r) {
+              if (r && r.id) { ov.jobTitles = ov.jobTitles.map(function (x) { return x.id === row.id ? Object.assign({}, x, r) : x; }); stash(); paint(); }   // the real record replaces the "saving" one at once
+              return fresh();
+            }); }, function () { ov.jobTitles = before; stash(); paint(); editTitle(t, vals); }).catch(function () { /* already told */ });
         } }] });
     }
     load();
@@ -1202,19 +1370,23 @@
   async function viewOrg() {
     const box = h('div', null, UI.skeleton('card', 2));
     shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Org chart'), h('p', { class: 'sub' }, 'Draw arrows to decide who can give tasks to whom. An arrow from A to B means "A can assign tasks to B". People only see and assign to the people their arrows point to.'))), box), 'org');
-    async function load() {
-      let ov;
-      try { ov = await Api.call('adminOverview'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
+    let ov;
+    function paint() {
       UI.clear(box);
       const hasTitled = ov.users.some(function (u) { return u.level !== null; });
       if (!hasTitled) return box.appendChild(UI.emptyState('team', 'Nothing to connect yet', 'Add job titles and users first, then come back to connect them.'));
-      box.appendChild(OrgCanvas.create({ users: ov.users, links: ov.links, onSave: async function (links, note) { await Api.call('adminSaveLinks', { links: links, note: note }); await load(); } }));
+      // Saving shows "saved" at once and happens in the background; the drawing stays as the person left it. A refusal says why, and they can fix it and save again.
+      box.appendChild(OrgCanvas.create({ users: ov.users, links: ov.links, onSave: function (links, note) {
+        save(function () { return Api.call('adminSaveLinks', { links: links, note: note }).then(fresh); }, function () { /* the drawing is kept for another try */ }).catch(function () { /* already told */ });
+      } }));
       if (ov.versions.length) {
         box.appendChild(h('div', { class: 'card', style: 'margin-top:1rem' }, h('h3', null, 'Saved versions'),
           ov.versions.map(function (v) { return h('div', { class: 'list-row' }, UI.chip('v' + v.version, 'brand'), h('div', { class: 'info' }, h('strong', null, v.createdBy + ' · ' + v.linkCount + ' arrows'), h('span', { class: 'muted small' }, UI.dateTime(v.createdAt) + (v.note ? ' · ' + v.note : '')))); })));
       }
       Profiles.refresh();
     }
+    const fresh = async function () { ov = await Api.call('adminOverview'); Api.cacheSet('adminov:' + S.user.id, ov); paint(); };
+    async function load() { try { await swr('adminov', 'adminOverview', {}, function (o, cached) { if (!cached && S.writes > 0) return; ov = o; paint(); }); } catch (e) { UI.clear(box); box.appendChild(errBox(e)); } }
     load();
   }
 
@@ -1227,29 +1399,29 @@
     const box = h('div', null, UI.skeleton('card', 2)), problems = h('div');
     shell(h('div', null, h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Google Drive'), h('p', { class: 'sub' }, 'Finished tasks are saved to Google Drive by themselves. Here you see any that could not be saved, and you allow people to read their own folder.'))), problems, box), 'drive');
     // Finished tasks the hourly job could not save. The administrator decides: try again, save what remains (the standard way, with the reason written into the zip), or delete.
-    async function loadProblems() {
-      let r;
-      try { r = await Api.call('adminStuckList'); } catch (e) { UI.clear(problems); return problems.appendChild(errBox(e)); }
+    let cur = null;
+    function paintProblems(r) {
+      cur = r;
       S.stuckAdmin = r.tasks.length; setBadges(); UI.clear(problems);
       if (!r.tasks.length) return problems.appendChild(h('div', { class: 'card' }, h('h3', null, 'Saving finished tasks'),
         h('p', { class: 'muted small' }, (r.waiting ? r.waiting + ' finished task' + (r.waiting === 1 ? ' is' : 's are') + ' waiting for the hourly job. ' : 'Every finished task has been saved to Google Drive. ') + 'A task that cannot be saved shows up here, with the reason.')));
       problems.appendChild(h('div', { class: 'attn' }, h('h3', null, r.tasks.length + ' finished task' + (r.tasks.length === 1 ? '' : 's') + ' could not be saved to Google Drive'),
         h('p', null, 'The app tries every hour and it did not work for these. Nothing has been deleted: you decide. Try again, or save what remains (the conversation and every document that can still be found go into the Drive archive, with a note of what went wrong), or delete the task.')));
       r.tasks.forEach(function (t) {
-        const busy = async function (btn, fn) { btn.disabled = true; try { await fn(); } finally { btn.disabled = false; } };
+        const busy = async function (btn, fn) { const label = btn.textContent; btn.disabled = true; btn.textContent = 'Working…'; try { await fn(); } finally { btn.disabled = false; btn.textContent = label; } };   // (saving to Drive is real work on the server: the button says so at once)
         const again = h('button', { class: 'btn small primary', type: 'button' }, 'Try again now');
         again.addEventListener('click', function () { busy(again, async function () {
           await guarded(async function () {
             const res = await Api.call('adminStuckRetry', { taskId: t.id }, { timeout: 300000 });
-            if (res.archived) { UI.toast('Saved to Google Drive as ' + res.archiveCode); return loadProblems(); }
+            if (res.archived) { UI.toast('Saved to Google Drive as ' + res.archiveCode); return freshProblems(); }
             UI.modal({ title: 'Still not saved', body: h('div', null, h('p', null, 'It did not work again. The reason:'), h('p', { class: 'why' }, res.error)), actions: [{ label: 'OK', kind: 'primary' }] });
-            return loadProblems();
+            return freshProblems();
           });
         }); });
         const salvage = h('button', { class: 'btn small', type: 'button' }, 'Save what remains');
         salvage.addEventListener('click', function () { busy(salvage, async function () {
           if (!(await UI.confirm('Save what remains?', 'The conversation and every document the app can still find go into one zip in Google Drive (EPP_Task_Manager > ' + t.creatorName + '). The first page of the zip says why this task could not be saved and lists anything that is missing. The task then leaves the app like any saved task and shows in History as "Saved with problems".', 'Save it'))) return;
-          await guarded(async function () { const res = await Api.call('adminStuckSalvage', { taskId: t.id }, { timeout: 300000 }); UI.toast('Saved as ' + res.archiveCode + ', with a note of what went wrong'); await loadProblems(); });
+          await guarded(async function () { const res = await Api.call('adminStuckSalvage', { taskId: t.id }, { timeout: 300000 }); UI.toast('Saved as ' + res.archiveCode + ', with a note of what went wrong'); await freshProblems(); });
         }); });
         const del = h('button', { class: 'btn small', type: 'button', style: 'color:var(--bad)' }, 'Delete');
         del.addEventListener('click', function () {
@@ -1258,10 +1430,11 @@
             h('p', null, t.title + ' (' + t.messageCount + ' message' + (t.messageCount === 1 ? '' : 's') + ', ' + t.fileCount + ' document' + (t.fileCount === 1 ? '' : 's') + ') will be removed from the app and nothing is written to the Drive archive. Its stored files go to the Google Drive trash.'),
             h('p', { class: 'muted small' }, 'The app cannot undo this. The Google Drive owner can still restore the files from the Drive trash for about 30 days. Tell the people on the task: ' + t.creatorName + ' to ' + t.assigneeNames + '.'),
             h('p', null, 'Type DELETE to confirm:'), word),
-          actions: [{ label: 'Cancel' }, { label: 'Delete for good', kind: 'danger', onClick: async function () {
+          actions: [{ label: 'Cancel' }, { label: 'Delete for good', kind: 'danger', onClick: function () {
             if (word.value.trim() !== 'DELETE') { UI.toast('Type DELETE first', 'bad'); return false; }
-            try { await Api.call('adminStuckDelete', { taskId: t.id, confirm: 'DELETE' }, { timeout: 120000 }); UI.toast('Task deleted'); await loadProblems(); }
-            catch (e) { UI.toast(e.message, 'bad'); return false; }
+            // gone from the list at once; the server does it in the background (a refusal puts it back, with the reason)
+            const before = cur; paintProblems(Object.assign({}, cur, { tasks: cur.tasks.filter(function (x) { return x.id !== t.id; }) })); UI.toast('Task deleted');
+            save(function () { return Api.call('adminStuckDelete', { taskId: t.id, confirm: 'DELETE' }, { timeout: 120000 }).then(freshProblems); }, function () { paintProblems(before); }).catch(function () { /* already told */ });
           } }] });
         });
         problems.appendChild(h('div', { class: 'card' }, h('h3', null, t.title),
@@ -1270,10 +1443,12 @@
           h('div', { class: 'row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.6rem' }, again, salvage, del)));
       });
     }
+    const freshProblems = async function () { const r = await Api.call('adminStuckList'); Api.cacheSet('adminstuck:' + S.user.id, r); paintProblems(r); };
+    async function loadProblems() { try { await swr('adminstuck', 'adminStuckList', {}, function (r, cached) { if (!cached && S.writes > 0) return; paintProblems(r); }); } catch (e) { UI.clear(problems); problems.appendChild(errBox(e)); } }
     loadProblems();
-    async function load() {
-      let r;
-      try { r = await Api.call('adminDriveList'); } catch (e) { UI.clear(box); return box.appendChild(errBox(e)); }
+    let list = null;
+    function paintDrive(r) {
+      list = r;
       UI.clear(box);
       if (!r.people.length) return box.appendChild(UI.emptyState('inbox', 'No one yet', 'People who can give tasks to others will appear here.'));
       const card = h('div', { class: 'card' });
@@ -1281,7 +1456,10 @@
         const act = function (action, title, text, label, done) {
           return async function () {
             if (!(await UI.confirm(title, text, label))) return;
-            await guarded(async function () { await Api.call(action, { userId: p.userId }, { timeout: 60000 }); UI.toast(done); await load(); });
+            // the row changes at once; the server does it in the background (a refusal puts the row back, with the reason)
+            const before = list, status = action === 'adminDriveGrant' ? 'granted' : '';
+            paintDrive(Object.assign({}, list, { people: list.people.map(function (x) { return x.userId === p.userId ? Object.assign({}, x, { status: status }) : x; }) })); UI.toast(done);
+            save(function () { return Api.call(action, { userId: p.userId }, { timeout: 60000 }).then(freshDrive); }, function () { paintDrive(before); }).catch(function () { /* already told */ });
           };
         };
         const chip = p.status === 'granted' ? UI.chip('Allowed', 'ok', 'check') : p.status === 'requested' ? UI.chip('Asked', 'warn') : UI.chip('Has not asked');
@@ -1303,6 +1481,8 @@
         } }, 'Open the full history sheet')));
       box.appendChild(h('div', { class: 'note' }, 'Allowed people can open, read and download what is in their folder. They cannot change, delete, move or share anything, and they cannot see anything else in the Drive. Only the person can enter their Google email (on their Account page): you can allow or refuse it, not change it.'));
     }
+    const freshDrive = async function () { const r = await Api.call('adminDriveList'); Api.cacheSet('admindrive:' + S.user.id, r); paintDrive(r); };
+    async function load() { try { await swr('admindrive', 'adminDriveList', {}, function (r, cached) { if (!cached && S.writes > 0) return; paintDrive(r); }); } catch (e) { UI.clear(box); box.appendChild(errBox(e)); } }
     load();
   }
 
@@ -1351,7 +1531,8 @@
         return card.appendChild(b);
       }
       // on: what to hear about, a test, and the devices
-      let info; try { info = await Api.call('pushStatus'); } catch (e) { return card.appendChild(errBox(e)); }
+      const paintOn = function (info) {
+      UI.clear(card); card.appendChild(h('h2', null, 'Notifications'));
       const prefs = info.prefs, rows = [
         ['messages', 'Messages in your tasks', 'Text, voice and files from the people on a task'],
         ['tasks', 'Tasks and approvals', 'New tasks, finished work waiting for you, approved or sent back, changes, and anything that needs attention'],
@@ -1361,11 +1542,9 @@
       card.appendChild(h('p', { class: 'ok-line' }, icon('check', 16), 'Notifications are on for this device.'));
       rows.forEach(function (r) {
         const box = h('input', { type: 'checkbox', 'aria-label': r[1] }); box.checked = !!prefs[r[0]];
-        box.addEventListener('change', async function () {
-          const want = box.checked; box.disabled = true;
-          try { const o = {}; o[r[0]] = want; await Api.call('pushPrefs', o); prefs[r[0]] = want; }
-          catch (e) { box.checked = !want; UI.toast(e.message, 'bad'); }
-          box.disabled = false;
+        box.addEventListener('change', function () {   // the switch is already where the person put it; the server hears about it in the background (a refusal puts it back)
+          const want = box.checked; prefs[r[0]] = want; Api.cacheSet('pushstatus:' + S.user.id, info);
+          save(function () { const o = {}; o[r[0]] = want; return Api.call('pushPrefs', o); }, function () { box.checked = !want; prefs[r[0]] = !want; Api.cacheSet('pushstatus:' + S.user.id, info); }).catch(function () { /* already told */ });
         });
         card.appendChild(h('label', { class: 'nrow' }, box, h('span', null, h('strong', null, r[1]), h('small', null, r[2]))));
       });
@@ -1383,6 +1562,8 @@
       if (info.devices.length) card.appendChild(h('div', { class: 'devices' }, h('h3', null, 'Your devices'), info.devices.map(function (d) {
         return h('div', { class: 'dev' }, icon('phone', 16), h('span', null, h('strong', null, d.label), h('small', { class: d.lastError ? 'bad-text' : '' }, d.lastError ? 'Last problem: ' + d.lastError : d.lastOk ? 'Last alert delivered ' + ago(d.lastOk) : 'No alert sent yet')));
       })));
+      };
+      try { await swr('pushstatus', 'pushStatus', {}, function (info) { paintOn(info); }); } catch (e) { return card.appendChild(errBox(e)); }   // the last known switches show at once
     }
     draw().catch(function (e) { card.appendChild(errBox(e)); });
     return card;
@@ -1395,8 +1576,10 @@
     const form = h('form', { onsubmit: async function (ev) {
       ev.preventDefault(); UI.clear(err);
       if (n.input.value !== r.input.value) return err.appendChild(errBox(new Error('The two new passwords do not match.')));
+      const b = ev.target.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Checking…';
       try { await Api.call('changePassword', { oldPassword: o.input.value, newPassword: n.input.value }); o.input.value = n.input.value = r.input.value = ''; UI.toast('Password changed. Other devices were signed out.'); }
       catch (e) { err.appendChild(errBox(e)); }
+      finally { b.disabled = false; b.textContent = 'Change password'; }
     } }, h('label', null, 'Current password', o.el), h('label', null, 'New password (at least 8 characters)', n.el), h('label', null, 'Repeat new password', r.el), h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:1.2rem' }, 'Change password'), err);
 
     // ---- picture + bio ----
@@ -1405,17 +1588,20 @@
     const counter = h('div', { class: 'counter' }), saveBio = h('button', { class: 'btn primary small', type: 'button' }, 'Save');
     const count = function () { counter.textContent = bio.value.length + ' / 300'; };
     bio.addEventListener('input', count); count();
-    saveBio.addEventListener('click', async function () {
-      saveBio.disabled = true;
-      try { await Profiles.saveMine({ bio: bio.value }); UI.toast('Profile saved'); } catch (e) { UI.toast(e.message, 'bad'); } finally { saveBio.disabled = false; }
+    // What the person changes shows at once (Profiles keeps it); the server is told in the background and a refusal puts it back, with the reason.
+    saveBio.addEventListener('click', function () {
+      UI.toast('Profile saved');
+      save(function () { return Profiles.saveMine({ bio: bio.value }, me.id); }).catch(function () { /* already told */ });
     });
-    const removeBtn = h('button', { class: 'btn ghost small', type: 'button', onclick: async function () {
-      try { await Profiles.saveMine({ photo: '' }); UI.toast('Picture removed'); } catch (e) { UI.toast(e.message, 'bad'); }
+    const removeBtn = h('button', { class: 'btn ghost small', type: 'button', onclick: function () {
+      UI.toast('Picture removed');
+      save(function () { return Profiles.saveMine({ photo: '' }, me.id); }).catch(function () { /* already told */ });
     } }, 'Remove picture');
     const syncRemove = function () { removeBtn.classList.toggle('hidden', !Profiles.photo(me.id)); };
     async function changePhoto() {
       const data = await UI.pickPhoto(); if (!data) return;
-      try { await Profiles.saveMine({ photo: data }); UI.toast('Profile picture updated'); } catch (e) { UI.toast(e.message, 'bad'); }
+      UI.toast('Profile picture updated');
+      save(function () { return Profiles.saveMine({ photo: data }, me.id); }).catch(function () { /* already told */ });
     }
     Profiles.onChange(function () { syncRemove(); if (document.activeElement !== bio && !bio.value) { bio.value = Profiles.bio(me.id); count(); } });
     syncRemove();

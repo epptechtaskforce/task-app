@@ -1010,3 +1010,9 @@ h1 { letter-spacing: -.025em; }
 .nrow span { display: grid; gap: .1rem; } .nrow small { color: var(--mute); font-size: .83rem; line-height: 1.35; }
 .devices { margin-top: 1rem; } .devices h3 { margin: 0 0 .4rem; }
 .dev { display: flex; align-items: flex-start; gap: .6rem; padding: .4rem 0; } .dev > svg { color: var(--mute); margin-top: .15rem; flex: none; } .dev span { display: grid; gap: .1rem; } .dev small { color: var(--mute); } .dev small.bad-text { color: var(--bad); }
+
+/* a task that is still being made on the server ("Sending…"): there for the person at once, a little faded until it is real */
+.card.task.creating { opacity: .72; cursor: progress; }
+.card.task.creating .dbadge { animation: creating-pulse 1.1s ease-in-out infinite; }
+@keyframes creating-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .card.task.creating .dbadge { animation: none; } }
