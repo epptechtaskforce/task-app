@@ -44,7 +44,19 @@ function makeEnv_(cfg) {
     history: new HistorySheet_(archive),
     ai: cfg.ai || makeAi_(),
     setting: function (name) { return prop_(name) || ''; },
-    notify: function (payload, recipients) { return pushNotify_(store, payload, recipients); },   // alerts to people's phones and computers (Web Push)
+    // Alerts to people's phones and computers (Web Push). Sending takes about a second, so it is NOT done while the person who acted is waiting: the alert is
+    // put in a small queue (script property, about 50 ms) and delivered by flushNotify(), which the app asks for right after the reply (in the background) and
+    // a timer asks for every minute as a safety net. opts.now = send here and now (the "test" button, which must report how it went).
+    notify: function (payload, recipients, opts) {
+      if (opts && opts.now) return pushNotify_(store, payload, recipients);
+      if (notifyEnqueue_(PropertiesService.getScriptProperties(), lock_, { p: payload, r: recipients })) return { sent: 0, failed: 0, removed: 0, errors: [], devices: 0, queued: true };
+      return pushNotify_(store, payload, recipients);                  // the queue is full: send now, as before
+    },
+    flushNotify: function () {
+      const items = notifyDrain_(PropertiesService.getScriptProperties(), lock_), total = { sent: 0, failed: 0, removed: 0, items: items.length };
+      items.forEach(function (it) { const r = pushNotify_(store, it.p, it.r); total.sent += r.sent; total.failed += r.failed; total.removed += r.removed; });
+      return total;
+    },
     // how many times this has been asked in the current window (fixed windows of `seconds`), counting this call
     counter: function (key, seconds) {
       return lock_(function () {
@@ -1156,6 +1168,34 @@ function webPush_() {
     }
   });
   return WEB_PUSH_;
+}
+
+// The alert queue: one script property holding a JSON list of { p: payload, r: recipients }. A script property is durable and fast (the table in the
+// spreadsheet would cost about as much as sending). Both steps run under the script lock, so two requests never overwrite each other's items, and a
+// drain takes everything at once, so an alert is sent exactly once even if the app and the timer ask at the same moment. Limit of a property: 9 KB, so
+// when the queue would pass NOTIFY_QUEUE_MAX_ the caller sends that alert at once instead (nothing is ever dropped).
+const NOTIFY_QUEUE_KEY_ = 'NOTIFY_QUEUE', NOTIFY_QUEUE_MAX_ = 8000;
+function notifyEnqueue_(props, lock, item) {
+  try {
+    return lock(function () {
+      let list = []; try { list = JSON.parse(props.getProperty(NOTIFY_QUEUE_KEY_) || '[]'); } catch (e) { list = []; }
+      list.push(item);
+      const text = JSON.stringify(list);
+      if (text.length > NOTIFY_QUEUE_MAX_) return false;
+      props.setProperty(NOTIFY_QUEUE_KEY_, text);
+      return true;
+    });
+  } catch (e) { return false; }                                        // busy or broken: the alert is sent at once instead of being lost
+}
+function notifyDrain_(props, lock) {
+  try {
+    return lock(function () {
+      const text = props.getProperty(NOTIFY_QUEUE_KEY_);
+      if (!text) return [];
+      props.deleteProperty(NOTIFY_QUEUE_KEY_);
+      try { const list = JSON.parse(text); return Array.isArray(list) ? list : []; } catch (e) { return []; }
+    });
+  } catch (e) { return []; }                                           // busy: the next flush (the timer is a minute away at most) takes them
 }
 
 // One alert to every device of the given people. recipients = [{ userId, silent }]. Never throws; says how it went: { sent, failed, removed, errors, devices }.

@@ -1705,7 +1705,7 @@ function createCore(env) {
         to.push({ userId: id, silent: !spec.force && !!p.quiet && quietNow() });
       });
       if (!to.length) return { sent: 0, failed: 0, removed: 0, errors: [], devices: 0 };
-      return env.notify({ t: clip(spec.title, 80), b: clip(spec.body, 180), u: spec.url || '#/tasks', g: spec.tag || '', c: spec.category || 'tasks', a: spec.button || '', ts: env.now() }, to);
+      return env.notify({ t: clip(spec.title, 80), b: clip(spec.body, 180), u: spec.url || '#/tasks', g: spec.tag || '', c: spec.category || 'tasks', a: spec.button || '', ts: env.now() }, to, { now: !!spec.force });   // only the test button waits for the result; the rest is queued and delivered after the reply (flushAlerts)
     } catch (e) { env.log('notify failed: ' + e); return null; }
   }
   function taskRow(ctx, id) { return ctx.rows('Tasks').filter(function (x) { return x.id === id; })[0]; }
@@ -1802,6 +1802,13 @@ function createCore(env) {
     });
   } };
   // "Send me a test": goes to every device of the caller at once and says honestly how it went.
+  // Delivers the alerts that are waiting in the queue. The app asks for this in the background right after an action that tells somebody something, so the
+  // person who acted never waits for the sending; a timer does the same every minute. Anyone signed in may ask; it only sends what is already due.
+  A.flushAlerts = { run: function () {
+    const r = env.flushNotify ? env.flushNotify() : null;
+    return { sent: r ? r.sent : 0 };
+  } };
+
   A.pushTest = { run: function (ctx, user) {
     const mine = ctx.rows('PushSubs').filter(function (s) { return s.userId === user.id; }).length;
     if (!mine) throw fail('VALIDATION', 'No device is registered for notifications yet. Turn them on first.');

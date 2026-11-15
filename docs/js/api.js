@@ -12,6 +12,20 @@
 
   const SAFE = ['login', 'info', 'me', 'listTasks', 'getTask', 'listHistory', 'getArchived', 'assignable', 'adminOverview'];   // safe to ask twice (the sign-in too)
 
+  // Actions that tell other people something (phone alerts). The server only QUEUES such an alert (sending takes about a second, and the person who acted
+  // must not wait for it); right after the reply the app asks, in the background, for the waiting alerts to be delivered. Never waited for, never shown
+  // when it fails (a timer on the server delivers them within a minute anyway). Two actions close together share one delivery request.
+  const ALERTING = ['createTask', 'postMessage', 'postVoice', 'postFile', 'updateTask', 'setProgress', 'rejectTask', 'approveTask'];
+  let flushing = false, flushAgain = false;
+  function flushAlerts() {
+    if (flushing) { flushAgain = true; return; }
+    flushing = true;
+    single({ action: 'flushAlerts', token: Api.token || undefined }, 60000).catch(function () { /* the timer on the server delivers them */ }).then(function () {
+      flushing = false;
+      if (flushAgain) { flushAgain = false; flushAlerts(); }
+    });
+  }
+
   function fetchJson(req, ctl) {
     return fetch(cfg.backendUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(req), signal: ctl.signal }).then(function (r) { return r.json(); });
   }
@@ -91,6 +105,7 @@
         if (err.code === 'AUTH' && action !== 'login' && Api.token) { Api.setToken(''); Api.onAuthLost(err.message); }
         throw err;
       }
+      if (!demo && ALERTING.indexOf(action) >= 0) flushAlerts();
       return res.data;
     }
   };
