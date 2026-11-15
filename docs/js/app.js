@@ -1020,7 +1020,7 @@
     const waitingBox = h('div', { class: 'card arch-where' },
       h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, 'Given when it is saved'))),
       h('div', { class: 'sec-title' }, h('h3', null, 'Being saved to Google Drive')),
-      h('p', null, 'This task is approved. The app is putting the whole conversation and every document into one zip in Google Drive (Google Drive › EPP › ' + (ar.person || '') + '). This happens by itself within the hour, you do not have to do anything.'),
+      h('p', null, 'This task is approved. The app is putting the whole conversation and every document into one zip in Google Drive (Google Drive › EPP_Task_Manager › ' + (ar.person || '') + '). This happens by itself within the hour, you do not have to do anything.'),
       h('p', { class: 'muted small' }, 'This page then shows the Archive ID and where to find it.'));
     // Tried again and again and it did not work (or it waited more than a day): said plainly, with the reason the app has.
     const stuckBox = h('div', { class: 'attn' }, h('h3', null, 'Could not be saved to Google Drive yet'),
@@ -1032,7 +1032,7 @@
       h('div', { class: 'arch-code-row' }, h('div', null, h('div', { class: 'muted small' }, 'Archive ID'), h('div', { class: 'arch-code' }, ar.code || '–')),
         ar.code ? h('button', { class: 'btn small', type: 'button', onclick: function () { try { navigator.clipboard.writeText(ar.code); UI.toast('Copied ' + ar.code); } catch (e) { UI.toast('Archive ID: ' + ar.code); } } }, 'Copy ID') : null),
       h('div', { class: 'sec-title' }, h('h3', null, 'Where it is saved')),
-      h('p', { class: 'arch-path' }, 'Google Drive › EPP › ' + (ar.person || '') + ' › ' + (ar.zipName || '')),
+      h('p', { class: 'arch-path' }, 'Google Drive › EPP_Task_Manager › ' + (ar.person || '') + ' › ' + (ar.zipName || '')),
       h('p', { class: 'muted small' }, 'The whole conversation (voice messages written out), every shared document and a full summary are inside that zip file. Whoever has access to the Drive folder can open it.'),
       h('div', { class: 'row' }, ar.folderUrl ? h('a', { class: 'btn small', href: ar.folderUrl, target: '_blank', rel: 'noopener' }, 'Open the folder in Google Drive') : null, ar.fileUrl ? h('a', { class: 'btn small', href: ar.fileUrl, target: '_blank', rel: 'noopener' }, 'Open the zip') : null),
       ar.canOpen ? null : accessBox());
@@ -1238,7 +1238,7 @@
         }); });
         const salvage = h('button', { class: 'btn small', type: 'button' }, 'Save what remains');
         salvage.addEventListener('click', function () { busy(salvage, async function () {
-          if (!(await UI.confirm('Save what remains?', 'The conversation and every document the app can still find go into one zip in Google Drive (EPP > ' + t.creatorName + '). The first page of the zip says why this task could not be saved and lists anything that is missing. The task then leaves the app like any saved task and shows in History as "Saved with problems".', 'Save it'))) return;
+          if (!(await UI.confirm('Save what remains?', 'The conversation and every document the app can still find go into one zip in Google Drive (EPP_Task_Manager > ' + t.creatorName + '). The first page of the zip says why this task could not be saved and lists anything that is missing. The task then leaves the app like any saved task and shows in History as "Saved with problems".', 'Save it'))) return;
           await guarded(async function () { const res = await Api.call('adminStuckSalvage', { taskId: t.id }, { timeout: 300000 }); UI.toast('Saved as ' + res.archiveCode + ', with a note of what went wrong'); await loadProblems(); });
         }); });
         const del = h('button', { class: 'btn small', type: 'button', style: 'color:var(--bad)' }, 'Delete');

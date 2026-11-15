@@ -213,7 +213,7 @@ test('full task life cycle: shared chat, progress, send back, approve, archive',
   const doc = app.ok('getArchived', s.tok.wk1, { taskId: t.id });
   assert.equal(doc.detailsOnly, true); assert.equal(doc.task.title, 'Prepare harvest report');
   assert.equal(doc.archive.code, 'EPP-0001');
-  assert.ok(/^EPP\/MGR\/EPP-0001 - Prepare harvest report - 2026-11-13\.zip$/.test(doc.archive.path), doc.archive.path);
+  assert.ok(/^EPP_Task_Manager\/MGR\/EPP-0001 - Prepare harvest report - 2026-11-13\.zip$/.test(doc.archive.path), doc.archive.path);
   const zip = app.env._folders[doc.archive.path];                 // the conversation lives in the zip, not in the app
   assert.ok(zip.files['Summary.txt'].includes('Started:      2026-11-12') && zip.files['Summary.txt'].includes('Completed:    2026-11-13'));
   assert.ok(zip.files['Conversation.txt'].includes('Half done') && /sent the task back/.test(zip.files['Conversation.txt']));
@@ -325,12 +325,12 @@ test('archive zip: summary says who/what/when, conversation is complete, names a
   const doc = app.ok('getArchived', s.tok.mgr, { taskId: t.id });
   const zip = app.env._folders[doc.archive.path], sum = zip.files['Summary.txt'], conv = zip.files['Conversation.txt'];
   // one zip, in the folder of the person who assigned the task, with the archive number and readable characters only
-  assert.equal(doc.archive.path, 'EPP/MGR/EPP-0001 - Pump roof gate A - 2026-11-13.zip');
+  assert.equal(doc.archive.path, 'EPP_Task_Manager/MGR/EPP-0001 - Pump roof gate A - 2026-11-13.zip');
   assert.equal(doc.archive.person, 'MGR'); assert.equal(doc.archive.zipName, 'EPP-0001 - Pump roof gate A - 2026-11-13.zip');
   assert.equal(doc.archive.canOpen, false); assert.equal(doc.archive.mine, true); assert.equal(doc.archive.folderUrl + doc.archive.fileUrl, '');   // Drive links only once the admin has allowed access
   assert.deepEqual(Object.keys(zip.files).sort(), ['Conversation.txt', 'Summary.txt']);
   // summary: number, place, purpose, who, when, how long, what is inside
-  for (const bit of ['Archive ID:   EPP-0001', 'Stored in:    Google Drive > EPP > MGR > EPP-0001 - Pump roof gate A - 2026-11-13.zip', 'Pump: roof / gate "A"?', 'Fix the roof of the pump house', 'Assigned by:  MGR', 'WK1, WK2', 'Started:      2026-11-12', 'Completed:    2026-11-13', '(1 day)', 'Due date:     2026-11-20', 'Approved by:  MGR', 'IN THIS ZIP', '2 shared documents and pictures'])
+  for (const bit of ['Archive ID:   EPP-0001', 'Stored in:    Google Drive > EPP_Task_Manager > MGR > EPP-0001 - Pump roof gate A - 2026-11-13.zip', 'Pump: roof / gate "A"?', 'Fix the roof of the pump house', 'Assigned by:  MGR', 'WK1, WK2', 'Started:      2026-11-12', 'Completed:    2026-11-13', '(1 day)', 'Due date:     2026-11-20', 'Approved by:  MGR', 'IN THIS ZIP', '2 shared documents and pictures'])
     assert.ok(sum.includes(bit), 'Summary.txt should include: ' + bit + '\n' + sum);
   // conversation: every message, multi-line text indented, files named as in the Files folder
   assert.ok(conv.includes('Archive ID EPP-0001') && conv.includes('WK1: Line one\n    Line two'));
@@ -413,7 +413,7 @@ test('drive access: only people who assign ask; the admin allows or withdraws; o
   assert.equal(app.ok('driveStatus', s.tok.mgr, {}).email, 'manager.name@gmail.com');
   // the admin sees the request first; nobody else may use the admin actions
   const list = app.ok('adminDriveList', s.A, {}).people;
-  assert.equal(list[0].name, 'MGR'); assert.equal(list[0].status, 'requested'); assert.equal(list[0].folder, 'EPP / MGR'); assert.equal(list[0].email, 'manager.name@gmail.com');
+  assert.equal(list[0].name, 'MGR'); assert.equal(list[0].status, 'requested'); assert.equal(list[0].folder, 'EPP_Task_Manager / MGR'); assert.equal(list[0].email, 'manager.name@gmail.com');
   assert.ok(list.every((p) => p.name !== 'WK1' && p.name !== 'WK2'), 'people who assign nothing are not listed');
   for (const act of ['adminDriveList', 'adminDriveGrant', 'adminDriveRevoke']) app.err(act, s.tok.mgr, { userId: s.users.mgr.id }, 'FORBIDDEN');
   // nothing is shared until the admin allows it
@@ -488,7 +488,7 @@ test('full history: every completed task is written to the full history sheet; t
   assert.equal(r.length, HISTORY_COLUMNS.length);
   const col = (n) => r[HISTORY_COLUMNS.indexOf(n)];
   assert.deepEqual([col('Archive ID'), col('Completed'), col('Started'), col('Due date'), col('Days taken'), col('Days late')], ['EPP-0001', '2026-11-13', '2026-11-12', '2026-11-12', 1, 1]);
-  assert.deepEqual([col('Title'), col('Assigned by'), col('Assigned to'), col('Purpose'), col('Messages'), col('Zip file'), col('Folder')], ['Pump check', 'MGR', 'WK1', 'Why: Pump check', 1, 'EPP-0001 - Pump check - 2026-11-13.zip', 'EPP / MGR']);
+  assert.deepEqual([col('Title'), col('Assigned by'), col('Assigned to'), col('Purpose'), col('Messages'), col('Zip file'), col('Folder')], ['Pump check', 'MGR', 'WK1', 'Why: Pump check', 1, 'EPP-0001 - Pump check - 2026-11-13.zip', 'EPP_Task_Manager / MGR']);
   assert.ok(col('Zip link').startsWith('https://drive.google.com/file/d/') && col('Folder link').startsWith('https://drive.google.com/drive/folders/') && /^T[a-z0-9]+$/i.test(col('Task id')));
   // 2. nothing to repair and nothing old: the nightly job changes nothing, and does it twice without duplicates
   assert.deepEqual(app.core.maintenance().history, { added: 0, pruned: 0 }); assert.deepEqual(app.core.maintenance().history, { added: 0, pruned: 0 }); assert.equal(H.rows.length, 1);

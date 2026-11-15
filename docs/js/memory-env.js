@@ -250,8 +250,8 @@
           o.files.forEach(function (f) { zip.files[f.name] = f.content; });
           (o.moves || []).forEach(function (mv) { zip.moved.push({ id: mv.id, name: mv.name }); });
           (o.trashIds || []).forEach(function (fid) { zip.trashed.push(fid); delete files[fid]; });
-          folders['EPP/' + o.person + '/' + o.zipName] = zip;
-          return { storage: 'zip', path: 'EPP/' + o.person + '/' + o.zipName, fileId: id, folderId: 'FD' + randomHex(6), parts: 1, partIds: [id] };
+          folders['EPP_Task_Manager/' + o.person + '/' + o.zipName] = zip;
+          return { storage: 'zip', path: 'EPP_Task_Manager/' + o.person + '/' + o.zipName, fileId: id, folderId: 'FD' + randomHex(6), parts: 1, partIds: [id] };
         },
         discard: function (saved) { delete folders[saved.path]; },
         // like Drive: view-only access to one person's folder, remembered here so tests can see exactly what was shared

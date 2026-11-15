@@ -215,7 +215,7 @@ function smokeTest() {
     };
     const entries = function (zipFile) { const o = {}; Utilities.unzip(zipFile.getBlob()).forEach(function (b) { o[b.getName()] = b.getDataAsString('UTF-8'); }); return o; };
     const z1 = zipOf(doc);
-    check(!!z1 && /^EPP-0001 - Smoke task - \d{4}-\d{2}-\d{2}\.zip$/.test(doc.archive.zipName) && doc.archive.path === 'EPP/Boss One/' + doc.archive.zipName, 'one zip with the archive number is in the folder of the person who assigned the task: ' + doc.archive.path);
+    check(!!z1 && /^EPP-0001 - Smoke task - \d{4}-\d{2}-\d{2}\.zip$/.test(doc.archive.zipName) && doc.archive.path === EPP_FOLDER_NAME_ + '/Boss One/' + doc.archive.zipName, 'one zip with the archive number is in the folder of the person who assigned the task: ' + doc.archive.path);
     const e1 = z1 ? entries(z1) : {};
     check(Object.keys(e1).sort().join('|') === 'Conversation.txt|Summary.txt', 'the zip holds Summary.txt and Conversation.txt: ' + Object.keys(e1).join(', '));
     check((e1['Conversation.txt'] || '').indexOf('Said: The work is finished') >= 0 && (e1['Conversation.txt'] || '').indexOf('=1+1') >= 0, 'Conversation.txt has the messages and the words of the voice message');
@@ -349,7 +349,7 @@ function smokeTest() {
   Logger.log('ALL SMOKE TESTS PASSED');
 }
 
-// Run by hand (it is safe to run again; nothing is duplicated): makes the folder "EPP" in My Drive of the account that owns the app, and inside it one
+// Run by hand (it is safe to run again; nothing is duplicated): makes the folder "EPP_Task_Manager" in My Drive of the account that owns the app, and inside it one
 // folder for every person who can assign tasks (anyone with at least one arrow going out). When someone new gets that right, run it again, or just let
 // the app make the folder the first time one of that person's tasks is archived. Completed tasks are zipped into the folder of the person who assigned them.
 function createEppFolders() {
@@ -369,7 +369,7 @@ function createEppFolders() {
 // Clears the work (tasks, messages, files, history, overviews, audit log) and empties the EPP folder in Drive, and KEEPS the job titles, the
 // user accounts, the org chart (arrows and its versions), profiles, settings and everybody's sign-in. Before anything is removed it makes a
 // full copy of the database sheet in the Backups folder. Files and folders are moved to the Drive trash (Drive empties it after 30 days), never
-// deleted for good. The EPP folder itself stays; person folders inside it are made again by the app when a task is archived.
+// deleted for good. The company folder (EPP_Task_Manager) itself stays; person folders inside it, and any folder that was deleted, are made again by the app when needed.
 const WIPE_PHRASE_ = 'DELETE ALL TASKS AND ARCHIVES';
 const WIPE_TABLES_ = ['Tasks', 'Messages', 'Reads', 'Attachments', 'Briefings', 'ArchiveIndex', 'AuditLog'];
 function wipeWorkData(confirmText) {
@@ -394,6 +394,14 @@ function wipeWorkData(confirmText) {
   const epp = env.archive.eppFolder(), folders = epp.getFolders(), loose = epp.getFiles(), keepId = env.history.fileId();
   while (folders.hasNext()) { folders.next().setTrashed(true); eppItems++; }
   while (loose.hasNext()) { const f = loose.next(); if (f.getId() !== keepId) { f.setTrashed(true); eppItems++; } }   // the full history sheet is not thrown away
+  // anything else left in the app's Voice and Archive folders (loose files nothing points to) goes to the trash too; the folders stay
+  let loosePieces = 0;
+  [['VOICE_FOLDER_ID', 'Voice'], ['ARCHIVE_FOLDER_ID', 'Archive']].forEach(function (p) {
+    const dir = taskAppFolder_(p[0], p[1]), fi = dir.getFiles(), fo = dir.getFolders();
+    while (fi.hasNext()) { fi.next().setTrashed(true); loosePieces++; }
+    while (fo.hasNext()) { fo.next().setTrashed(true); loosePieces++; }
+  });
+  eppItems += loosePieces;
   props.deleteProperty('MOCK_STATE');
   env.store.insert('AuditLog', { id: 'Awipe' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), at: Date.now(), userId: '', action: 'data.wipe', detail: JSON.stringify(rows) });
   Logger.log('Rows removed: ' + JSON.stringify(rows) + '. Files moved to the Drive trash: ' + files + '. Items moved out of the EPP folder: ' + eppItems + '.');

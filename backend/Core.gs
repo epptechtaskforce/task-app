@@ -33,7 +33,7 @@
  *   env.archiveAtNight               true = approving a task only closes it and a background job (hourly) files it in Drive (archiveWaiting); false/absent = filed at once (demo, tests)
  *   env.archive.discard(saved)     removes the zip(s) saveZip just made (used when the task changed while they were being made)
  *   env.archive.readZip({fileId, path}, ['Summary.txt','Conversation.txt']) -> {name: text}   (text files inside a task's zip)
- *   env.archive.shareFolder({person, email}) -> {folderId}   (view-only access to the ONE folder EPP/<person>; throws if that would be wider)
+ *   env.archive.shareFolder({person, email}) -> {folderId}   (view-only access to the ONE folder EPP_Task_Manager/<person>; throws if that would be wider)
  *   env.archive.unshareFolder({person, email})
  *   env.history.append([row, ...]) / ids() -> {archiveId: 1} / removeTasks({taskId: 1}) / clear() / url() / fileId()   (the full history sheet; a row is an array in HISTORY_COLUMNS order)
  *   env.ai.transcribe(b64, mime, hints) -> {english, language, key_points}   (always English; Sinhala is translated)
@@ -1208,7 +1208,7 @@ function createCore(env) {
   } };
 
   /* ---------------- Google Drive access to one's own archive folder ---------------- */
-  // Completed tasks are zipped into "EPP/<person who assigned>" in the Drive of the app's account. A person who assigns tasks can ask to read and
+  // Completed tasks are zipped into "EPP_Task_Manager/<person who assigned>" in the Drive of the app's account. A person who assigns tasks can ask to read and
   // download that ONE folder with their own Google account; the admin allows or withdraws it. The app only ever shares that folder, as a Viewer
   // (open and download: no changing, deleting, moving or sharing), never by link, and never the EPP folder or the rest of the Drive. The Google
   // email can only be typed by the person themself (the admin can allow or refuse it, not replace it), so the admin cannot read someone else's archive.
@@ -1300,7 +1300,7 @@ function createCore(env) {
     const order = { requested: 0, granted: 1, '': 2 };
     return { people: ctx.rows('Users').filter(function (u) { return u.active && !u.isAdmin && (assignsTasks(ctx, u.id) || rows[u.id]); }).map(function (u) {
       const v = driveView(rows[u.id]);
-      return { userId: u.id, name: u.name, jobTitle: brief(ctx, u.id).jobTitle, status: v.status, email: v.email, folder: 'EPP / ' + niceName(u.name, 60) };
+      return { userId: u.id, name: u.name, jobTitle: brief(ctx, u.id).jobTitle, status: v.status, email: v.email, folder: 'EPP_Task_Manager / ' + niceName(u.name, 60) };
     }).sort(function (a, b) { return order[a.status] - order[b.status] || a.name.localeCompare(b.name); }) };
   } };
 
@@ -1465,7 +1465,7 @@ function createCore(env) {
     const t = doc.task, s = t.summary, L = [], join = function (a) { return (Array.isArray(a) ? a : []).filter(Boolean).join('; '); };
     const files = doc.messages.filter(function (m) { return m.file; }), voices = doc.messages.filter(function (m) { return m.type === 'voice'; });
     const days = Math.max(0, Math.round((t.closedAt - t.createdAt) / 86400000));
-    L.push('TASK ARCHIVE ' + info.code, new Array(61).join('='), 'Archive ID:   ' + info.code, 'Stored in:    Google Drive > EPP > ' + info.person + ' > ' + info.zipName, '',
+    L.push('TASK ARCHIVE ' + info.code, new Array(61).join('='), 'Archive ID:   ' + info.code, 'Stored in:    Google Drive > EPP_Task_Manager > ' + info.person + ' > ' + info.zipName, '',
       'Task:         ' + t.title, 'Purpose:      ' + (t.description ? indent(t.description) : '(no description)'),
       'Assigned by:  ' + t.creator.name, 'Done by:      ' + names(t.assignees), 'Started:      ' + t.startedText, 'Completed:    ' + t.completedText + ' (' + days + (days === 1 ? ' day' : ' days') + ')',
       'Due date:     ' + (t.dueDate || '(none)'), 'Approved by:  ' + t.approvedBy, '');
@@ -1502,7 +1502,7 @@ function createCore(env) {
   }
 
   // Filing an approved ("closed") task: everything about it becomes a zip file (more than one for a very big task), in the folder of the person who assigned it:
-  //   Google Drive > EPP > <person who assigned> > "EPP-0042 - Title - 2026-11-14.zip"
+  //   Google Drive > EPP_Task_Manager > <person who assigned> > "EPP-0042 - Title - 2026-11-14.zip"
   // inside: Summary.txt, Conversation.txt (voice messages written out), Files/ (shared documents and pictures, readable names).
   // Voice audio is not kept. The loose files are thrown away (Drive trash) only after the zip has been written and checked. The
   // ArchiveIndex row keeps just the few lines the History page shows: people, dates, documents' names, summary, the number and the place.
