@@ -285,6 +285,7 @@
         });
         return res;
       },
+      flushNotify: function () { return { sent: 0, failed: 0, removed: 0, items: 0 }; },   // the real app queues alerts and delivers them after the reply; here they are "sent" at once
       ai: options.ai || fakeAi(),
       _pushes: pushes, _files: files, _archives: archives, _folders: folders, _shares: shares, _history: hist
     };

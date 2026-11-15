@@ -67,11 +67,19 @@ function generatePassword_() {
 }
 
 function installTriggers() {
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (['nightlyJob', 'archiveJob', 'archiveJobMore', 'morningJob'].indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t); });
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (['nightlyJob', 'archiveJob', 'archiveJobMore', 'morningJob', 'alertJob'].indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('nightlyJob').timeBased().everyDays(1).atHour(2).create();
   ScriptApp.newTrigger('archiveJob').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('morningJob').timeBased().everyDays(1).atHour(7).create();
-  Logger.log('Scheduled: backups and clean-up about 02:00, the morning summary notification about 07:00, and the filing of approved tasks in Drive every hour (script time zone: ' + Session.getScriptTimeZone() + ').');
+  ScriptApp.newTrigger('alertJob').timeBased().everyMinutes(1).create();
+  Logger.log('Scheduled: backups and clean-up about 02:00, the morning summary notification about 07:00, the filing of approved tasks in Drive every hour, and the delivery of waiting alerts every minute (script time zone: ' + Session.getScriptTimeZone() + ').');
+}
+
+// Every minute: delivers the alerts that are waiting (a safety net: the app asks for delivery itself, in the background, right after each action; this catches
+// anything that request did not, and the alerts made by the other timers: the morning summary and "a task needs attention"). Nothing waiting = nothing happens.
+function alertJob() {
+  const out = makeEnv_({}).flushNotify();
+  if (out.items) Logger.log('Alerts delivered: ' + JSON.stringify(out));
 }
 
 // Every hour, in the background on Google's servers (no phone has to be on, nobody is waiting): files the tasks the managers approved since the last run,
@@ -464,7 +472,7 @@ function launchCheck() {
   say(true, active.length + ' active people; never signed in: ' + (never.map(function (u) { return u.username; }).join(', ') || 'nobody') + '; still on a temporary password: ' + (temp.map(function (u) { return u.username; }).join(', ') || 'nobody'));
   say(!!props.getProperty('VAPID_PRIVATE_KEY') && !!props.getProperty('VAPID_PUBLIC_KEY'), 'notification keys (setupPush): ' + (props.getProperty('VAPID_PRIVATE_KEY') ? 'present' : 'MISSING, run setupPush()'));
   const trig = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction() + (t.getEventType() === ScriptApp.EventType.CLOCK ? ' (time)' : ' (' + t.getEventType() + ')'); });
-  say(trig.join(' ').indexOf('nightlyJob') >= 0 && trig.join(' ').indexOf('archiveJob ') >= 0 && trig.join(' ').indexOf('morningJob') >= 0, 'triggers: ' + trig.join(', ') + (trig.join(' ').indexOf('morningJob') < 0 ? ' (no morningJob: run installTriggers())' : ''));
+  say(trig.join(' ').indexOf('nightlyJob') >= 0 && trig.join(' ').indexOf('archiveJob ') >= 0 && trig.join(' ').indexOf('morningJob') >= 0 && trig.join(' ').indexOf('alertJob') >= 0, 'triggers: ' + trig.join(', ') + (trig.join(' ').indexOf('morningJob') < 0 || trig.join(' ').indexOf('alertJob') < 0 ? ' (a trigger is missing: run installTriggers())' : ''));
   const tasks = rows('Tasks'), by = {}; tasks.forEach(function (t) { by[t.status] = (by[t.status] || 0) + 1; });
   const closed = tasks.filter(function (t) { return t.status === 'closed'; });
   say(!closed.length, 'tasks by status: ' + JSON.stringify(by) + '; waiting to be filed: ' + closed.length + ', failing: ' + closed.filter(function (t) { return Number(t.archiveFails) > 0; }).length);
